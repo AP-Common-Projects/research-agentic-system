@@ -13,12 +13,16 @@ Algorithm from plan §8.5.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from src.tools.bright_data import BrightDataClient
+from src.state import NodeLog
 
 
 async def graph_walk(state: dict) -> dict:
+    thread_id = state.get("thread_id", "")
+    start = time.monotonic()
     tree = state.get("tree", {})
     active_node_id = state.get("active_node_id")
     if not active_node_id:
@@ -49,6 +53,15 @@ async def graph_walk(state: dict) -> dict:
                 }
             },
             "graph_walk_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="graph_walk",
+                    thread_id=thread_id,
+                    input_summary={"node_id": active_node_id, "reason": "empty frontier"},
+                    latency_ms=(time.monotonic() - start) * 1000,
+                    cost_usd=0.0,
+                ).model_dump()
+            ],
         }
 
     client = BrightDataClient()
@@ -73,6 +86,7 @@ async def graph_walk(state: dict) -> dict:
 
     return {
         "discovered_channel_ids": list(truly_new),
+        "graph_walk_channel_ids": found_ids,
         "visited_channel_ids": new_visited,
         "expanded_channel_ids": new_expanded,
         "novelty_rates": [round(novelty, 4)],
@@ -85,4 +99,18 @@ async def graph_walk(state: dict) -> dict:
             }
         },
         "graph_walk_done": True,
+        "node_logs": [
+            NodeLog(
+                node_name="graph_walk",
+                thread_id=thread_id,
+                input_summary={
+                    "node_id": active_node_id,
+                    "frontier_size": len(frontier),
+                    "channels_found": len(truly_new),
+                    "novelty": round(novelty, 4),
+                },
+                latency_ms=(time.monotonic() - start) * 1000,
+                cost_usd=0.0,
+            ).model_dump()
+        ],
     }

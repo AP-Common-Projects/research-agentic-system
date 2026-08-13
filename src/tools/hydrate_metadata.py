@@ -21,6 +21,25 @@ from src.tools.dedup import persist_channel, persist_video
 from src.state import NodeLog, ErrorRecord
 
 
+def _attribute(channel_id: str, kw_found: set[str], gw_found: set[str]) -> str:
+    """Which discovery track(s) found this channel.
+
+    Returns "graph_walk" only when the keyword track never returned it —
+    that exclusivity is the whole claim being tested. "unattributed" covers
+    channels carried over from pre-v4 checkpoints, which cannot be
+    retroactively assigned to a track.
+    """
+    in_kw = channel_id in kw_found
+    in_gw = channel_id in gw_found
+    if in_kw and in_gw:
+        return "both"
+    if in_gw:
+        return "graph_walk"
+    if in_kw:
+        return "keyword"
+    return "unattributed"
+
+
 def hydrate_metadata(state: dict) -> dict:
     channel_ids = state.get("discovered_channel_ids", [])
     thread_id = state.get("thread_id", "")
@@ -42,9 +61,16 @@ def hydrate_metadata(state: dict) -> dict:
     client = YouTubeAPIClient()
     channels = client.get_channels(to_hydrate)
 
+    # Per-track attribution, not a flat label. "graph_walk" here means the
+    # keyword track never returned this channel — those are exactly the
+    # channels the project exists to find (master plan §1), so the label has
+    # to be earned, never assumed.
+    kw_found = set(state.get("keyword_channel_ids", set()))
+    gw_found = set(state.get("graph_walk_channel_ids", set()))
+
     all_video_ids: list[str] = []
     for ch in channels:
-        ch.setdefault("discovery_method", "keyword_and_graph_walk")
+        ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
         ch["first_seen_at"] = ch.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
         videos = client.get_channel_videos(ch["channel_id"], max_results=50)
         scored = score_channel_videos(videos)

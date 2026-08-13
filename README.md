@@ -1,4 +1,4 @@
-# Omniframes — YouTube Niche-Research Harness
+# YouTube Niche-Research Harness
 
 Autonomous research pipeline that takes a topic area and produces a graded,
 evidence-backed report identifying underexplored YouTube channels and niches —
@@ -42,7 +42,8 @@ cp .env.example .env   # fill in real values
 ```
 
 Required: a reachable Postgres instance (with `pgvector`), a YouTube Data API
-v3 key, a Bright Data key, and DeepSeek/Kimi API keys.
+v3 key, a Bright Data key, and an OpenRouter API key (routes both DeepSeek
+V4-Pro/Flash and Kimi K3/K2.6 — see `adr/0005-openrouter-routing.md`).
 
 ## Run
 
@@ -57,6 +58,34 @@ MCP server (for Claude Desktop / Claude Code):
 ```bash
 python -m src.mcp.server   # exposes run_niche_scan, run_deep_research, query_store
 ```
+
+## Console
+
+A local web console for launching runs and reading their output without
+hand-writing SQL or paging through raw JSON. A FastAPI read layer
+(`src/api/`) over the same Postgres store, checkpointer, and JSONL log sink
+the CLI already uses, with a React SPA (`web/`) on top. Runs are launched by
+spawning `python -m src.cli`, so there is still exactly one way to execute the
+pipeline — see `adr/0004-console-react-spa.md`.
+
+```bash
+pip install -e '.[console]'
+cd web && npm install && npm run build && cd ..
+uvicorn src.api.server:app --port 8000        # console at http://localhost:8000
+```
+
+For frontend work, run the two dev servers side by side instead:
+
+```bash
+uvicorn src.api.server:app --reload --port 8000
+cd web && npm run dev                          # http://localhost:5173
+```
+
+Pages: **Runs** (launch, history, live status), **Run detail** (novelty-decay
+chart, taxonomy tree, SSE-streamed node log, evidence-graded report),
+**Discovery graph** (force-directed channel graph, marks filled where only the
+graph-walk track reached a channel), **Channels** (store search, outlier
+videos), **Spend** (cost and latency per node and run).
 
 ## Test
 

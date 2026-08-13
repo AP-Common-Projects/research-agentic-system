@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "omniframes-harness"
+name = "niche-research-harness"
 version = "0.1.0"
 description = "Autonomous YouTube niche-research pipeline — dual-track discovery (keyword + graph walk), metadata hydration, evidence-graded synthesis"
 requires-python = ">=3.11"
@@ -33,6 +33,10 @@ dev = [
 ]
 mcp = [
     "mcp>=1.0.0",
+]
+console = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [tool.pytest.ini_options]

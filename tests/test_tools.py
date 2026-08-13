@@ -18,6 +18,7 @@ from src.tools.dedup import (
     persist_video,
 )
 from src.tools.graph_walk import graph_walk
+from src.tools.hydrate_metadata import _attribute
 from src.tools.keyword_search import broaden_or_pivot, keyword_search
 from src.tools.niche_scanner import compute_opportunity_score, scan_niches
 from src.tools.outlier_score import (
@@ -870,3 +871,67 @@ class TestScoreSignals:
         result = score_signals(state)
         assert "next_action" in result
         assert result["next_action"] == "continue"
+
+class TestDiscoveryAttribution:
+    """Per-track attribution — master plan §1 requires proving the graph-walk
+    track surfaced channels the keyword track missed, which is only checkable
+    if each channel records which track(s) actually found it."""
+
+    def test_graph_walk_exclusive_channel_labeled_graph_walk(self):
+        assert _attribute("UC_hidden", {"UC_pop"}, {"UC_hidden"}) == "graph_walk"
+
+    def test_keyword_exclusive_channel_labeled_keyword(self):
+        assert _attribute("UC_pop", {"UC_pop"}, {"UC_hidden"}) == "keyword"
+
+    def test_channel_found_by_both_tracks_labeled_both(self):
+        assert _attribute("UC_x", {"UC_x"}, {"UC_x"}) == "both"
+
+    def test_channel_in_neither_set_is_unattributed_not_guessed(self):
+        # Pre-v4 checkpoints carry no attribution; guessing a track here would
+        # fabricate the very evidence the report grades on.
+        assert _attribute("UC_legacy", set(), set()) == "unattributed"
+
+    @pytest.mark.asyncio
+    async def test_keyword_search_records_all_returned_channels(self):
+        """Attribution records keyword-findability, not first-discovery: a
+        channel graph_walk saw first is still keyword-findable if the keyword
+        track also returns it."""
+        state = {
+            "tree": {"n1": {"id": "n1", "keywords": ["kw"], "queries_run": []}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": ["ch_seen"],
+            "novelty_rates": [],
+        }
+        with patch("src.tools.keyword_search.BrightDataClient") as mock_bd:
+            mock_client = MagicMock()
+            mock_bd.return_value = mock_client
+            mock_client.search_youtube.return_value = [
+                {"channel_id": "ch_seen", "title": "already discovered"},
+                {"channel_id": "ch_new", "title": "brand new"},
+            ]
+            result = await keyword_search(state)
+
+        assert result["keyword_channel_ids"] == {"ch_seen", "ch_new"}
+        assert result["discovered_channel_ids"] == ["ch_new"]
+
+    @pytest.mark.asyncio
+    async def test_graph_walk_records_all_reachable_channels(self):
+        state = {
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": ["ch_a"], "unexpanded_channel_ids": []}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": ["ch_known"],
+            "visited_channel_ids": set(),
+            "expanded_channel_ids": set(),
+            "novelty_rates": [],
+        }
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
+            mock_client = MagicMock()
+            mock_bd.return_value = mock_client
+            mock_client.crawl_channel_relationships.return_value = [
+                {"source_channel_id": "ch_a", "target_channel_id": "ch_known", "edge_type": "playlist"},
+                {"source_channel_id": "ch_a", "target_channel_id": "ch_fresh", "edge_type": "playlist"},
+            ]
+            result = await graph_walk(state)
+
+        assert result["graph_walk_channel_ids"] == {"ch_known", "ch_fresh"}
+        assert result["discovered_channel_ids"] == ["ch_fresh"]

@@ -1,0 +1,108 @@
+/* Niche-research console — design tokens.
+ *
+ * Direction: a sounding instrument. The harness pushes a frontier outward into
+ * unmapped territory and watches its own novelty decay until it is exhausted;
+ * the console is the readout for that descent. Ground is deep blue-slate (not
+ * near-black), signal is a luminous aqua that reads as "returned from depth",
+ * and the keyword track is a warm sand that reads as "already at the surface".
+ * That pairing is the product's whole thesis rendered as color.
+ *
+ * Every series and ordinal value below was validated with the dataviz skill's
+ * validate_palette.js against these exact surfaces — lightness band, chroma
+ * floor, CVD separation (all-pairs), normal-vision floor, and contrast.
+ * Re-run it before changing any of them.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Ground */
+  --page: #eef3f7;
+  --surface: #f7fafc;
+  --raised: #ffffff;
+  --sunken: #e8eef4;
+  --line: #dce5ec;
+  --grid: #e7edf2;
+
+  /* Ink */
+  --ink: #0c1720;
+  --ink-2: #40566b;
+  --ink-3: #5c7186;
+
+  /* Discovery tracks (categorical — fixed order, never cycled) */
+  --track-graph: #009b87;
+  --track-keyword: #a8690f;
+  --track-seed: #6d4fd0;
+
+  /* Evidence grade (ordinal ramp, single hue, monotone lightness) */
+  --grade-strong: #00695c;
+  --grade-moderate: #009b87;
+  --grade-weak: #4fbcac;
+
+  --focus: #0e7490;
+  --shadow: 0 1px 2px rgb(12 23 32 / 0.06), 0 8px 24px -12px rgb(12 23 32 / 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --page: #0a1017;
+    --surface: #0f1720;
+    --raised: #16202b;
+    --sunken: #0c131b;
+    --line: #223040;
+    --grid: #1b2836;
+
+    --ink: #e6f0f8;
+    --ink-2: #a9c0d4;
+    --ink-3: #7c93a8;
+
+    --track-graph: #14a89a;
+    --track-keyword: #c8821f;
+    --track-seed: #8b6fe8;
+
+    --grade-strong: #3fdbc7;
+    --grade-moderate: #14a89a;
+    --grade-weak: #0b6e66;
+
+    --focus: #4bc5d8;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.7);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --page: #0a1017;
+  --surface: #0f1720;
+  --raised: #16202b;
+  --sunken: #0c131b;
+  --line: #223040;
+  --grid: #1b2836;
+
+  --ink: #e6f0f8;
+  --ink-2: #a9c0d4;
+  --ink-3: #7c93a8;
+
+  --track-graph: #14a89a;
+  --track-keyword: #c8821f;
+  --track-seed: #8b6fe8;
+
+  --grade-strong: #3fdbc7;
+  --grade-moderate: #14a89a;
+  --grade-weak: #0b6e66;
+
+  --focus: #4bc5d8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.7);
+}
+
+/* Status palette — fixed in both modes, never themed, never reused as a
+ * series color. Always shipped with an icon or text label so state is never
+ * carried by hue alone. */
+:root {
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+}

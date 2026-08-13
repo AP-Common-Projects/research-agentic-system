@@ -1,4 +1,4 @@
-"""HarnessState — the central typed contract for the Omniframes research pipeline.
+"""HarnessState — the central typed contract for the niche-research pipeline.
 
 Every field audited per §0.2 item 1 of the master plan:
 "If two nodes write this in the same step, what should happen?"
@@ -180,6 +180,15 @@ class HarnessState(TypedDict, total=False):
     expanded_channel_ids: Annotated[set[str], _merge_set_union]
     hydrated_channel_ids: Annotated[set[str], _merge_set_union]
 
+    # Per-track discovery attribution. Kept as two independent sets rather than
+    # one label per channel because a channel found by BOTH tracks must stay
+    # recorded in both — collapsing to a single label loses the very comparison
+    # the project exists to make (master plan §1: the graph-walk track must
+    # demonstrably surface channels the keyword track missed). Union reducers,
+    # so the parallel fan-out writes cannot clobber each other.
+    keyword_channel_ids: Annotated[set[str], _merge_set_union]
+    graph_walk_channel_ids: Annotated[set[str], _merge_set_union]
+
     branch_compactions: Annotated[list[dict], lambda a, b: a + b]
 
     novelty_rates: Annotated[list[float], lambda a, b: a + b]
@@ -222,6 +231,8 @@ def create_initial_state(
         "visited_channel_ids": set(),
         "expanded_channel_ids": set(),
         "hydrated_channel_ids": set(),
+        "keyword_channel_ids": set(),
+        "graph_walk_channel_ids": set(),
         "branch_compactions": [],
         "novelty_rates": [],
         "saturated_branches": [],
@@ -230,7 +241,7 @@ def create_initial_state(
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 3,
+        "schema_version": 4,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -265,6 +276,15 @@ def migrate_state(state: dict) -> dict:
     if version < 3:
         state.setdefault("hydrated_channel_ids", set())
         version = 3
+
+    if version < 4:
+        # Pre-v4 checkpoints have no per-track attribution. Backfilling is not
+        # possible — the store recorded a single flat label — so these stay
+        # empty and the API reports such channels as "unattributed" rather
+        # than guessing which track found them.
+        state.setdefault("keyword_channel_ids", set())
+        state.setdefault("graph_walk_channel_ids", set())
+        version = 4
 
     state["schema_version"] = version
     return state

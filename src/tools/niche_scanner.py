@@ -9,7 +9,10 @@ Track A. No LLM.
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import Any
+
+from src.state import NodeLog
 
 
 def _stable_hash_int(seed: str) -> int:
@@ -34,12 +37,23 @@ def compute_opportunity_score(evidence: dict) -> float:
 
 
 def scan_niches(state: dict) -> dict:
+    thread_id = state.get("thread_id", "")
+    start = time.monotonic()
     candidate_niches = state.get("candidate_niches", [])
     if not candidate_niches:
         return {
             "selected_niche": "",
             "niche_scanner_evidence": {},
             "next_action": "no_niches",
+            "node_logs": [
+                NodeLog(
+                    node_name="scan_niches",
+                    thread_id=thread_id,
+                    input_summary={"reason": "no candidate niches"},
+                    latency_ms=(time.monotonic() - start) * 1000,
+                    cost_usd=0.0,
+                ).model_dump()
+            ],
         }
 
     evidence_list: list[dict[str, Any]] = []
@@ -67,4 +81,16 @@ def scan_niches(state: dict) -> dict:
             "selected": top,
         },
         "next_action": "niche_scanned",
+        "node_logs": [
+            NodeLog(
+                node_name="scan_niches",
+                thread_id=thread_id,
+                input_summary={
+                    "candidates_scanned": len(candidate_niches),
+                    "selected_niche": top["niche_name"] if top else "",
+                },
+                latency_ms=(time.monotonic() - start) * 1000,
+                cost_usd=0.0,
+            ).model_dump()
+        ],
     }
