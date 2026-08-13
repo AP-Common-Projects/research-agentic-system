@@ -55,7 +55,7 @@ class BrightDataClient:
         cfg = get_config()
         self._api_key = cfg.brightdata.api_key
         self._dataset_id = cfg.brightdata.dataset_id
-        self._semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+        self._semaphore = asyncio.Semaphore(cfg.harness.brightdata_max_concurrency)
 
     def _headers(self) -> dict[str, str]:
         return {

@@ -75,6 +75,9 @@ class HarnessConfig(BaseSettings):
     saturation_novelty_threshold: float = 0.05
     saturation_consecutive_window: int = 3
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    youtube_daily_quota_ceiling: int = 10000
+    youtube_quota_target_ratio: float = 0.90
+    brightdata_max_concurrency: int = 10
 
     model_config = {"env_prefix": "", "extra": "allow"}
 

@@ -530,6 +530,56 @@ class TestCompleteTier:
         )
         assert result == {"content": "judge"}
 
+    @patch("src.llm.cascade.get_client")
+    @patch("src.llm.cascade.get_model_for_tier")
+    def test_falls_back_to_kimi_on_rate_limit(self, mock_get_tier, mock_get_client):
+        from openai import RateLimitError
+
+        mock_get_tier.return_value = {
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-pro",
+            "thinking": False,
+            "temperature": 0.0,
+            "max_tokens": 8192,
+            "input_cost_per_1m": 0.44,
+            "output_cost_per_1m": 0.87,
+        }
+        mock_client = MagicMock()
+        mock_client.complete.side_effect = [
+            RateLimitError("rate limited", response=MagicMock(), body=None),
+            {"content": "fallback ok"},
+        ]
+        mock_get_client.return_value = mock_client
+
+        result = complete_tier("mid", "test prompt")
+
+        assert result == {"content": "fallback ok", "fallback_used": True}
+        assert mock_client.complete.call_count == 2
+        assert mock_client.complete.call_args_list[1].kwargs["model"] == "kimi-k3"
+
+    @patch("src.llm.cascade.get_client")
+    @patch("src.llm.cascade.get_model_for_tier")
+    def test_no_fallback_for_cross_judge(self, mock_get_tier, mock_get_client):
+        from openai import RateLimitError
+
+        mock_get_tier.return_value = {
+            "provider": "kimi",
+            "model_name": "kimi-k3",
+            "thinking": False,
+            "temperature": 0.0,
+            "max_tokens": 4096,
+            "input_cost_per_1m": 3.00,
+            "output_cost_per_1m": 15.00,
+        }
+        mock_client = MagicMock()
+        mock_client.complete.side_effect = RateLimitError(
+            "rate limited", response=MagicMock(), body=None
+        )
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(RateLimitError):
+            complete_tier("cross_judge", "judge this")
+
 
 class TestEstimateCost:
     def test_frontier_1m_tokens(self):

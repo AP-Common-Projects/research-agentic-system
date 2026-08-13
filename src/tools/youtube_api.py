@@ -73,7 +73,8 @@ class YouTubeAPIClient:
         return self._quota_used
 
     def check_quota(self, planned_units: int) -> bool:
-        ceiling = int(DAILY_QUOTA_CEILING * QUOTA_CEILING_TARGET_RATIO)
+        cfg = get_config().harness
+        ceiling = int(cfg.youtube_daily_quota_ceiling * cfg.youtube_quota_target_ratio)
         return (self._quota_used + planned_units) <= ceiling
 
     def _track_quota(self, units: int) -> None:

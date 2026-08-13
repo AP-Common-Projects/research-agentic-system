@@ -276,6 +276,7 @@ async def test_rate_limit_on_bright_data():
         cfg = MagicMock()
         cfg.brightdata.api_key = "test-key"
         cfg.brightdata.dataset_id = "test-ds"
+        cfg.harness.brightdata_max_concurrency = 10
         mock_cfg.return_value = cfg
 
         from src.tools.bright_data import BrightDataClient
