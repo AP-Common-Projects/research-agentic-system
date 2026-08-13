@@ -49,6 +49,7 @@ from tenacity import (
 )
 
 from src.config import get_config
+from src.observability.logging_config import record_spend_intent
 
 logger = structlog.get_logger(__name__)
 
@@ -285,7 +286,8 @@ _PARSERS = {
 class BrightDataClient:
     BASE_URL = "https://api.brightdata.com/datasets/v3"
 
-    def __init__(self) -> None:
+    def __init__(self, run_id: str = "") -> None:
+        self._run_id = run_id
         cfg = get_config()
         self._cfg = cfg.brightdata
         self._api_key = cfg.brightdata.api_key
@@ -365,6 +367,7 @@ class BrightDataClient:
         collector: CollectorName,
         payload: list[dict],
         params: dict[str, Any] | None = None,
+        worst_case_records: int = 0,
     ) -> list[dict]:
         """Trigger a job, poll it to completion, return its raw rows."""
         if not payload:
@@ -375,10 +378,32 @@ class BrightDataClient:
         dataset_id = self._dataset_ids[collector]
         deadline = time.monotonic() + self._cfg.poll_max_seconds
 
+        # Written BEFORE the POST. The trigger is the moment money is
+        # committed, and a lost response leaves a job billing with nothing
+        # anywhere recording it — the snapshot id is the only handle for
+        # reconciling a charge back to the job that caused it.
+        record_spend_intent(
+            self._run_id,
+            collector=collector,
+            inputs=len(payload),
+            worst_case_records=worst_case_records or len(payload),
+            params=params or {},
+            phase="trigger",
+        )
+
         async with self._semaphore:
             async with httpx.AsyncClient() as client:
                 snapshot_id = await self._trigger(
                     client, dataset_id, payload, params or {}
+                )
+                record_spend_intent(
+                    self._run_id,
+                    collector=collector,
+                    inputs=len(payload),
+                    worst_case_records=worst_case_records or len(payload),
+                    params=params or {},
+                    snapshot_id=snapshot_id,
+                    phase="triggered",
                 )
                 logger.info(
                     "brightdata_triggered",
@@ -405,6 +430,15 @@ class BrightDataClient:
 
                 rows = await self._fetch(client, snapshot_id)
 
+        record_spend_intent(
+            self._run_id,
+            collector=collector,
+            inputs=len(payload),
+            worst_case_records=len(rows),
+            params=params or {},
+            snapshot_id=snapshot_id,
+            phase="collected",
+        )
         logger.info(
             "brightdata_collected",
             collector=collector,
@@ -443,7 +477,10 @@ class BrightDataClient:
         params: dict[str, Any] = {"type": "discover_new", "discover_by": "keyword"}
         if limit_per_input > 0:
             params["limit_per_input"] = limit_per_input
-        rows = await self._collect("channels", payload, params)
+        rows = await self._collect(
+            "channels", payload, params,
+            worst_case_records=len(payload) * max(1, limit_per_input),
+        )
         return [parse_channel(row) for row in rows], len(rows)
 
     async def get_channels(self, refs: Iterable[str]) -> tuple[list[dict], int]:
@@ -496,7 +533,10 @@ class BrightDataClient:
             if num_of_comments > 0:
                 item["num_of_comments"] = num_of_comments
             payload.append(item)
-        rows = await self._collect("comments", payload)
+        rows = await self._collect(
+            "comments", payload,
+            worst_case_records=len(payload) * max(1, num_of_comments),
+        )
         return [parse_comment(row) for row in rows], len(rows)
 
 
