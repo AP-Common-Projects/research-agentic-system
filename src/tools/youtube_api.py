@@ -156,14 +156,32 @@ class YouTubeAPIClient:
         if not self.check_quota(1):
             return []
 
-        playlist_data = self._get(
-            "playlistItems",
-            {
-                "part": "snippet",
-                "playlistId": uploads_playlist,
-                "maxResults": min(max_results, 50),
-            },
-        )
+        try:
+            playlist_data = self._get(
+                "playlistItems",
+                {
+                    "part": "snippet",
+                    "playlistId": uploads_playlist,
+                    "maxResults": min(max_results, 50),
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            # A channel can advertise an uploads playlist that 404s — no public
+            # uploads, or the channel was terminated between discovery and
+            # hydration. That is a fact about one channel, not a run failure,
+            # but hydrate_metadata is the fan-in join and is NOT wrapped by
+            # graph.py's _guarded, so an escape here kills the whole run. One
+            # such channel ended a paid run after 64 records.
+            if exc.response.status_code in (403, 404):
+                logger.warning(
+                    "youtube_uploads_playlist_unavailable",
+                    channel_id=channel_id,
+                    playlist_id=uploads_playlist,
+                    status=exc.response.status_code,
+                )
+                self._track_quota(1)
+                return []
+            raise
         self._track_quota(1)
 
         video_ids = [

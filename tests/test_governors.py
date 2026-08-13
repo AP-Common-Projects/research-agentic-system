@@ -910,3 +910,83 @@ class TestSeedsAreNotDiscoveries:
             result = await graph_walk(state)
 
         assert result["graph_walk_channel_ids"] == {"UC_REACHED"}
+
+
+class TestOneBadChannelCannotEndARun:
+    """hydrate_metadata is the fan-in join and is NOT wrapped by graph.py's
+    _guarded, so anything escaping it ends the run — after that round's Bright
+    Data records are already paid for. A single channel whose uploads playlist
+    404s ended a live run at 64 records."""
+
+    def test_dead_uploads_playlist_returns_empty_not_raises(self):
+        from src.tools.youtube_api import YouTubeAPIClient
+
+        client = YouTubeAPIClient()
+        request = httpx.Request("GET", "https://www.googleapis.com/youtube/v3/playlistItems")
+
+        def fake_get(endpoint, params):
+            if endpoint == "channels":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UUdead"}}}]}
+            raise httpx.HTTPStatusError(
+                "404", request=request, response=httpx.Response(404, request=request)
+            )
+
+        with patch.object(YouTubeAPIClient, "_get", side_effect=fake_get):
+            assert client.get_channel_videos("UCdead") == []
+
+    def test_a_real_error_still_propagates(self):
+        """403-quota and 404-missing are facts about one channel; a 500 is not,
+        and must not be silently swallowed into an empty video list."""
+        from src.tools.youtube_api import YouTubeAPIClient
+
+        client = YouTubeAPIClient()
+        request = httpx.Request("GET", "https://x")
+
+        def fake_get(endpoint, params):
+            if endpoint == "channels":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UUx"}}}]}
+            raise httpx.HTTPStatusError(
+                "500", request=request, response=httpx.Response(500, request=request)
+            )
+
+        with patch.object(YouTubeAPIClient, "_get", side_effect=fake_get):
+            with pytest.raises(httpx.HTTPStatusError):
+                client.get_channel_videos("UCx")
+
+    def test_hydration_survives_one_failing_channel(self):
+        """The other channels' metadata must still land, and the failure must
+        be recorded rather than swallowed."""
+        from src.tools.hydrate_metadata import hydrate_metadata
+
+        state = {
+            "discovered_channel_ids": ["UC_ok", "UC_bad"],
+            "hydrated_channel_ids": set(),
+            "keyword_channel_ids": {"UC_ok", "UC_bad"},
+            "graph_walk_channel_ids": set(),
+            "youtube_quota_used": 0,
+            "thread_id": "t",
+        }
+        yt = MagicMock()
+        yt.get_channels.return_value = [
+            {"channel_id": "UC_ok", "title": "fine"},
+            {"channel_id": "UC_bad", "title": "dead"},
+        ]
+        yt.get_channel_videos.side_effect = [
+            [{"video_id": "v1", "channel_id": "UC_ok", "view_count": 10}],
+            RuntimeError("404 uploads playlist"),
+        ]
+        yt.get_quota_used.return_value = 4
+        yt.quota_consumed_this_call.return_value = 4
+
+        with patch("src.tools.hydrate_metadata.YouTubeAPIClient", return_value=yt), \
+             patch("src.db.connection.get_connection"), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.tools.dedup.persist_channel"), \
+             patch("src.tools.dedup.persist_video"):
+            result = hydrate_metadata(state)
+
+        assert "v1" in result["discovered_video_ids"], "the good channel must survive"
+        assert result["hydrated_channel_ids"] == {"UC_ok", "UC_bad"}
+        assert any("UC_bad" in e["message"] for e in result["errors"]), (
+            "the failure must be recorded, not swallowed"
+        )
