@@ -1,4 +1,11 @@
-"""Unified LLM client supporting DeepSeek and Kimi via OpenAI-compatible APIs."""
+"""Unified LLM client — DeepSeek and Kimi models, accessed via OpenRouter.
+
+Both model families go through one OpenAI-compatible endpoint and one API
+key (ADR-0005), instead of two direct vendor integrations. Internal model
+identifiers (below, and throughout state/cost-tracking/tests) are unchanged
+by this — OPENROUTER_MODEL_SLUGS is the one place that translates them to
+whatever OpenRouter's own catalog calls them for the actual API call.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +30,18 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "kimi-k3": {"input": 3.00, "output": 15.00},
     "kimi-k2.6": {"input": 0.95, "output": 4.00},
+}
+
+# OpenRouter addresses models as "<upstream-provider>/<model-slug>". Verified
+# 2026-08-13 against GET /api/v1/models on the live OpenRouter catalog — all
+# four exist exactly as below. Nothing else in the codebase needs to change
+# if these ever drift, since every other reference (pricing, cost tracking,
+# state, tests) uses the internal name on the left.
+OPENROUTER_MODEL_SLUGS: dict[str, str] = {
+    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+    "kimi-k3": "moonshotai/kimi-k3",
+    "kimi-k2.6": "moonshotai/kimi-k2.6",
 }
 
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
@@ -59,25 +78,20 @@ def _create_retry_decorator():
 
 class LLMClient:
     def __init__(self) -> None:
-        config = get_config()
-        self._clients: dict[str, OpenAI] = {}
-        self._config = config
+        self._config = get_config()
+        self._client: OpenAI | None = None
 
-    def _get_client(self, provider: str) -> OpenAI:
-        if provider not in self._clients:
-            if provider == "deepseek":
-                self._clients[provider] = OpenAI(
-                    api_key=self._config.deepseek.api_key,
-                    base_url=self._config.deepseek.base_url,
-                )
-            elif provider == "kimi":
-                self._clients[provider] = OpenAI(
-                    api_key=self._config.kimi.api_key,
-                    base_url=self._config.kimi.base_url,
-                )
-            else:
-                raise ValueError(f"Unknown provider: {provider}")
-        return self._clients[provider]
+    def _get_client(self) -> OpenAI:
+        if self._client is None:
+            self._client = OpenAI(
+                api_key=self._config.openrouter.api_key,
+                base_url=self._config.openrouter.base_url,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/AP-Common-Projects/research-agentic-system",
+                    "X-Title": "YouTube Niche-Research Harness",
+                },
+            )
+        return self._client
 
     def complete(
         self,
@@ -88,14 +102,7 @@ class LLMClient:
         max_tokens: int = 4096,
         thinking: bool = False,
     ) -> dict[str, Any]:
-        provider = (
-            "deepseek"
-            if model.startswith("deepseek")
-            else "kimi"
-            if model.startswith("kimi")
-            else "deepseek"
-        )
-        client = self._get_client(provider)
+        client = self._get_client()
 
         messages: list[dict[str, str]] = []
         if system:
@@ -134,7 +141,7 @@ class LLMClient:
         thinking: bool,
     ) -> Any:
         kwargs: dict[str, Any] = {
-            "model": model,
+            "model": OPENROUTER_MODEL_SLUGS.get(model, model),
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
