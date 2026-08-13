@@ -213,6 +213,10 @@ async def graph_walk(state: dict) -> dict:
 
     found_refs: dict[str, int] = {}
     resolved_ids: set[str] = set()
+    # Channels the walk expanded that were taxonomy seeds. Kept separate so
+    # they are still hydrated, scored and marked expanded — they just are not
+    # credited to the graph-walk track as discoveries.
+    seeded_ids: set[str] = set()
     barren: list[str] = []
     # The edges are the product. Until now they were computed in memory and
     # discarded, which left discovery_edges empty — and that table is the
@@ -224,12 +228,25 @@ async def graph_walk(state: dict) -> dict:
     # exclusion. This is the novelty denominator — see below.
     all_refs_seen: set[str] = set()
 
+    # Taxonomy seeds are starting points, not discoveries. They enter round
+    # one's frontier directly from the LLM's guess, so without this they get
+    # fetched, land in resolved_ids, and are attributed to the graph-walk
+    # track — inflating `graph_walk_exclusive_count`, which is the single
+    # number this project exists to produce. Measured on the rung-04 run:
+    # @GrahamStephan and @AndreiJikh were both seeds and both counted as
+    # walk-exclusive finds. A channel earns that label by being reached
+    # through an edge, never by being handed to the walk as an entry point.
+    seed_refs = {
+        normalize_channel_ref(str(s)) for s in (node.get("seed_channel_ids") or [])
+    }
+
     for ch in channels:
         source_id = ch.get("channel_id", "")
+        channel_ref = normalize_channel_ref(ch.get("channel_ref", ""))
         if source_id:
-            resolved_ids.add(source_id)
-            if ch.get("channel_ref"):
-                ref_to_id[normalize_channel_ref(ch["channel_ref"])] = source_id
+            (seeded_ids if channel_ref in seed_refs else resolved_ids).add(source_id)
+            if channel_ref:
+                ref_to_id[channel_ref] = source_id
         edges = ch.get("featured_channel_edges") or []
         yielded = False
         for edge in edges:
@@ -377,8 +394,12 @@ async def graph_walk(state: dict) -> dict:
                 ).model_dump()
             )
 
+    # Seeds are hydrated, scored and marked expanded exactly like any other
+    # channel the walk fetched — they are simply not *credited* to the
+    # graph-walk track below.
+    expanded_ids = resolved_ids | seeded_ids
     discovered_set = set(state.get("discovered_channel_ids", []))
-    truly_new_ids = [cid for cid in resolved_ids if cid not in discovered_set]
+    truly_new_ids = [cid for cid in expanded_ids if cid not in discovered_set]
 
     # Novelty must count refs never seen before — not merely refs outside this
     # round's frontier. `_gw_refs` is the backlog: refs found in earlier rounds
@@ -416,7 +437,7 @@ async def graph_walk(state: dict) -> dict:
     return {
         "discovered_channel_ids": truly_new_ids,
         "graph_walk_channel_ids": resolved_ids,
-        "visited_channel_ids": resolved_ids,
+        "visited_channel_ids": expanded_ids,
         # Record BOTH forms of every channel actually expanded. String
         # canonicalisation cannot collapse `/@handle` and `/channel/UC…` —
         # they are different identifiers for the same channel and only the
@@ -424,7 +445,7 @@ async def graph_walk(state: dict) -> dict:
         # meets this channel as `/channel/UC…` inside another record's
         # featured_channels sees an unexpanded ref and pays for it again.
         "expanded_channel_refs": frontier_set | {
-            f"https://www.youtube.com/channel/{cid}" for cid in resolved_ids
+            f"https://www.youtube.com/channel/{cid}" for cid in expanded_ids
         },
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
@@ -453,10 +474,12 @@ async def graph_walk(state: dict) -> dict:
                     "tier_a_records": records - tier_b_used,
                     "tier_b_records": tier_b_used,
                     "records_consumed": records,
-                    "channels_resolved": len(resolved_ids),
+                    "channels_resolved": len(expanded_ids),
+                    "seeds_expanded": len(seeded_ids),
+                    "refs_seen": len(all_refs_seen),
                     "edges_found": len(discovered_edges),
                     "edges_written": edges_written,
-                    "refs_found": len(novel_refs),
+                    "novel_refs": len(novel_refs),
                     "novelty": round(novelty, 4),
                 },
                 latency_ms=(time.monotonic() - start) * 1000,

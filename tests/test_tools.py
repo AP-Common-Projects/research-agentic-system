@@ -920,7 +920,11 @@ class TestDiscoveryAttribution:
         A, B = f"{YT}@ch_a", f"{YT}@ch_b"
         state = {
             "run_id": "run-test",
-            "tree": {"n1": {"id": "n1", "seed_channel_ids": [A, B]}},
+            # Reached via a prior round's edges, not seeded — a taxonomy seed
+            # is an entry point the LLM guessed, not something the walk found,
+            # so seeds are deliberately excluded from this attribution set.
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": [],
+                            "_gw_refs": {A: 5000, B: 5000}}},
             "active_node_id": "n1",
             "discovered_channel_ids": ["ch_known"],
             "expanded_channel_refs": set(),
