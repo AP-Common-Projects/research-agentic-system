@@ -820,3 +820,93 @@ class TestNoveltyPathIsReachable:
                 f"{name}: max_rounds_per_branch={rounds} <= window={window}, "
                 "so novelty_below_threshold can never fire"
             )
+
+
+class TestSeedsAreNotDiscoveries:
+    """Taxonomy seeds enter round one's frontier directly from the LLM's
+    guess. Crediting them to the graph-walk track inflates
+    graph_walk_exclusive_count — the one number this project exists to
+    produce. Measured on the rung-04 run: @GrahamStephan and @AndreiJikh were
+    both seeds and both counted as walk-exclusive finds."""
+
+    @staticmethod
+    def _state(seeds, gw_refs=None):
+        return {
+            "run_id": "r",
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": list(seeds),
+                            "_gw_refs": dict(gw_refs or {})}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "expanded_channel_refs": set(),
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_seed_is_not_credited_to_the_walk(self, no_edge_store):
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                graph_walk_escalate_to_comments=False
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(return_value=(
+                [{"channel_id": "UC_SEED", "channel_ref": f"{YT}@grahamstephan",
+                  "featured_channel_edges": []}],
+                1,
+            ))
+            client.get_channel_videos = AsyncMock(return_value=([], 0))
+            client.get_comments = AsyncMock(return_value=([], 0))
+            result = await graph_walk(self._state(["@GrahamStephan"]))
+
+        assert result["graph_walk_channel_ids"] == set(), (
+            "an LLM-guessed seed is an entry point, not a discovery"
+        )
+
+    @pytest.mark.asyncio
+    async def test_seed_is_still_hydrated_and_marked_expanded(self, no_edge_store):
+        """Excluding seeds from attribution must not drop them from the run —
+        they still belong in the store, the signals and the report."""
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                graph_walk_escalate_to_comments=False
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(return_value=(
+                [{"channel_id": "UC_SEED", "channel_ref": f"{YT}@grahamstephan",
+                  "featured_channel_edges": []}],
+                1,
+            ))
+            client.get_channel_videos = AsyncMock(return_value=([], 0))
+            client.get_comments = AsyncMock(return_value=([], 0))
+            result = await graph_walk(self._state(["@GrahamStephan"]))
+
+        assert result["discovered_channel_ids"] == ["UC_SEED"], "must still hydrate"
+        assert f"{YT}channel/UC_SEED" in result["expanded_channel_refs"]
+
+    @pytest.mark.asyncio
+    async def test_a_channel_reached_by_an_edge_is_credited(self, no_edge_store):
+        """The genuine case must still count — otherwise the fix would zero
+        out the metric rather than correct it."""
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                graph_walk_escalate_to_comments=False
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(return_value=(
+                [{"channel_id": "UC_REACHED", "channel_ref": f"{YT}@reached",
+                  "featured_channel_edges": []}],
+                1,
+            ))
+            client.get_channel_videos = AsyncMock(return_value=([], 0))
+            client.get_comments = AsyncMock(return_value=([], 0))
+            # @reached came from a previous round's edges, not from seeds.
+            state = self._state(["@somethingelse"], gw_refs={f"{YT}@reached": 5000})
+            result = await graph_walk(state)
+
+        assert result["graph_walk_channel_ids"] == {"UC_REACHED"}
