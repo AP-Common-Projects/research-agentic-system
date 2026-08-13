@@ -161,6 +161,9 @@ async def graph_walk(state: dict) -> dict:
     # keyword search never returns.
     discovered_edges: list[dict] = []
     ref_to_id: dict[str, str] = {}
+    # Every distinct channel this round's edges pointed at, before any
+    # exclusion. This is the novelty denominator — see below.
+    all_refs_seen: set[str] = set()
 
     for ch in channels:
         source_id = ch.get("channel_id", "")
@@ -174,6 +177,7 @@ async def graph_walk(state: dict) -> dict:
             ref = edge.get("ref", "")
             if not ref:
                 continue
+            all_refs_seen.add(ref)
             discovered_edges.append(
                 {
                     "source_channel_id": source_id,
@@ -210,6 +214,7 @@ async def graph_walk(state: dict) -> dict:
                     normalize_channel_ref(video.get("channel_ref", "")), ""
                 )
                 for ref in _mine_recommended([video]):
+                    all_refs_seen.add(ref)
                     discovered_edges.append(
                         {
                             "source_channel_id": source_id,
@@ -240,6 +245,7 @@ async def graph_walk(state: dict) -> dict:
                     if not raw_ref:
                         continue
                     ref = normalize_channel_ref(raw_ref)
+                    all_refs_seen.add(ref)
                     discovered_edges.append(
                         {
                             "source_channel_id": video_owner.get(comment.get("video_id", ""), ""),
@@ -309,8 +315,23 @@ async def graph_walk(state: dict) -> dict:
     # condition.
     frontier_set = set(frontier)
     already_known = set(node.get("_gw_refs") or {}) | frontier_set | expanded_refs
-    novel_refs = {r for r in found_refs if r not in already_known}
-    novelty = len(novel_refs) / len(frontier) if frontier else 0.0
+    novel_refs = {r for r in all_refs_seen if r not in already_known}
+
+    # Denominator is refs *seen*, not frontier size. Dividing by frontier size
+    # made this a fan-out yield rather than a proportion, and its smallest
+    # non-zero value was therefore 1/len(frontier) — 0.20 under the smoke
+    # profile, 0.067 under bounded, both above saturation_novelty_threshold
+    # (0.05). `gw_low` was consequently satisfiable only at exactly 0.0, so the
+    # graph-walk track had no graded saturation at all: any round finding a
+    # single new channel scored above threshold. Branches could only ever stop
+    # on exhaustion or a governor, which made novelty decay — the project's
+    # stated stop condition — inoperative for this track.
+    #
+    # As a share of discovered edges that were new, this lands in [0, 1] and is
+    # directly comparable to the keyword track's new/returned ratio, so the one
+    # threshold means the same thing on both sides of the interleaved
+    # `novelty_rates` series.
+    novelty = len(novel_refs) / len(all_refs_seen) if all_refs_seen else 0.0
     gw_history.append(round(novelty, 4))
 
     merged_refs = dict(node.get("_gw_refs") or {})
@@ -321,7 +342,15 @@ async def graph_walk(state: dict) -> dict:
         "discovered_channel_ids": truly_new_ids,
         "graph_walk_channel_ids": resolved_ids,
         "visited_channel_ids": resolved_ids,
-        "expanded_channel_refs": frontier_set,
+        # Record BOTH forms of every channel actually expanded. String
+        # canonicalisation cannot collapse `/@handle` and `/channel/UC…` —
+        # they are different identifiers for the same channel and only the
+        # fetched record links them. Without the id form, a later round that
+        # meets this channel as `/channel/UC…` inside another record's
+        # featured_channels sees an unexpanded ref and pays for it again.
+        "expanded_channel_refs": frontier_set | {
+            f"https://www.youtube.com/channel/{cid}" for cid in resolved_ids
+        },
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
         "novelty_rates": [round(novelty, 4)],

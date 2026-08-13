@@ -538,8 +538,11 @@ class TestNoveltyExcludesTheBacklog:
             client.get_comments = AsyncMock(return_value=([], 0))
             result = await graph_walk(state)
 
-        # One frontier channel, one genuinely-new ref -> 1.0, not 2.0.
-        assert result["novelty_rates"][0] == 1.0
+        # Two refs discovered, one already in the backlog -> half were new.
+        # Under the old frontier-size denominator this scored 1.0 (one novel
+        # ref over one frontier channel), which is a yield, not a proportion.
+        assert result["novelty_rates"][0] == 0.5
+        assert 0.0 <= result["novelty_rates"][0] <= 1.0, "novelty must be a proportion"
 
     @pytest.mark.asyncio
     async def test_novelty_decays_to_zero_when_only_backlog_returns(self, no_edge_store):
@@ -613,5 +616,62 @@ class TestTierBFailureKeepsTierASpend:
 
         assert result["brightdata_records_used"] == 3, "Tier A spend must be reported"
         assert result["budget_spent_usd"] == pytest.approx(3 * 0.0015)
-        assert result["expanded_channel_refs"] == {f"{YT}@a"}, "must not re-expand next round"
+        # Both identities of the expanded channel: the handle form we asked
+        # for, and the /channel/UC… form a later round may meet it under.
+        assert result["expanded_channel_refs"] == {
+            f"{YT}@a", f"{YT}channel/UC_A",
+        }, "must not re-expand next round, under either identifier"
         assert any(e["node_name"] == "graph_walk" for e in result["errors"])
+
+
+class TestNoveltyIsAComparableProportion:
+    """The graph-walk metric used to divide by frontier size, making its
+    smallest non-zero value 1/len(frontier) — 0.20 under smoke, 0.067 under
+    bounded, both above saturation_novelty_threshold (0.05). `gw_low` was
+    therefore satisfiable only at exactly 0.0, so the graph-walk track had no
+    graded saturation and branches could only stop on exhaustion or a governor.
+    """
+
+    @pytest.mark.asyncio
+    async def test_novelty_never_exceeds_one(self, no_edge_store):
+        """One frontier channel featuring four others used to score 4.0."""
+        state = {
+            "run_id": "r",
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": [f"{YT}@seed"], "_gw_refs": {}}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "expanded_channel_refs": set(),
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                graph_walk_frontier_per_round=1, graph_walk_escalate_to_comments=False,
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(return_value=(
+                [{"channel_id": "UC_S", "channel_ref": f"{YT}@seed",
+                  "featured_channel_edges": [
+                      {"ref": f"{YT}@n{i}", "subscriber_count": 1000} for i in range(4)
+                  ]}],
+                1,
+            ))
+            client.get_channel_videos = AsyncMock(return_value=([], 0))
+            client.get_comments = AsyncMock(return_value=([], 0))
+            result = await graph_walk(state)
+
+        assert result["novelty_rates"][0] == 1.0, "all four were new -> 1.0, not 4.0"
+
+    def test_threshold_is_reachable_under_every_profile(self):
+        """A proportion can land below 0.05; a 1/frontier yield cannot."""
+        for name, preset in PROFILES.items():
+            frontier = preset["graph_walk_frontier_per_round"]
+            if frontier:
+                assert 1 / frontier > 0.05, (
+                    f"{name}: this is why the old yield metric could not reach "
+                    "the threshold — kept as a record of the bug"
+                )
+        # The proportion form has no such floor: 1 novel of 100 seen = 0.01.
+        assert 1 / 100 < 0.05

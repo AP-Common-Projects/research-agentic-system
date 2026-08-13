@@ -359,7 +359,13 @@ def migrate_state(state: dict) -> dict:
         # recorded expanded UC ids, which normalize cleanly to channel URLs —
         # so this one CAN be migrated rather than dropped, and a resumed run
         # will not re-expand and re-bill channels it already walked.
-        if "expanded_channel_refs" not in state:
+        #
+        # Truthiness, not key presence: LangGraph materialises EVERY declared
+        # channel into snapshot.values, so a v4 checkpoint still arrives with
+        # `expanded_channel_refs` present and equal to set(). A `not in` guard
+        # therefore never fires and the backfill silently does nothing, which
+        # is exactly the re-billing this block exists to prevent.
+        if not state.get("expanded_channel_refs"):
             state["expanded_channel_refs"] = {
                 f"https://www.youtube.com/channel/{cid}"
                 for cid in state.get("expanded_channel_ids", set())

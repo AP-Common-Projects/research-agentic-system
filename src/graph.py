@@ -240,7 +240,22 @@ async def run_pipeline(
             # budget_exhausted before doing any work, compounding 4x, 8x on
             # each further resume. New keys are safe because their channels
             # are empty, so reducer(empty, default) == default.
-            delta = {k: v for k, v in migrated.items() if k not in existing}
+            # Key-presence alone is the wrong test: LangGraph materialises
+            # every declared channel into snapshot.values, so a v4 checkpoint
+            # arrives with all the v5 keys already present but empty. Filtering
+            # on `k not in existing` would therefore drop migration's real
+            # work — notably the expanded_channel_refs backfill, whose whole
+            # job is to stop a resumed run re-walking and re-billing every
+            # channel it already paid for.
+            #
+            # So: include a key when it is new, or when migration filled a
+            # value that was empty. Never when the existing value is already
+            # populated — that is the case that would double an accumulator.
+            delta = {
+                k: v
+                for k, v in migrated.items()
+                if k not in existing or (not existing.get(k) and v)
+            }
             if migrated.get("schema_version") != existing.get("schema_version"):
                 delta["schema_version"] = migrated["schema_version"]
             if delta:
