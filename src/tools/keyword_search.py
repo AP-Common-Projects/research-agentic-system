@@ -13,9 +13,11 @@ Plan §0.2 item 3 required specifying this; the source material had it as
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from src.tools.bright_data import BrightDataClient
+from src.state import NodeLog
 
 
 def broaden_or_pivot(
@@ -57,6 +59,8 @@ def broaden_or_pivot(
 
 
 async def keyword_search(state: dict) -> dict:
+    thread_id = state.get("thread_id", "")
+    start = time.monotonic()
     tree = state.get("tree", {})
     active_node_id = state.get("active_node_id")
     if not active_node_id:
@@ -84,6 +88,15 @@ async def keyword_search(state: dict) -> dict:
                 }
             },
             "keyword_search_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="keyword_search",
+                    thread_id=thread_id,
+                    input_summary={"node_id": active_node_id, "reason": "no new queries"},
+                    latency_ms=(time.monotonic() - start) * 1000,
+                    cost_usd=0.0,
+                ).model_dump()
+            ],
         }
 
     client = BrightDataClient()
@@ -110,6 +123,7 @@ async def keyword_search(state: dict) -> dict:
 
     return {
         "discovered_channel_ids": new_channels,
+        "keyword_channel_ids": set(all_channels),
         "tree": {
             active_node_id: {
                 "queries_run": list(queries_run) + new_queries,
@@ -120,4 +134,18 @@ async def keyword_search(state: dict) -> dict:
         },
         "novelty_rates": [round(novelty, 4)],
         "keyword_search_done": True,
+        "node_logs": [
+            NodeLog(
+                node_name="keyword_search",
+                thread_id=thread_id,
+                input_summary={
+                    "node_id": active_node_id,
+                    "queries_run": len(new_queries),
+                    "channels_found": len(new_channels),
+                    "novelty": round(novelty, 4),
+                },
+                latency_ms=(time.monotonic() - start) * 1000,
+                cost_usd=0.0,
+            ).model_dump()
+        ],
     }

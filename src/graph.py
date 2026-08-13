@@ -9,9 +9,12 @@ flagging it in the run's logs (§0.2 item 4).
 
 from __future__ import annotations
 
+import inspect
+
 from langgraph.graph import StateGraph, START, END
 
 from src.state import HarnessState, create_initial_state, migrate_state
+from src.observability import write_node_logs
 from src.tools.niche_scanner import scan_niches
 from src.tools.keyword_search import keyword_search
 from src.tools.graph_walk import graph_walk
@@ -22,6 +25,36 @@ from src.nodes.taxonomy import build_taxonomy
 from src.nodes.compact_branch import compact_branch
 from src.nodes.synthesize import synthesize
 from src.nodes.select_next_node import select_next_node
+
+
+def _logged(fn, name: str):
+    """Flush any node_logs a node produces to the JSONL sink, immediately.
+
+    Wraps both sync and async node functions. Purely observational — never
+    changes the node's return value, and sink failures never propagate.
+    """
+    is_async = inspect.iscoroutinefunction(fn)
+
+    def _sink(state: dict, result: dict) -> dict:
+        node_logs = result.get("node_logs") if isinstance(result, dict) else None
+        if node_logs:
+            write_node_logs(state.get("run_id", ""), node_logs)
+        return result
+
+    if is_async:
+        async def async_wrapper(state: dict) -> dict:
+            result = await fn(state)
+            return _sink(state, result)
+
+        async_wrapper.__name__ = name
+        return async_wrapper
+
+    def sync_wrapper(state: dict) -> dict:
+        result = fn(state)
+        return _sink(state, result)
+
+    sync_wrapper.__name__ = name
+    return sync_wrapper
 
 
 def _guarded(fn, name: str):
@@ -93,16 +126,16 @@ def route_after_compaction(state: dict) -> list[str]:
 def build_graph() -> StateGraph:
     graph = StateGraph(HarnessState)
 
-    graph.add_node("scan_niches", scan_niches)
-    graph.add_node("build_taxonomy", build_taxonomy)
-    graph.add_node("select_next_node", select_next_node)
-    graph.add_node("keyword_search", _guarded(keyword_search, "keyword_search"))
-    graph.add_node("graph_walk", _guarded(graph_walk, "graph_walk"))
-    graph.add_node("hydrate_metadata", hydrate_metadata)
-    graph.add_node("score_signals", score_signals)
-    graph.add_node("check_saturation", check_saturation)
-    graph.add_node("compact_branch", compact_branch)
-    graph.add_node("synthesize", synthesize)
+    graph.add_node("scan_niches", _logged(scan_niches, "scan_niches"))
+    graph.add_node("build_taxonomy", _logged(build_taxonomy, "build_taxonomy"))
+    graph.add_node("select_next_node", _logged(select_next_node, "select_next_node"))
+    graph.add_node("keyword_search", _logged(_guarded(keyword_search, "keyword_search"), "keyword_search"))
+    graph.add_node("graph_walk", _logged(_guarded(graph_walk, "graph_walk"), "graph_walk"))
+    graph.add_node("hydrate_metadata", _logged(hydrate_metadata, "hydrate_metadata"))
+    graph.add_node("score_signals", _logged(score_signals, "score_signals"))
+    graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
+    graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
+    graph.add_node("synthesize", _logged(synthesize, "synthesize"))
 
     graph.add_edge(START, "scan_niches")
     graph.add_conditional_edges(

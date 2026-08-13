@@ -1,4 +1,4 @@
-# Omniframes — YouTube Niche-Research Harness
+# YouTube Niche-Research Harness
 ## Master Build Plan (v1)
 
 **Status:** Active — single source of truth as of 12 Aug 2026
@@ -51,6 +51,20 @@ Five source files fed this plan. Three superseded, three authoritative, one over
 8. `candidate_niches` source → human-supplied seed list (10-30 entries), config-driven.
 9. Three overlapping roadmaps → consolidated into §9.
 10. YouTube ToS exposure → flagged for pre-Phase 3.2 legal review; not a blocker for research-only use.
+
+### 0.3 Amendments after the v1 build
+
+- **Per-track discovery attribution (13 Aug 2026).** Building the console's
+  discovery-graph view exposed that `hydrate_metadata` stamped every channel
+  `discovery_method="keyword_and_graph_walk"`, so the store could not say which
+  track found a channel — making §1's "the graph-walk track demonstrably
+  surfaces at least one channel the keyword track missed" unverifiable from
+  stored data. Fixed: `keyword_channel_ids` / `graph_walk_channel_ids` in
+  HarnessState (union reducers), schema_version 4, and a real per-channel label
+  of keyword / graph_walk / both / unattributed. Pre-v4 checkpoints report
+  "unattributed" rather than being guessed.
+- **Web console (13 Aug 2026).** Added as a third interface alongside CLI and
+  MCP; see §11 and ADR-0004.
 
 ### 0.2 Architecture review (design-stage)
 
@@ -184,7 +198,7 @@ START → scan_niches → build_taxonomy → select_next_node → keyword_search
 | Bulk metadata | YouTube Data API v3 |
 | Structured store | Postgres, managed/shared |
 | Dedup | pgvector similarity |
-| LLM | DeepSeek V4-Pro/V4-Flash, Kimi K3/K2.6 |
+| LLM | DeepSeek V4-Pro/V4-Flash, Kimi K3/K2.6, both via OpenRouter (ADR-0005) |
 
 ### 8.4 Data model
 - `channels` — channel_id (PK), title, subscriber_count, description, first_seen_at, discovery_method
@@ -239,7 +253,7 @@ Goal: discipline layer exists so Phase 1 has guardrails from day one.
 - Five subagent templates written. DONE.
 - GitHub repo initialized with all guardrails. IN PROGRESS.
 - ADRs backfilled. DONE.
-- DeepSeek/Kimi API access confirmed. PENDING.
+- DeepSeek/Kimi API access confirmed. DONE — via OpenRouter, single key (ADR-0005), resolves ADR-0003's open access-path item.
 - Shared Postgres instance provisioned. PENDING.
 
 ### Phase 1 — Harness core build
@@ -296,7 +310,7 @@ Convert to Claude Code plugin only after Phase 1 produces ≥1 real architecture
 
 **Outputs:** final graded report (strong/moderate/weak), populated structured store (discovery_edges persists across runs), structured logs per node.
 
-**Interface:** MCP server (run_niche_scan, run_deep_research, query_store) + minimal CLI wrapper.
+**Interface:** MCP server (run_niche_scan, run_deep_research, query_store) + minimal CLI wrapper + a local web console (FastAPI read layer at `src/api/`, React SPA at `web/`). The console launches runs by spawning the CLI entrypoint, so there remains exactly one execution path — see ADR-0004.
 
 **Deployment:** local, human-invoked, from either engineer's laptop against shared Postgres. Not hosted/scheduled for v1.
 

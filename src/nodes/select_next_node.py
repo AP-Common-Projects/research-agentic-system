@@ -6,11 +6,28 @@ Priority: (1) proposed_new_nodes from compaction, (2) BFS order by depth ascendi
 
 from __future__ import annotations
 
+import time
+
+from src.state import NodeLog
+
 
 def select_next_node(state: dict) -> dict:
+    thread_id = state.get("thread_id", "")
+    start = time.monotonic()
     tree: dict[str, dict] = state.get("tree", {})
     next_action = state.get("next_action", "")
     active_node_id = state.get("active_node_id")
+
+    def _log(input_summary: dict) -> list[dict]:
+        return [
+            NodeLog(
+                node_name="select_next_node",
+                thread_id=thread_id,
+                input_summary=input_summary,
+                latency_ms=(time.monotonic() - start) * 1000,
+                cost_usd=0.0,
+            ).model_dump()
+        ]
 
     if (
         next_action == "expand_deeper"
@@ -18,7 +35,10 @@ def select_next_node(state: dict) -> dict:
         and active_node_id in tree
         and tree[active_node_id].get("status") == "active"
     ):
-        return {"active_node_id": active_node_id}
+        return {
+            "active_node_id": active_node_id,
+            "node_logs": _log({"decision": "continue_active", "node_id": active_node_id}),
+        }
 
     for node_id, node in tree.items():
         proposed = node.get("proposed_new_nodes", [])
@@ -48,6 +68,7 @@ def select_next_node(state: dict) -> dict:
                     return {
                         "tree": tree_updates,
                         "active_node_id": proposed_id,
+                        "node_logs": _log({"decision": "proposed_node", "node_id": proposed_id, "parent_id": node_id}),
                     }
 
     pending = [
@@ -64,9 +85,10 @@ def select_next_node(state: dict) -> dict:
         return {
             "tree": {next_id: updated},
             "active_node_id": next_id,
+            "node_logs": _log({"decision": "next_pending", "node_id": next_id, "pending_count": len(pending)}),
         }
 
-    return {"next_action": "all_done"}
+    return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}
 
 
 def proposed_id_hint(proposed: dict) -> str:

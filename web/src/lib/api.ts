@@ -1,0 +1,232 @@
+/** Typed client for the console API. Mirrors src/api/server.py. */
+
+const BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+
+export type RunStatus = 'running' | 'complete' | 'stopped' | 'pending';
+
+export interface Run {
+  run_id: string;
+  thread_id: string;
+  niches: string[];
+  pid: number | null;
+  started_at: string;
+  status: RunStatus;
+  last_node: string | null;
+  last_activity_at: string | null;
+  log_lines: number;
+  cost_usd: number;
+}
+
+export interface TreeNode {
+  id: string;
+  label: string;
+  depth: number;
+  parent_id: string | null;
+  children_ids: string[];
+  keywords: string[];
+  status: 'pending' | 'active' | 'saturated' | 'compacted';
+  saturated_at: string | null;
+  _kw_novelty_history?: number[];
+  _gw_novelty_history?: number[];
+}
+
+export type Grade = 'strong' | 'moderate' | 'weak';
+
+export interface GradedFinding {
+  claim: string;
+  grade: Grade;
+  pattern_type: string;
+  supporting_channel_ids: string[];
+  evidence: {
+    corroboration?: Grade;
+    consistency?: Grade;
+    recency?: Grade;
+    effect_size?: Grade;
+    max_outlier_score?: number;
+    [k: string]: unknown;
+  };
+}
+
+export interface FinalReport {
+  niche: string;
+  run_id: string;
+  generated_at: string;
+  summary: string;
+  findings: GradedFinding[];
+  cannot_determine: string[];
+  discovery_stats: Record<string, number | string>;
+}
+
+export interface ReportSummary {
+  run_id: string;
+  niche: string;
+  generated_at: string;
+  summary: string;
+  finding_count: number;
+  grade_counts: Record<Grade, number>;
+  cannot_determine_count: number;
+  discovery_stats: Record<string, number | string>;
+}
+
+export interface RunState {
+  selected_niche: string;
+  tree: Record<string, TreeNode>;
+  active_node_id: string | null;
+  budget_spent_usd: number;
+  novelty_rates: number[];
+  saturated_branches: string[];
+  errors: { node_name: string; error_type: string; message: string; timestamp: string }[];
+  final_report: FinalReport | null;
+  schema_version: number | null;
+  discovered_channel_count: number;
+  discovered_video_count: number;
+  keyword_channel_count: number;
+  graph_walk_channel_count: number;
+  graph_walk_exclusive_count: number;
+}
+
+export interface RunDetail {
+  run: Run;
+  state: RunState | null;
+  state_error: string | null;
+}
+
+export interface NodeLogEntry {
+  node_name: string;
+  thread_id: string;
+  timestamp: string;
+  input_summary: Record<string, unknown>;
+  llm_output: string | null;
+  latency_ms: number | null;
+  cost_usd: number | null;
+}
+
+export type DiscoveryMethod = 'graph_walk' | 'keyword' | 'both' | 'unattributed' | 'unhydrated';
+
+export interface GraphNode {
+  channel_id: string;
+  title: string | null;
+  subscriber_count: number | null;
+  discovery_method: DiscoveryMethod;
+  max_outlier_score: number;
+  video_count: number;
+}
+
+export interface GraphEdge {
+  source_channel_id: string;
+  target_channel_id: string;
+  edge_type: string;
+  discovered_at: string | null;
+}
+
+export interface Channel {
+  channel_id: string;
+  title: string | null;
+  subscriber_count: number | null;
+  description: string | null;
+  first_seen_at: string | null;
+  discovery_method: DiscoveryMethod;
+}
+
+export interface OutlierVideo {
+  video_id: string;
+  channel_id: string;
+  channel_title: string | null;
+  discovery_method: DiscoveryMethod;
+  title: string | null;
+  view_count: number | null;
+  like_count: number | null;
+  comment_count: number | null;
+  outlier_score: number | null;
+  published_at: string | null;
+}
+
+export interface StoreCounts {
+  channels: number;
+  videos: number;
+  discovery_edges: number;
+  by_discovery_method: { discovery_method: DiscoveryMethod; channel_count: number }[];
+}
+
+export interface Costs {
+  total_usd: number;
+  by_node: { node_name: string; calls: number; cost_usd: number; avg_latency_ms: number | null }[];
+  by_run: { run_id: string; niches: string[]; calls: number; cost_usd: number }[];
+}
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status message */
+    }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  health: () =>
+    get<{ status: string; store_reachable: boolean; store_error: string | null }>('/api/health'),
+
+  runs: () => get<Run[]>('/api/runs'),
+
+  run: (runId: string) => get<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`),
+
+  reports: () => get<ReportSummary[]>('/api/reports'),
+
+  logs: (runId: string, since = 0) =>
+    get<{ entries: NodeLogEntry[]; cursor: number }>(
+      `/api/runs/${encodeURIComponent(runId)}/logs?since=${since}`,
+    ),
+
+  counts: () => get<StoreCounts>('/api/store/counts'),
+
+  channels: (q: string, limit = 100) =>
+    get<Channel[]>(`/api/store/channels?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  outliers: (limit = 100) => get<OutlierVideo[]>(`/api/store/videos/outliers?limit=${limit}`),
+
+  graph: (channelId = '', limit = 400) =>
+    get<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+      `/api/store/graph?channel_id=${encodeURIComponent(channelId)}&limit=${limit}`,
+    ),
+
+  costs: () => get<Costs>('/api/costs'),
+
+  launchRun: async (niches: string[]): Promise<Run> => {
+    const res = await fetch(`${BASE}/api/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ niches }),
+    });
+    if (!res.ok) {
+      let detail = `Could not start the run (${res.status})`;
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === 'string') detail = body.detail;
+      } catch {
+        /* keep the status message */
+      }
+      throw new ApiError(detail, res.status);
+    }
+    return res.json();
+  },
+
+  eventsUrl: (runId: string, since: number) =>
+    `${BASE}/api/runs/${encodeURIComponent(runId)}/events?since=${since}`,
+};

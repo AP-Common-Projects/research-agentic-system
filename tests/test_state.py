@@ -138,6 +138,8 @@ class TestCreateInitialState:
         assert state["discovered_video_ids"] == []
         assert state["visited_channel_ids"] == set()
         assert state["expanded_channel_ids"] == set()
+        assert state["keyword_channel_ids"] == set()
+        assert state["graph_walk_channel_ids"] == set()
         assert state["branch_compactions"] == []
         assert state["novelty_rates"] == []
         assert state["budget_spent_usd"] == 0.0
@@ -145,7 +147,7 @@ class TestCreateInitialState:
         assert state["messages"] == []
         assert state["errors"] == []
         assert state["node_logs"] == []
-        assert state["schema_version"] == 3
+        assert state["schema_version"] == 4
         assert state["final_report"] is None
         assert state["keyword_search_done"] is False
         assert state["graph_walk_done"] is False
@@ -164,7 +166,7 @@ class TestMigrateState:
     def test_migrates_v0_to_current(self):
         state = {"schema_version": 0}
         result = migrate_state(state)
-        assert result["schema_version"] == 3
+        assert result["schema_version"] == 4
         assert result["run_id"] == ""
         assert result["thread_id"] == ""
         assert result["errors"] == []
@@ -180,7 +182,7 @@ class TestMigrateState:
     def test_migrates_v1_to_current(self):
         state = {"schema_version": 1, "run_id": "r1", "thread_id": "t1"}
         result = migrate_state(state)
-        assert result["schema_version"] == 3
+        assert result["schema_version"] == 4
         assert result["run_id"] == "r1"
         assert result["saturated_branches"] == []
         assert result["niche_scanner_evidence"] == {}
@@ -189,19 +191,39 @@ class TestMigrateState:
     def test_migrates_v2_to_current(self):
         state = {"schema_version": 2, "saturated_branches": ["n1"]}
         result = migrate_state(state)
-        assert result["schema_version"] == 3
+        assert result["schema_version"] == 4
         assert result["saturated_branches"] == ["n1"]
         assert result["hydrated_channel_ids"] == set()
 
+    def test_migrates_v3_adds_discovery_attribution(self):
+        state = {"schema_version": 3, "hydrated_channel_ids": {"UC1"}}
+        result = migrate_state(state)
+        assert result["schema_version"] == 4
+        assert result["hydrated_channel_ids"] == {"UC1"}
+        # Pre-v4 checkpoints cannot be retro-attributed — they must come back
+        # empty rather than guessing which track found a channel.
+        assert result["keyword_channel_ids"] == set()
+        assert result["graph_walk_channel_ids"] == set()
+
+    def test_migration_does_not_clobber_existing_attribution(self):
+        state = {
+            "schema_version": 4,
+            "keyword_channel_ids": {"UC_kw"},
+            "graph_walk_channel_ids": {"UC_gw"},
+        }
+        result = migrate_state(state)
+        assert result["keyword_channel_ids"] == {"UC_kw"}
+        assert result["graph_walk_channel_ids"] == {"UC_gw"}
+
     def test_already_current_no_change(self):
         state = {
-            "schema_version": 3,
+            "schema_version": 4,
             "run_id": "r2",
             "saturated_branches": ["n1"],
             "niche_scanner_evidence": {"x": 1},
         }
         result = migrate_state(state)
-        assert result["schema_version"] == 3
+        assert result["schema_version"] == 4
         assert result["saturated_branches"] == ["n1"]
         assert result["niche_scanner_evidence"] == {"x": 1}
 

@@ -7,6 +7,12 @@
 credentials.json
 **/secrets/
 
+# Frontend
+node_modules/
+web/dist/
+.agents/
+.claude/skills/
+
 # Python
 __pycache__/
 *.py[cod]
