@@ -83,7 +83,7 @@ async def _mcp_main() -> None:
     except ImportError:
         return
 
-    mcp = FastMCP("omniframes-harness")
+    mcp = FastMCP("niche-research-harness")
 
     @mcp.tool()
     def run_niche_scan_tool(candidate_niches: list[str]) -> dict:
