@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -19,7 +20,13 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 class PostgresConfig(BaseSettings):
     host: str = "localhost"
     port: int = 5432
-    database: str = "niche_harness"
+    # `POSTGRES_DB` is the conventional name and what .env/.env.example set,
+    # but env_prefix="POSTGRES_" would resolve this field as POSTGRES_DATABASE
+    # — so without the alias the setting is silently ignored and the field
+    # default wins. That default happens to match today, which is exactly what
+    # makes it dangerous: point .env at another database and writes still go
+    # to niche_harness.
+    database: str = Field(default="niche_harness", validation_alias="POSTGRES_DB")
     user: str = "niche_harness"
     password: str = ""
     sslmode: str = "require"
@@ -105,7 +112,7 @@ class OpenRouterConfig(BaseSettings):
 # was so the two are never confused.
 PROFILES: dict[str, dict[str, object]] = {
     "smoke": {
-        "max_rounds_per_branch": 2,
+        "max_rounds_per_branch": 4,
         "max_tree_depth": 1,
         "max_branches": 1,
         "keyword_queries_per_round": 4,
@@ -120,7 +127,7 @@ PROFILES: dict[str, dict[str, object]] = {
         "budget_limit_usd": 1.0,
     },
     "bounded": {
-        "max_rounds_per_branch": 3,
+        "max_rounds_per_branch": 4,
         "max_tree_depth": 2,
         "max_branches": 4,
         "keyword_queries_per_round": 6,
