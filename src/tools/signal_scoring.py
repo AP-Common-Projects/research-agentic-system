@@ -92,4 +92,58 @@ def _parse_timestamp(ts: str) -> datetime | None:
 
 
 def score_signals(state: dict) -> dict:
-    return {"next_action": "continue"}
+    from collections import defaultdict
+
+    from src.db.connection import get_connection, put_connection
+    from src.tools.dedup import fetch_videos_by_channels, persist_channel_signals
+    from src.state import ErrorRecord, NodeLog
+
+    channel_ids = state.get("discovered_channel_ids", [])
+    thread_id = state.get("thread_id", "")
+    errors: list[dict] = []
+
+    if not channel_ids:
+        return {"next_action": "continue"}
+
+    try:
+        conn = get_connection()
+        try:
+            videos = fetch_videos_by_channels(conn, channel_ids)
+            by_channel: dict[str, list[dict]] = defaultdict(list)
+            for v in videos:
+                by_channel[v.get("channel_id", "")].append(v)
+
+            for ch_id, vids in by_channel.items():
+                engagement = round(
+                    sum(compute_engagement_rate(v) for v in vids) / len(vids), 6
+                ) if vids else 0.0
+                signals = {
+                    "engagement_rate": engagement,
+                    "cadence": compute_cadence(vids),
+                    "velocity": compute_velocity(vids),
+                }
+                persist_channel_signals(conn, ch_id, signals)
+        finally:
+            put_connection(conn)
+    except Exception as exc:
+        errors.append(
+            ErrorRecord(
+                node_name="score_signals",
+                error_type=type(exc).__name__,
+                message=str(exc),
+                recoverable=False,
+            ).model_dump()
+        )
+
+    return {
+        "next_action": "continue",
+        "errors": errors,
+        "node_logs": [
+            NodeLog(
+                node_name="score_signals",
+                thread_id=thread_id,
+                input_summary={"channels_scored": len(channel_ids)},
+                cost_usd=0.0,
+            ).model_dump()
+        ],
+    }

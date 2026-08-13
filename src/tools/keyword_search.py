@@ -4,6 +4,9 @@ Frontier-equivalent: per-node `queries_run` tracks executed query terms.
 Each round: broaden_or_pivot() generates new queries, excluding already-run
 queries. Novelty rate = new_channels_found / total_channels_returned.
 
+Writes only its OWN fields to the tree node (queries_run, keyword novelty
+history, exhaustion flag) so the parallel graph_walk write isn't clobbered.
+
 Plan §0.2 item 3 required specifying this; the source material had it as
 "not yet specified" — we specify it here.
 """
@@ -65,13 +68,23 @@ async def keyword_search(state: dict) -> dict:
 
     keywords = node.get("keywords", [])
     queries_run = set(node.get("queries_run", []))
+    kw_history = list(node.get("_kw_novelty_history", []))
 
     previous_results: list[dict] = []
     new_queries = broaden_or_pivot(list(keywords), list(queries_run), previous_results)
 
     new_queries = [q for q in new_queries if q not in queries_run]
     if not new_queries:
-        return {"keyword_search_done": True}
+        kw_history.append(0.0)
+        return {
+            "tree": {
+                active_node_id: {
+                    "_kw_novelty_history": kw_history,
+                    "_kw_exhausted": True,
+                }
+            },
+            "keyword_search_done": True,
+        }
 
     client = BrightDataClient()
     all_channels: dict[str, dict] = {}
@@ -93,14 +106,18 @@ async def keyword_search(state: dict) -> dict:
 
     novelty = len(new_channels) / total_returned if total_returned > 0 else 0.0
 
-    updated_node = dict(node)
-    updated_node["queries_run"] = list(queries_run) + new_queries
-    updated_node["_last_keyword_novelty"] = novelty
-    updated_node["_last_keyword_search_at"] = datetime.now(timezone.utc).isoformat()
+    kw_history.append(round(novelty, 4))
 
     return {
         "discovered_channel_ids": new_channels,
-        "tree": {active_node_id: updated_node},
+        "tree": {
+            active_node_id: {
+                "queries_run": list(queries_run) + new_queries,
+                "_kw_novelty_history": kw_history,
+                "_kw_exhausted": False,
+                "_last_keyword_search_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
         "novelty_rates": [round(novelty, 4)],
         "keyword_search_done": True,
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import string
 from typing import Any
 
@@ -37,7 +38,7 @@ def persist_channel(conn: Any, channel: dict) -> None:
         INSERT INTO channels (channel_id, title, subscriber_count, description,
             first_seen_at, discovery_method, extra)
         VALUES (%(channel_id)s, %(title)s, %(subscriber_count)s, %(description)s,
-            %(first_seen_at)s, %(discovery_method)s, %(extra)s)
+            COALESCE(NULLIF(%(first_seen_at)s, ''), NOW()), %(discovery_method)s, %(extra)s)
         ON CONFLICT (channel_id) DO UPDATE SET
             title = EXCLUDED.title,
             subscriber_count = EXCLUDED.subscriber_count,
@@ -53,7 +54,7 @@ def persist_channel(conn: Any, channel: dict) -> None:
                 "title": channel.get("title", ""),
                 "subscriber_count": channel.get("subscriber_count", 0),
                 "description": channel.get("description", ""),
-                "first_seen_at": channel.get("first_seen_at", "now"),
+                "first_seen_at": channel.get("first_seen_at") or None,
                 "discovery_method": channel.get("discovery_method", "unknown"),
                 "extra": channel.get("extra", "{}"),
             },
@@ -71,7 +72,8 @@ def persist_video(conn: Any, video: dict) -> None:
         INSERT INTO videos (video_id, channel_id, title, view_count, like_count,
             comment_count, published_at, outlier_score, scraped_at, extra)
         VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(view_count)s, %(like_count)s,
-            %(comment_count)s, %(published_at)s, %(outlier_score)s, %(scraped_at)s, %(extra)s)
+            %(comment_count)s, NULLIF(%(published_at)s, ''), %(outlier_score)s,
+            COALESCE(NULLIF(%(scraped_at)s, ''), NOW()), %(extra)s)
         ON CONFLICT (video_id) DO UPDATE SET
             title = EXCLUDED.title,
             view_count = EXCLUDED.view_count,
@@ -92,9 +94,9 @@ def persist_video(conn: Any, video: dict) -> None:
                 "view_count": video.get("view_count", 0),
                 "like_count": video.get("like_count", 0),
                 "comment_count": video.get("comment_count", 0),
-                "published_at": video.get("published_at"),
+                "published_at": video.get("published_at") or None,
                 "outlier_score": video.get("outlier_score"),
-                "scraped_at": video.get("scraped_at", "now"),
+                "scraped_at": video.get("scraped_at") or None,
                 "extra": video.get("extra", "{}"),
             },
         )
@@ -121,8 +123,47 @@ def persist_edge(conn: Any, edge: dict) -> None:
                 "source": edge.get("source_channel_id", ""),
                 "target": edge.get("target_channel_id", ""),
                 "edge_type": edge.get("edge_type", "playlist"),
-                "discovered_at": edge.get("discovered_at", "now"),
+                "discovered_at": edge.get("discovered_at") or None,
                 "run_id": edge.get("run_id", ""),
+            },
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def fetch_videos_by_channels(conn: Any, channel_ids: list[str]) -> list[dict]:
+    if not channel_ids:
+        return []
+    cur = conn.cursor()
+    try:
+        placeholders = ", ".join(["%s"] * len(channel_ids))
+        cur.execute(
+            f"SELECT video_id, channel_id, title, view_count, like_count, comment_count, published_at, outlier_score FROM videos WHERE channel_id IN ({placeholders}) ORDER BY channel_id, published_at DESC NULLS LAST",
+            channel_ids,
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in rows]
+    finally:
+        cur.close()
+
+
+def persist_channel_signals(conn: Any, channel_id: str, signals: dict) -> None:
+    sql = """
+        UPDATE channels SET extra = extra || %(signals)s::jsonb
+        WHERE channel_id = %(channel_id)s
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            sql,
+            {
+                "channel_id": channel_id,
+                "signals": json.dumps(signals),
             },
         )
         conn.commit()

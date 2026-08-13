@@ -25,6 +25,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         run_id=run_id,
         thread_id=thread_id,
         checkpointer=checkpointer,
+        resume=resume_thread_id is not None,
     )
     close_pools()
     return final

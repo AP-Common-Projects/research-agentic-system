@@ -1,8 +1,12 @@
 """Frontier-based graph walk — the existential component.
 
-Each round expands ONLY the frontier (unexpanded_channel_ids), never the
-cumulative discovered_channel_ids set. This fixes Bug 2 — cumulative re-scan
-collapsing novelty signal.
+Each round expands ONLY the frontier (unexpanded channels minus already-expanded),
+never the cumulative discovered set. This fixes Bug 2 — cumulative re-scan
+collapsing the novelty signal.
+
+Writes only its OWN fields to the tree node (unexpanded_channel_ids, graph
+novelty history, exhaustion flag) so the parallel keyword_search write isn't
+clobbered — see the deep-merge reducer in state.py.
 
 Algorithm from plan §8.5.
 """
@@ -33,8 +37,19 @@ async def graph_walk(state: dict) -> dict:
         if c not in expanded and c not in frontier:
             frontier.append(c)
 
+    gw_history = list(node.get("_gw_novelty_history", []))
+
     if not frontier:
-        return {"graph_walk_done": True}
+        gw_history.append(0.0)
+        return {
+            "tree": {
+                active_node_id: {
+                    "_gw_novelty_history": gw_history,
+                    "_gw_exhausted": True,
+                }
+            },
+            "graph_walk_done": True,
+        }
 
     client = BrightDataClient()
     edges = client.crawl_channel_relationships(frontier)
@@ -54,16 +69,20 @@ async def graph_walk(state: dict) -> dict:
     new_visited = set(state.get("visited_channel_ids", set())) | frontier_set
     new_expanded = set(state.get("expanded_channel_ids", set())) | frontier_set
 
-    updated_node = dict(node)
-    updated_node["unexpanded_channel_ids"] = list(truly_new)
-    updated_node["_last_novelty"] = novelty
-    updated_node["_last_expanded_at"] = datetime.now(timezone.utc).isoformat()
+    gw_history.append(round(novelty, 4))
 
     return {
         "discovered_channel_ids": list(truly_new),
         "visited_channel_ids": new_visited,
         "expanded_channel_ids": new_expanded,
         "novelty_rates": [round(novelty, 4)],
-        "tree": {active_node_id: updated_node},
+        "tree": {
+            active_node_id: {
+                "unexpanded_channel_ids": list(truly_new),
+                "_gw_novelty_history": gw_history,
+                "_gw_exhausted": False,
+                "_last_expanded_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
         "graph_walk_done": True,
     }

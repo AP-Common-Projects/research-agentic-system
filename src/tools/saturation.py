@@ -2,11 +2,14 @@
 
 Three-way routing:
 - "expand_deeper" — novelty above threshold, continue
-- "saturated" — novelty below threshold for consecutive_window rounds
+- "saturated" — node has exhausted both discovery tracks
 - "budget_exhausted" — budget_spent >= budget_limit (circuit breaker)
 
-Budget is a circuit breaker ONLY. A run hitting the ceiling regularly
-means frontier logic is broken.
+Saturation is per-node, per-track. A node saturates when BOTH the keyword and
+graph-walk tracks have been below the novelty threshold for the consecutive
+window, or when both tracks report exhaustion (empty frontier / no new
+queries). Budget is a circuit breaker ONLY — a run hitting the ceiling
+regularly means frontier logic is broken.
 """
 
 from __future__ import annotations
@@ -26,13 +29,26 @@ def check_saturation(state: dict) -> dict:
     if budget_spent >= budget_limit:
         return _budget_exhausted(state)
 
-    novelty_rates = state.get("novelty_rates", [])
-    if len(novelty_rates) < window:
-        return {"next_action": "expand_deeper"}
+    tree = state.get("tree", {})
+    active_node_id = state.get("active_node_id")
+    node = tree.get(active_node_id) if active_node_id else None
 
-    recent = novelty_rates[-window:]
-    if all(r < threshold for r in recent):
+    if node is None:
+        return {"next_action": "saturated"}
+
+    kw_history = list(node.get("_kw_novelty_history", []))
+    gw_history = list(node.get("_gw_novelty_history", []))
+    kw_exhausted = bool(node.get("_kw_exhausted", False))
+    gw_exhausted = bool(node.get("_gw_exhausted", False))
+
+    if kw_exhausted and gw_exhausted:
         return _mark_saturated(state)
+
+    if len(kw_history) >= window and len(gw_history) >= window:
+        kw_low = all(r < threshold for r in kw_history[-window:])
+        gw_low = all(r < threshold for r in gw_history[-window:])
+        if kw_low and gw_low:
+            return _mark_saturated(state)
 
     return {"next_action": "expand_deeper"}
 
@@ -44,10 +60,10 @@ def _mark_saturated(state: dict) -> dict:
 
     tree_update: dict[str, dict] = {}
     if active_node_id and active_node_id in tree:
-        node = dict(tree[active_node_id])
-        node["status"] = "saturated"
-        node["saturated_at"] = now
-        tree_update[active_node_id] = node
+        tree_update[active_node_id] = {
+            "status": "saturated",
+            "saturated_at": now,
+        }
 
     saturated_branches = list(state.get("saturated_branches", []))
     if active_node_id and active_node_id not in saturated_branches:
@@ -67,10 +83,10 @@ def _budget_exhausted(state: dict) -> dict:
 
     for node_id, node in tree.items():
         if node.get("status") in ("active", "pending"):
-            updated = dict(node)
-            updated["status"] = "saturated"
-            updated["saturated_at"] = now
-            tree_update[node_id] = updated
+            tree_update[node_id] = {
+                "status": "saturated",
+                "saturated_at": now,
+            }
 
     return {
         "next_action": "budget_exhausted",

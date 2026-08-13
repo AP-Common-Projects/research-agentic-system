@@ -305,7 +305,8 @@ class TestGraphWalkFrontier:
             result = await graph_walk(state)
 
         assert "discovered_channel_ids" not in result
-        assert result == {"graph_walk_done": True}
+        assert result["graph_walk_done"] is True
+        assert result["tree"]["node1"]["_gw_exhausted"] is True
         mock_client.crawl_channel_relationships.assert_not_called()
 
     @pytest.mark.asyncio
@@ -360,7 +361,8 @@ class TestGraphWalkFrontier:
             "novelty_rates": [],
         }
         result = await graph_walk(state)
-        assert result == {"graph_walk_done": True}
+        assert result["graph_walk_done"] is True
+        assert result["tree"]["node1"]["_gw_exhausted"] is True
 
 
 # ============================================================================
@@ -500,9 +502,12 @@ class TestCheckSaturation:
 
     def test_expand_deeper_when_high_novelty(self):
         state = {
-            "tree": {"node1": {"id": "node1", "status": "active"}},
+            "tree": {"node1": {
+                "id": "node1", "status": "active",
+                "_kw_novelty_history": [0.5, 0.4, 0.3],
+                "_gw_novelty_history": [0.5, 0.4, 0.3],
+            }},
             "active_node_id": "node1",
-            "novelty_rates": [0.5, 0.4, 0.3],
             "budget_spent_usd": 1.0,
             "saturated_branches": [],
         }
@@ -511,9 +516,12 @@ class TestCheckSaturation:
 
     def test_saturated_after_consecutive_low_novelty(self):
         state = {
-            "tree": {"node1": {"id": "node1", "status": "active"}},
+            "tree": {"node1": {
+                "id": "node1", "status": "active",
+                "_kw_novelty_history": [0.01, 0.02, 0.03],
+                "_gw_novelty_history": [0.01, 0.02, 0.03],
+            }},
             "active_node_id": "node1",
-            "novelty_rates": [0.01, 0.02, 0.03],
             "budget_spent_usd": 1.0,
             "saturated_branches": [],
         }
@@ -524,14 +532,33 @@ class TestCheckSaturation:
 
     def test_not_saturated_with_insufficient_rounds(self):
         state = {
-            "tree": {"node1": {"id": "node1", "status": "active"}},
+            "tree": {"node1": {
+                "id": "node1", "status": "active",
+                "_kw_novelty_history": [0.01, 0.02],
+                "_gw_novelty_history": [0.01, 0.02],
+            }},
             "active_node_id": "node1",
-            "novelty_rates": [0.01, 0.02],
             "budget_spent_usd": 1.0,
             "saturated_branches": [],
         }
         result = check_saturation(state)
         assert result["next_action"] == "expand_deeper"
+
+    def test_saturated_when_both_tracks_exhausted(self):
+        state = {
+            "tree": {"node1": {
+                "id": "node1", "status": "active",
+                "_kw_novelty_history": [0.5],
+                "_gw_novelty_history": [0.5],
+                "_kw_exhausted": True,
+                "_gw_exhausted": True,
+            }},
+            "active_node_id": "node1",
+            "budget_spent_usd": 1.0,
+            "saturated_branches": [],
+        }
+        result = check_saturation(state)
+        assert result["next_action"] == "saturated"
 
     def test_budget_exhausted_marks_all_active_saturated(self):
         state = {
@@ -541,7 +568,6 @@ class TestCheckSaturation:
                 "node3": {"id": "node3", "status": "saturated"},
             },
             "active_node_id": "node1",
-            "novelty_rates": [0.5, 0.4, 0.3],
             "budget_spent_usd": 10.0,
             "saturated_branches": [],
         }
@@ -555,7 +581,6 @@ class TestCheckSaturation:
         state = {
             "tree": {"node1": {"id": "node1", "status": "active"}},
             "active_node_id": "node1",
-            "novelty_rates": [0.5, 0.4, 0.3],
             "budget_spent_usd": 11.0,
             "saturated_branches": [],
         }
@@ -564,9 +589,12 @@ class TestCheckSaturation:
 
     def test_one_low_round_breaks_consecutive(self):
         state = {
-            "tree": {"node1": {"id": "node1", "status": "active"}},
+            "tree": {"node1": {
+                "id": "node1", "status": "active",
+                "_kw_novelty_history": [0.01, 0.4, 0.3, 0.03],
+                "_gw_novelty_history": [0.01, 0.4, 0.3, 0.03],
+            }},
             "active_node_id": "node1",
-            "novelty_rates": [0.01, 0.4, 0.3, 0.03],
             "budget_spent_usd": 1.0,
             "saturated_branches": [],
         }

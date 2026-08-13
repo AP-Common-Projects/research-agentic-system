@@ -145,18 +145,29 @@ async def run_pipeline(
     run_id: str,
     thread_id: str,
     checkpointer=None,
-    budget_limit_usd: float | None = None,
+    resume: bool = False,
     state_overrides: dict | None = None,
 ) -> dict:
-    """Run the full pipeline end-to-end. Returns the final state dict."""
-    initial = create_initial_state(run_id, thread_id, candidate_niches)
-    if budget_limit_usd is not None:
-        initial["budget_spent_usd"] = 0.0
-    if state_overrides:
-        initial.update(state_overrides)
+    """Run the full pipeline end-to-end. Returns the final state dict.
 
+    With resume=True and a checkpointer, loads the checkpointed state for
+    thread_id (migrating it first) and continues from where it left off,
+    instead of overwriting checkpointed state with a fresh initial state.
+    """
     config = {"configurable": {"thread_id": thread_id}}
     app = compile_graph(checkpointer=checkpointer)
+
+    if resume and checkpointer is not None:
+        snapshot = app.get_state(config)
+        if snapshot.values:
+            migrated = migrate_state(dict(snapshot.values))
+            app.update_state(config, migrated)
+            final = await app.ainvoke(None, config=config)
+            return migrate_state(final)
+
+    initial = create_initial_state(run_id, thread_id, candidate_niches)
+    if state_overrides:
+        initial.update(state_overrides)
 
     final = await app.ainvoke(initial, config=config)
     return migrate_state(final)

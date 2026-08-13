@@ -41,17 +41,22 @@ def _merge_tree_dict(
     existing: dict[str, TreeNode],
     new: dict[str, TreeNode],
 ) -> dict[str, TreeNode]:
-    """Shallow merge for tree nodes — last-write wins per key (node ID).
+    """Deep per-field merge for tree nodes.
 
-    Rationale: different branches update different tree nodes; overlapping
-    updates to the same node are semantically a conflict that should be
-    resolved at the node level, but in practice each node is only updated
-    by one branch's expansion path. If a conflict does occur, later write
-    wins with this reducer — the architecture review expects us to detect
-    and flag this at test time, not to silently accept it.
+    keyword_search and graph_walk both write to the SAME node_id in the same
+    fan-out step, but update disjoint fields (keyword: queries_run / novelty;
+    graph walk: unexpanded_channel_ids / novelty). A last-write-wins merge
+    silently drops one branch's fields — this is the missing-reducer bug class.
+    Per-field merge keeps both, with the later write winning only on overlap.
     """
     merged = dict(existing)
-    merged.update(new)
+    for node_id, new_node in new.items():
+        if node_id in merged:
+            combined = dict(merged[node_id])
+            combined.update(new_node)
+            merged[node_id] = combined
+        else:
+            merged[node_id] = dict(new_node)
     return merged
 
 
@@ -173,6 +178,7 @@ class HarnessState(TypedDict, total=False):
     discovered_video_ids: Annotated[list[str], _merge_discovered_videos]
     visited_channel_ids: Annotated[set[str], _merge_set_union]
     expanded_channel_ids: Annotated[set[str], _merge_set_union]
+    hydrated_channel_ids: Annotated[set[str], _merge_set_union]
 
     branch_compactions: Annotated[list[dict], lambda a, b: a + b]
 
@@ -215,6 +221,7 @@ def create_initial_state(
         "discovered_video_ids": [],
         "visited_channel_ids": set(),
         "expanded_channel_ids": set(),
+        "hydrated_channel_ids": set(),
         "branch_compactions": [],
         "novelty_rates": [],
         "saturated_branches": [],
@@ -223,7 +230,7 @@ def create_initial_state(
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 1,
+        "schema_version": 3,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -254,6 +261,10 @@ def migrate_state(state: dict) -> dict:
         state.setdefault("saturated_branches", [])
         state.setdefault("niche_scanner_evidence", {})
         version = 2
+
+    if version < 3:
+        state.setdefault("hydrated_channel_ids", set())
+        version = 3
 
     state["schema_version"] = version
     return state
