@@ -29,6 +29,12 @@ from src.nodes.select_next_node import select_next_node
 from src.nodes.taxonomy import SYSTEM_PROMPT, _enforce_branch_cap
 from src.tools.graph_walk import build_frontier, graph_walk
 from src.tools.keyword_search import keyword_search
+from src.tools.budget import (
+    clamp_frontier,
+    clamp_keyword_plan,
+    records_remaining,
+    tier_b_affordable,
+)
 from src.tools.saturation import check_saturation
 from tests.conftest import make_harness_config
 
@@ -675,3 +681,142 @@ class TestNoveltyIsAComparableProportion:
                 )
         # The proportion form has no such floor: 1 novel of 100 seen = 0.01.
         assert 1 / 100 < 0.05
+
+
+class TestPreSpendBudget:
+    """check_saturation's ceiling runs downstream of the spend, so it can only
+    stop the NEXT round. Measured: every smoke run stopped at 176 records
+    against a 150 ceiling. These gates ask before spending."""
+
+    def test_uncapped_budget_returns_none(self):
+        assert records_remaining({"brightdata_records_used": 10}, 0) is None
+
+    def test_targets_ninety_percent_not_the_hard_ceiling(self):
+        """Headroom for the round already in flight, so the hard ceiling stays
+        a backstop instead of the thing that routinely fires."""
+        assert records_remaining({"brightdata_records_used": 0}, 1000) == 900
+
+    def test_never_negative(self):
+        assert records_remaining({"brightdata_records_used": 5000}, 1000) == 0
+
+    def test_keyword_plan_drops_whole_queries_first(self):
+        queries = [f"q{i}" for i in range(6)]
+        kept, limit = clamp_keyword_plan(queries, 20, remaining=60)
+        assert kept == ["q0", "q1", "q2"] and limit == 20
+
+    def test_keyword_plan_narrows_when_one_query_is_unaffordable(self):
+        kept, limit = clamp_keyword_plan(["q0", "q1"], 20, remaining=7)
+        assert kept == ["q0"] and limit == 7
+
+    def test_keyword_plan_stops_at_zero(self):
+        assert clamp_keyword_plan(["q"], 20, remaining=0)[0] == []
+
+    def test_frontier_clamped_to_remaining(self):
+        assert clamp_frontier([f"c{i}" for i in range(10)], remaining=3) == ["c0", "c1", "c2"]
+
+    def test_tier_b_costs_are_priced_before_escalating(self):
+        """3 videos x (1 + 10 comments) = 33 records per channel."""
+        barren = [f"c{i}" for i in range(10)]
+        assert tier_b_affordable(barren, 3, 10, remaining=100) == ["c0", "c1", "c2"]
+        assert tier_b_affordable(barren, 3, 10, remaining=32) == []
+        assert tier_b_affordable(barren, 3, 10, remaining=None) == barren
+
+    @pytest.mark.asyncio
+    async def test_keyword_refuses_to_spend_past_the_ceiling(self):
+        state = {
+            "tree": {"n1": {"id": "n1", "keywords": ["finance"], "queries_run": []}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "brightdata_records_used": 1000,
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.keyword_search.BrightDataClient") as mock_bd, \
+             patch("src.tools.keyword_search.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(brightdata_record_budget=150)
+            result = await keyword_search(state)
+
+        mock_bd.assert_not_called()
+        assert "budget" in result["node_logs"][0]["input_summary"]["reason"]
+
+
+class TestPaidCallFailureIsCharged:
+    """A trigger that succeeds server-side and then fails on poll is billing.
+    Letting the exception escape hands the node to _guarded, which returns
+    neither the spend nor the 'already done' marker — so the next round
+    reissues the identical paid job."""
+
+    @pytest.mark.asyncio
+    async def test_keyword_failure_charges_and_marks_queries_consumed(self):
+        state = {
+            "tree": {"n1": {"id": "n1", "keywords": ["finance"], "queries_run": []}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "brightdata_records_used": 0,
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.keyword_search.BrightDataClient") as mock_bd, \
+             patch("src.tools.keyword_search.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                keyword_queries_per_round=2, keyword_results_per_query=10,
+                brightdata_cost_per_record_usd=0.0015,
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.discover_channels_by_keyword = AsyncMock(
+                side_effect=RuntimeError("snapshot still running after 900s")
+            )
+            result = await keyword_search(state)
+
+        # Round one issues only the bare keyword (broaden_or_pivot adds
+        # qualifiers from round two), so worst case is 1 query x limit 10.
+        assert result["brightdata_records_used"] == 10, "worst case must be charged"
+        assert result["budget_spent_usd"] == pytest.approx(10 * 0.0015)
+        assert result["tree"]["n1"]["queries_run"], "queries must not be reissued"
+        assert any(e["node_name"] == "keyword_search" for e in result["errors"])
+
+    @pytest.mark.asyncio
+    async def test_tier_a_failure_charges_and_marks_frontier_expanded(self, no_edge_store):
+        state = {
+            "run_id": "r",
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": [f"{YT}@a", f"{YT}@b"],
+                            "_gw_refs": {}}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "expanded_channel_refs": set(),
+            "brightdata_records_used": 0,
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config(
+                brightdata_cost_per_record_usd=0.0015
+            )
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(side_effect=RuntimeError("poll timeout"))
+            result = await graph_walk(state)
+
+        assert result["brightdata_records_used"] == 2
+        assert result["expanded_channel_refs"] == {f"{YT}@a", f"{YT}@b"}, (
+            "must not rebuild and re-buy the identical frontier next round"
+        )
+        assert any(e["node_name"] == "graph_walk" for e in result["errors"])
+
+
+class TestNoveltyPathIsReachable:
+    """check_saturation tests the round cap BEFORE the novelty window, and
+    history length equals round number — so novelty is unreachable unless
+    max_rounds_per_branch exceeds saturation_consecutive_window. Before this
+    was fixed, 100% of runs in every capped profile stopped on a governor."""
+
+    def test_every_profile_can_reach_novelty_saturation(self):
+        window = 3
+        for name, preset in PROFILES.items():
+            rounds = preset["max_rounds_per_branch"]
+            assert rounds == 0 or rounds > window, (
+                f"{name}: max_rounds_per_branch={rounds} <= window={window}, "
+                "so novelty_below_threshold can never fire"
+            )

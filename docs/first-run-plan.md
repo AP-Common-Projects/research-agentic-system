@@ -11,9 +11,63 @@ read documentation.
 
 ---
 
-## Status — rungs 00–03 complete (2026-08-14)
+## Status (2026-08-14)
 
-Implemented and verified. Test suite: **343 passing** across 13 files.
+| Rung | Gate | State |
+|---|---|---|
+| 00 Environment | suite green | **CHECKED** — 386 passing, 14 files |
+| 01 Client rewrite | mocked tests on recorded fixtures | **CHECKED** — `production-auditor` ran; both HIGH findings fixed |
+| 02 Governors | caps proven + six-point review passes | **CHECKED** — review returned PASS on all six; its one config blocker fixed |
+| 03 Replay | full run → graded report, stops on a reason | **CHECKED** — exceeded: stops on `novelty_below_threshold` |
+| 04 Live smoke | ≤150 records, report, a graph-walk-exclusive channel | **PASSED** — 95 records, $0.14, 7 exclusive channels |
+| 05 Finance bounded | — | not started |
+| 06 Legal bounded | — | not started |
+
+Rung 03 now clears its gate by more than it was written to require. The plan
+asked only that a run terminate on *a* stop reason rather than an exception;
+with the round cap lifted, both branches terminated on
+`novelty_below_threshold` — the project's actual stated stop condition, working
+for the first time:
+
+```
+root                        1.0 → 0.0 → 0.0 → 0.0  → saturated: novelty_below_threshold
+personal-finance-budgeting  0.66 → 0.0 → 0.0 → 0.0 → saturated: novelty_below_threshold
+```
+
+### Honest residual on "checked"
+
+Two subagent passes ran and their findings are fixed, but **neither reviewer has
+seen the fixes made in response to its own final report**. Specifically:
+
+- The pre-spend budget layer (`src/tools/budget.py`) and the paid-call failure
+  guards were written after the production audit and are verified by their own
+  tests and by me — not by an independent pass.
+- `harness-eval-runner` never ran; its deliverable (the fixture/replay layer)
+  was built directly.
+- The reviewer asked for a *load-time* assertion on
+  `max_rounds_per_branch > saturation_consecutive_window`; what exists is a
+  test. That catches a regression in CI, not at runtime.
+
+This is the same shape as the bug that survived a green suite for the whole
+project (mocked cursors cannot type-check SQL), so it is recorded rather than
+waved through. It is a judgement that the remaining risk is small and bounded,
+not a claim that the risk is zero.
+
+### Deliberately not done, from the production audit
+
+- **structlog is never configured**, so `brightdata_triggered` /
+  `brightdata_collected` — the only place `snapshot_id` appears — render to
+  stdout and vanish. There is no durable handle for reconciling against the
+  vendor's bill. The JSONL sink carries counts but not snapshot ids.
+- `BRIGHTDATA_MODE` defaults to `live`. For a per-record-billed API on an
+  already-overrun account, `replay` is the fail-safe default.
+- The concurrency semaphore is per-instance and a fresh client is built every
+  round, so no global limit exists. Harmless at current fan-out, but it does
+  not do what it appears to.
+
+---
+
+Earlier status text, kept for the record: implemented and verified, 343 passing.
 
 The replay rung paid for itself immediately. Six bugs were found by running the
 whole graph on recorded data, and **five of them would have burned live records

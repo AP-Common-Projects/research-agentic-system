@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.tools.bright_data import BrightDataClient
-from src.state import NodeLog
+from src.tools.budget import clamp_keyword_plan, records_remaining
+from src.state import ErrorRecord, NodeLog
 
 
 def broaden_or_pivot(
@@ -114,10 +115,76 @@ async def keyword_search(state: dict) -> dict:
             ],
         }
 
-    client = BrightDataClient()
-    channels, records = await client.discover_channels_by_keyword(
-        new_queries, limit_per_input=cfg.keyword_results_per_query
+    # Ask before spending. check_saturation's ceiling only binds between
+    # rounds, so without this the round already in flight can carry the run
+    # past the budget — measured at 176 records against a 150 ceiling.
+    remaining = records_remaining(state, cfg.brightdata_record_budget)
+    new_queries, limit_per_input = clamp_keyword_plan(
+        new_queries, cfg.keyword_results_per_query, remaining
     )
+    if not new_queries:
+        return {
+            "keyword_search_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="keyword_search",
+                    thread_id=thread_id,
+                    input_summary={
+                        "node_id": active_node_id,
+                        "reason": "record budget exhausted",
+                        "records_remaining": remaining,
+                    },
+                    latency_ms=(time.monotonic() - start) * 1000,
+                    cost_usd=0.0,
+                ).model_dump()
+            ],
+        }
+
+    client = BrightDataClient()
+    try:
+        channels, records = await client.discover_channels_by_keyword(
+            new_queries, limit_per_input=limit_per_input
+        )
+    except Exception as exc:
+        # The job may well have been created and be billing right now — the
+        # trigger succeeding and the poll failing is the common shape. Record
+        # the worst-case spend and mark the queries consumed, because letting
+        # this escape hands the node to _guarded, which returns neither: the
+        # governors would not see the charge and the next round would reissue
+        # the identical paid job, up to max_rounds_per_branch times.
+        worst_case = len(new_queries) * max(1, limit_per_input)
+        return {
+            "brightdata_records_used": worst_case,
+            "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "tree": {
+                active_node_id: {
+                    "queries_run": list(queries_run) + new_queries,
+                    "_kw_novelty_history": kw_history + [0.0],
+                }
+            },
+            "errors": [
+                ErrorRecord(
+                    node_name="keyword_search",
+                    error_type=type(exc).__name__,
+                    message=f"discovery failed after trigger: {exc}",
+                    recoverable=True,
+                ).model_dump()
+            ],
+            "keyword_search_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="keyword_search",
+                    thread_id=thread_id,
+                    input_summary={
+                        "node_id": active_node_id,
+                        "reason": "discovery failed",
+                        "queries_charged": len(new_queries),
+                        "worst_case_records": worst_case,
+                    },
+                    latency_ms=(time.monotonic() - start) * 1000,
+                ).model_dump()
+            ],
+        }
     cost = round(records * cfg.brightdata_cost_per_record_usd, 8)
 
     all_channels: dict[str, dict] = {}

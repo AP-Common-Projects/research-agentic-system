@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.tools.bright_data import BrightDataClient, normalize_channel_ref
+from src.tools.budget import clamp_frontier, records_remaining, tier_b_affordable
 from src.state import ErrorRecord, NodeLog
 
 
@@ -145,11 +146,69 @@ async def graph_walk(state: dict) -> dict:
             ],
         }
 
+    # Ask before spending — check_saturation's ceiling only binds between
+    # rounds, so the round in flight can otherwise carry the run past budget.
+    remaining = records_remaining(state, cfg.brightdata_record_budget)
+    frontier = clamp_frontier(frontier, remaining)
+    if not frontier:
+        return {
+            "graph_walk_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="graph_walk",
+                    thread_id=thread_id,
+                    input_summary={
+                        "node_id": active_node_id,
+                        "reason": "record budget exhausted",
+                        "records_remaining": remaining,
+                    },
+                    latency_ms=(time.monotonic() - start) * 1000,
+                    cost_usd=0.0,
+                ).model_dump()
+            ],
+        }
+
     client = BrightDataClient()
     records = 0
 
     # --- Tier A: channel records, edges included ---------------------------
-    channels, used = await client.get_channels(frontier)
+    try:
+        channels, used = await client.get_channels(frontier)
+    except Exception as exc:
+        # Same reasoning as Tier B's guard below: the trigger may have
+        # succeeded and be billing while the poll failed. Charge the worst
+        # case and mark the frontier expanded, so the governors see the spend
+        # and the next round does not rebuild and re-buy the identical job.
+        worst_case = len(frontier)
+        return {
+            "brightdata_records_used": worst_case,
+            "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "expanded_channel_refs": set(frontier),
+            "tree": {
+                active_node_id: {"_gw_novelty_history": gw_history + [0.0]}
+            },
+            "errors": [
+                ErrorRecord(
+                    node_name="graph_walk",
+                    error_type=type(exc).__name__,
+                    message=f"tier A expansion failed after trigger: {exc}",
+                    recoverable=True,
+                ).model_dump()
+            ],
+            "graph_walk_done": True,
+            "node_logs": [
+                NodeLog(
+                    node_name="graph_walk",
+                    thread_id=thread_id,
+                    input_summary={
+                        "node_id": active_node_id,
+                        "reason": "tier A failed",
+                        "frontier_charged": worst_case,
+                    },
+                    latency_ms=(time.monotonic() - start) * 1000,
+                ).model_dump()
+            ],
+        }
     records += used
 
     found_refs: dict[str, int] = {}
@@ -203,6 +262,22 @@ async def graph_walk(state: dict) -> dict:
     # identical frontier and buy it again.
     tier_b_used = 0
     errors: list[dict] = []
+    # Tier B costs videos_per_channel * (1 + comments_per_video) records per
+    # channel — 33 at bounded settings against Tier A's 1, and it is the call
+    # that takes a round from tens of records to hundreds. It also switches on
+    # precisely when the walk is least productive: `barren` means "yielded no
+    # NEW refs", which as the neighbourhood gets mapped becomes most of the
+    # frontier. So it asks what is left before escalating, and escalates only
+    # as far as that allows.
+    barren = tier_b_affordable(
+        barren,
+        cfg.graph_walk_videos_per_channel,
+        cfg.graph_walk_comments_per_video,
+        records_remaining(
+            {"brightdata_records_used": state.get("brightdata_records_used", 0) + records},
+            cfg.brightdata_record_budget,
+        ),
+    )
     if cfg.graph_walk_escalate_to_comments and barren:
         try:
             videos, used = await client.get_channel_videos(
