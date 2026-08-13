@@ -116,18 +116,29 @@ def discovery_graph(channel_id: str = "", limit: int = 400) -> dict[str, Any]:
     if channel_id:
         edges = _fetch(
             """
-            SELECT source_channel_id, target_channel_id, edge_type, discovered_at
+            SELECT source_channel_id,
+                   COALESCE(target_channel_id, target_channel_ref) AS target_channel_id,
+                   edge_type, discovered_at
             FROM discovery_edges
-            WHERE source_channel_id = %s OR target_channel_id = %s
+            WHERE source_channel_id = %s
+               OR target_channel_id = %s
+               OR target_channel_ref = %s
             ORDER BY discovered_at DESC
             LIMIT %s
             """,
-            (channel_id, channel_id, limit),
+            (channel_id, channel_id, channel_id, limit),
         )
     else:
         edges = _fetch(
             """
-            SELECT source_channel_id, target_channel_id, edge_type, discovered_at
+            -- An edge exists as soon as the walk sees it, which is before the
+            -- target has been fetched and given a UC id. Falling back to the
+            -- ref keeps the target identifiable, and the placeholder-node pass
+            -- below renders it as an unhydrated frontier node rather than
+            -- dropping the edge or emitting a null.
+            SELECT source_channel_id,
+                   COALESCE(target_channel_id, target_channel_ref) AS target_channel_id,
+                   edge_type, discovered_at
             FROM discovery_edges
             ORDER BY discovered_at DESC
             LIMIT %s

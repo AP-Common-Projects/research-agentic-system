@@ -38,7 +38,8 @@ def persist_channel(conn: Any, channel: dict) -> None:
         INSERT INTO channels (channel_id, title, subscriber_count, description,
             first_seen_at, discovery_method, extra)
         VALUES (%(channel_id)s, %(title)s, %(subscriber_count)s, %(description)s,
-            COALESCE(NULLIF(%(first_seen_at)s, ''), NOW()), %(discovery_method)s, %(extra)s)
+            COALESCE(NULLIF(%(first_seen_at)s, '')::timestamptz, NOW()),
+            %(discovery_method)s, %(extra)s::jsonb)
         ON CONFLICT (channel_id) DO UPDATE SET
             title = EXCLUDED.title,
             subscriber_count = EXCLUDED.subscriber_count,
@@ -72,8 +73,8 @@ def persist_video(conn: Any, video: dict) -> None:
         INSERT INTO videos (video_id, channel_id, title, view_count, like_count,
             comment_count, published_at, outlier_score, scraped_at, extra)
         VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(view_count)s, %(like_count)s,
-            %(comment_count)s, NULLIF(%(published_at)s, ''), %(outlier_score)s,
-            COALESCE(NULLIF(%(scraped_at)s, ''), NOW()), %(extra)s)
+            %(comment_count)s, NULLIF(%(published_at)s, '')::timestamptz, %(outlier_score)s,
+            COALESCE(NULLIF(%(scraped_at)s, '')::timestamptz, NOW()), %(extra)s::jsonb)
         ON CONFLICT (video_id) DO UPDATE SET
             title = EXCLUDED.title,
             view_count = EXCLUDED.view_count,
@@ -109,11 +110,22 @@ def persist_video(conn: Any, video: dict) -> None:
 
 
 def persist_edge(conn: Any, edge: dict) -> None:
+    """Upsert one discovery edge.
+
+    Keyed on the target *ref* rather than its UC id, because that is the only
+    identifier present at discovery time. When a later round expands that ref
+    and learns its id, the ON CONFLICT branch fills it in — so re-walking a
+    channel enriches the edge instead of duplicating it, and stays a genuine
+    no-op once there is nothing left to learn.
+    """
     sql = """
-        INSERT INTO discovery_edges (source_channel_id, target_channel_id, edge_type,
-            discovered_at, run_id)
-        VALUES (%(source)s, %(target)s, %(edge_type)s, %(discovered_at)s, %(run_id)s)
-        ON CONFLICT (source_channel_id, target_channel_id, edge_type) DO NOTHING
+        INSERT INTO discovery_edges (source_channel_id, target_channel_id,
+            target_channel_ref, edge_type, discovered_at, run_id)
+        VALUES (%(source)s, %(target)s, %(target_ref)s, %(edge_type)s,
+                COALESCE(%(discovered_at)s, NOW()), %(run_id)s)
+        ON CONFLICT (source_channel_id, target_channel_ref, edge_type)
+        DO UPDATE SET target_channel_id =
+            COALESCE(discovery_edges.target_channel_id, EXCLUDED.target_channel_id)
     """
     cur = conn.cursor()
     try:
@@ -121,8 +133,9 @@ def persist_edge(conn: Any, edge: dict) -> None:
             sql,
             {
                 "source": edge.get("source_channel_id", ""),
-                "target": edge.get("target_channel_id", ""),
-                "edge_type": edge.get("edge_type", "playlist"),
+                "target": edge.get("target_channel_id") or None,
+                "target_ref": edge.get("target_channel_ref", ""),
+                "edge_type": edge.get("edge_type", "featured_channel"),
                 "discovered_at": edge.get("discovered_at") or None,
                 "run_id": edge.get("run_id", ""),
             },
@@ -133,6 +146,24 @@ def persist_edge(conn: Any, edge: dict) -> None:
         raise
     finally:
         cur.close()
+
+
+def persist_edges(conn: Any, edges: list[dict]) -> int:
+    """Persist a batch, skipping individual failures.
+
+    One malformed edge must not cost the whole round's graph data — the count
+    returned lets the caller report how many actually landed.
+    """
+    written = 0
+    for edge in edges:
+        if not edge.get("source_channel_id") or not edge.get("target_channel_ref"):
+            continue
+        try:
+            persist_edge(conn, edge)
+            written += 1
+        except Exception:
+            continue
+    return written
 
 
 def fetch_videos_by_channels(conn: Any, channel_ids: list[str]) -> list[dict]:

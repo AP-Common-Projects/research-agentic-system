@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 DDL = """
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -36,14 +40,23 @@ CREATE TABLE IF NOT EXISTS category_tags (
     UNIQUE (entity_type, entity_id, tree_node_id)
 );
 
+-- Graph traversal is keyed on channel *refs* (handle/URL): featured_channels
+-- edges name their target by URL and handle but carry no UC id, and an id only
+-- exists once that channel has itself been fetched. So target_channel_ref is
+-- the always-present identity and target_channel_id is filled in later, if and
+-- when the walk resolves it. Uniqueness therefore keys on the ref.
 CREATE TABLE IF NOT EXISTS discovery_edges (
     id SERIAL PRIMARY KEY,
     source_channel_id TEXT NOT NULL,
-    target_channel_id TEXT NOT NULL,
-    edge_type TEXT NOT NULL CHECK (edge_type IN ('playlist', 'collaboration', 'comment_mention', 'recommendation')),
+    target_channel_id TEXT,
+    target_channel_ref TEXT NOT NULL,
+    edge_type TEXT NOT NULL CHECK (edge_type IN (
+        'featured_channel', 'recommendation', 'comment_author',
+        'playlist', 'collaboration', 'comment_mention'
+    )),
     discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     run_id TEXT NOT NULL,
-    UNIQUE (source_channel_id, target_channel_id, edge_type)
+    UNIQUE (source_channel_id, target_channel_ref, edge_type)
 );
 
 CREATE TABLE IF NOT EXISTS analysis_results (
@@ -62,6 +75,40 @@ CREATE INDEX IF NOT EXISTS idx_category_tags_tree_node ON category_tags(tree_nod
 """
 
 
+# Applied after DDL, in order, every time. `CREATE TABLE IF NOT EXISTS` does
+# nothing to a table that already exists, so a database created before the
+# discovery_edges reshape would keep the old NOT NULL target_channel_id, the
+# old UNIQUE key and the old CHECK — and every featured_channel edge would be
+# rejected at insert time. Each statement here is written to be safe to run on
+# an already-migrated database.
+MIGRATIONS: list[str] = [
+    "ALTER TABLE discovery_edges ADD COLUMN IF NOT EXISTS target_channel_ref TEXT",
+    "ALTER TABLE discovery_edges ALTER COLUMN target_channel_id DROP NOT NULL",
+    # Backfill refs for any rows written under the old id-only shape, so the
+    # NOT NULL and UNIQUE below can be applied without dropping data.
+    """UPDATE discovery_edges
+          SET target_channel_ref = 'https://www.youtube.com/channel/' || target_channel_id
+        WHERE target_channel_ref IS NULL AND target_channel_id IS NOT NULL""",
+    # Only rows that carry neither identifier. Guarding on target_channel_id
+    # matters because each statement commits independently: if the backfill
+    # above failed and rolled back, an unguarded `WHERE target_channel_ref IS
+    # NULL` would delete every pre-existing edge in the table.
+    """DELETE FROM discovery_edges
+        WHERE target_channel_ref IS NULL AND target_channel_id IS NULL""",
+    "ALTER TABLE discovery_edges ALTER COLUMN target_channel_ref SET NOT NULL",
+    "ALTER TABLE discovery_edges DROP CONSTRAINT IF EXISTS discovery_edges_edge_type_check",
+    """ALTER TABLE discovery_edges ADD CONSTRAINT discovery_edges_edge_type_check
+       CHECK (edge_type IN ('featured_channel', 'recommendation', 'comment_author',
+                            'playlist', 'collaboration', 'comment_mention'))""",
+    """ALTER TABLE discovery_edges
+       DROP CONSTRAINT IF EXISTS discovery_edges_source_channel_id_target_channel_id_edge_ty_key""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS discovery_edges_source_ref_type_key
+       ON discovery_edges (source_channel_id, target_channel_ref, edge_type)""",
+    """CREATE INDEX IF NOT EXISTS idx_discovery_edges_run
+       ON discovery_edges (run_id)""",
+]
+
+
 def create_schema(conn) -> None:
     cur = conn.cursor()
     try:
@@ -72,6 +119,39 @@ def create_schema(conn) -> None:
         raise
     finally:
         cur.close()
+    apply_migrations(conn)
+
+
+def apply_migrations(conn) -> None:
+    """Run each migration independently so one failure can't strand the rest.
+
+    Committing per statement rather than as one transaction matters here: these
+    run on every startup, and a statement that is already satisfied should not
+    roll back the ones after it.
+    """
+    for statement in MIGRATIONS:
+        cur = conn.cursor()
+        try:
+            cur.execute(statement)
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            # Log, never swallow silently. Most failures here are the intended
+            # "already applied" no-op, but a genuinely failed
+            # CREATE UNIQUE INDEX leaves a database where every persist_edge
+            # ON CONFLICT raises "no unique or exclusion constraint matching" —
+            # and persist_edges swallows per-edge failures too, so the visible
+            # result is an empty discovery_edges table and a green run.
+            # discovery_edges is the sole evidence for this project's core
+            # claim, so that failure has to be findable.
+            logger.warning(
+                "schema_migration_skipped",
+                statement=" ".join(statement.split())[:120],
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+        finally:
+            cur.close()
 
 
 def ensure_schema() -> None:

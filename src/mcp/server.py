@@ -7,25 +7,36 @@ import json
 import uuid
 
 from src.graph import run_pipeline
-from src.db.connection import close_pools
+from src.db.connection import close_async_pool, close_pools
 from src.db.schema import ensure_schema
-from src.db.checkpointer import get_checkpointer
+from src.db.checkpointer import get_async_checkpointer
 from src.nodes.store import get_store
 
 
-def _run_niche_scan(candidate_niches: list[str]) -> dict:
+async def _pipeline(candidate_niches: list[str]) -> dict:
+    """Build the checkpointer inside the event loop and run the graph.
+
+    The saver has to be the async one: run_pipeline drives the graph with
+    `ainvoke`, and the synchronous PostgresSaver raises NotImplementedError on
+    the `aget_tuple` LangGraph calls before the first node executes.
+    """
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     thread_id = f"thread-{uuid.uuid4().hex[:12]}"
-    ensure_schema()
-    checkpointer = get_checkpointer()
-    final = asyncio.run(
-        run_pipeline(
+    checkpointer = await get_async_checkpointer()
+    try:
+        return await run_pipeline(
             candidate_niches=candidate_niches,
             run_id=run_id,
             thread_id=thread_id,
             checkpointer=checkpointer,
         )
-    )
+    finally:
+        await close_async_pool()
+
+
+def _run_niche_scan(candidate_niches: list[str]) -> dict:
+    ensure_schema()
+    final = asyncio.run(_pipeline(candidate_niches))
     close_pools()
     return final
 
@@ -42,18 +53,8 @@ def run_niche_scan(candidate_niches: list[str]) -> dict:
 
 def run_deep_research(niche: str) -> dict:
     """Run deep research on a single niche (bypasses the scanner)."""
-    run_id = f"run-{uuid.uuid4().hex[:12]}"
-    thread_id = f"thread-{uuid.uuid4().hex[:12]}"
     ensure_schema()
-    checkpointer = get_checkpointer()
-    final = asyncio.run(
-        run_pipeline(
-            candidate_niches=[niche],
-            run_id=run_id,
-            thread_id=thread_id,
-            checkpointer=checkpointer,
-        )
-    )
+    final = asyncio.run(_pipeline([niche]))
     close_pools()
     return {"final_report": final.get("final_report")}
 

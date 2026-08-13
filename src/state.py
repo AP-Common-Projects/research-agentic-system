@@ -37,6 +37,22 @@ def _merge_set_union(existing: set[str], new: set[str]) -> set[str]:
     return existing | new
 
 
+def _merge_unique_append(existing: list[str], new: list[str]) -> list[str]:
+    """Append-with-dedup, ordered.
+
+    A plain `a + b` reducer is only safe if every writer returns a *delta*. A
+    node that reads the accumulated list, appends to it, and returns the whole
+    thing doubles the list on every round — [X] + [X] = [X, X], then 4, 8, 16.
+    That is a real bug this project hit: it OOM-killed the end-to-end test once
+    the graph recursion limit was raised enough for the doubling to bite.
+
+    Writers should still return deltas, but making the reducer idempotent means
+    the failure mode is a no-op instead of exponential growth.
+    """
+    seen = set(existing)
+    return existing + [item for item in new if item not in seen and not seen.add(item)]
+
+
 def _merge_tree_dict(
     existing: dict[str, TreeNode],
     new: dict[str, TreeNode],
@@ -62,6 +78,30 @@ def _merge_tree_dict(
 
 def _accumulate_float(a: float, b: float) -> float:
     return a + b
+
+
+def _accumulate_int(a: int, b: int) -> int:
+    """Accumulating counter for consumed external resources.
+
+    These have to live in state rather than on the API client, because
+    hydrate_metadata and graph_walk construct a *fresh* client on every round —
+    an instance counter therefore resets to zero each round and a per-run
+    ceiling built on it can never fire.
+    """
+    return (a or 0) + (b or 0)
+
+
+def _merge_round_counts(existing: dict[str, int], new: dict[str, int]) -> dict[str, int]:
+    """Per-node round counter, max-wins.
+
+    Both discovery tracks report the round they just finished for the same
+    active node in the same superstep. Summing would double-count and halve the
+    effective round cap; max is the honest merge.
+    """
+    merged = dict(existing or {})
+    for node_id, count in (new or {}).items():
+        merged[node_id] = max(merged.get(node_id, 0), count)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +220,12 @@ class HarnessState(TypedDict, total=False):
     expanded_channel_ids: Annotated[set[str], _merge_set_union]
     hydrated_channel_ids: Annotated[set[str], _merge_set_union]
 
+    # Graph traversal is keyed on channel *refs* (handle/URL), not UC ids:
+    # featured_channels edges and taxonomy seeds both arrive as handles, and
+    # the UC id only exists once the channel record has been fetched. This is
+    # the real "already expanded" set the frontier subtracts.
+    expanded_channel_refs: Annotated[set[str], _merge_set_union]
+
     # Per-track discovery attribution. Kept as two independent sets rather than
     # one label per channel because a channel found by BOTH tracks must stay
     # recorded in both — collapsing to a single label loses the very comparison
@@ -192,8 +238,19 @@ class HarnessState(TypedDict, total=False):
     branch_compactions: Annotated[list[dict], lambda a, b: a + b]
 
     novelty_rates: Annotated[list[float], lambda a, b: a + b]
-    saturated_branches: Annotated[list[str], lambda a, b: a + b]
+    saturated_branches: Annotated[list[str], _merge_unique_append]
     budget_spent_usd: Annotated[float, _accumulate_float]
+
+    # Non-LLM spend. Until these existed, budget_spent_usd only ever saw LLM
+    # tokens — which are the *small* cost here — so the circuit breaker was
+    # blind to Bright Data records and YouTube quota, the two resources that
+    # can actually be exhausted.
+    brightdata_records_used: Annotated[int, _accumulate_int]
+    youtube_quota_used: Annotated[int, _accumulate_int]
+
+    # Round counter per tree node, so a branch that never saturates still
+    # terminates. See check_saturation's max_rounds_per_branch governor.
+    rounds_by_node: Annotated[dict[str, int], _merge_round_counts]
 
     next_action: str
 
@@ -230,6 +287,7 @@ def create_initial_state(
         "discovered_video_ids": [],
         "visited_channel_ids": set(),
         "expanded_channel_ids": set(),
+        "expanded_channel_refs": set(),
         "hydrated_channel_ids": set(),
         "keyword_channel_ids": set(),
         "graph_walk_channel_ids": set(),
@@ -237,11 +295,14 @@ def create_initial_state(
         "novelty_rates": [],
         "saturated_branches": [],
         "budget_spent_usd": 0.0,
+        "brightdata_records_used": 0,
+        "youtube_quota_used": 0,
+        "rounds_by_node": {},
         "next_action": "start",
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 4,
+        "schema_version": 5,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -285,6 +346,26 @@ def migrate_state(state: dict) -> dict:
         state.setdefault("keyword_channel_ids", set())
         state.setdefault("graph_walk_channel_ids", set())
         version = 4
+
+    if version < 5:
+        # Cost governors. Counters start at zero rather than being backfilled:
+        # a resumed pre-v5 run has already spent records we have no record of,
+        # so the honest position is that this run's budget starts now. The
+        # ceiling still binds going forward, which is what it is for.
+        state.setdefault("brightdata_records_used", 0)
+        state.setdefault("youtube_quota_used", 0)
+        state.setdefault("rounds_by_node", {})
+        # Ref-keyed traversal replaced id-keyed traversal. Pre-v5 checkpoints
+        # recorded expanded UC ids, which normalize cleanly to channel URLs —
+        # so this one CAN be migrated rather than dropped, and a resumed run
+        # will not re-expand and re-bill channels it already walked.
+        if "expanded_channel_refs" not in state:
+            state["expanded_channel_refs"] = {
+                f"https://www.youtube.com/channel/{cid}"
+                for cid in state.get("expanded_channel_ids", set())
+                if cid
+            }
+        version = 5
 
     state["schema_version"] = version
     return state

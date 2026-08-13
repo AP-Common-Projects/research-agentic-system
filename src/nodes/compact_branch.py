@@ -12,6 +12,7 @@ import re
 import time
 from typing import Any
 
+from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.nodes.store import get_store
 from src.state import BranchCompaction, NodeLog, ErrorRecord, ProposedNode
@@ -41,7 +42,32 @@ Respond with ONLY a JSON object with these exact keys:
 }"""
 
 
-def _build_prompt(node: dict, channels: list[dict], videos: list[dict]) -> str:
+def _build_prompt(
+    node: dict,
+    channels: list[dict],
+    videos: list[dict],
+    max_channels: int = 0,
+    max_videos: int = 0,
+) -> str:
+    """Serialise a branch for the compaction prompt.
+
+    Capped, because this writes one line per channel and one per video straight
+    into the request — an uncapped branch with a few hundred channels and their
+    videos produces a six-figure-token prompt. Rows are taken highest-signal
+    first (channels by subscribers, videos by outlier score) so the truncation
+    keeps what the analysis is actually about, and the true totals are still
+    stated at the end so the model is never misled about the sample size.
+    """
+    total_channels, total_videos = len(channels), len(videos)
+    if max_channels > 0 and len(channels) > max_channels:
+        channels = sorted(
+            channels, key=lambda c: c.get("subscriber_count", 0) or 0, reverse=True
+        )[:max_channels]
+    if max_videos > 0 and len(videos) > max_videos:
+        videos = sorted(
+            videos, key=lambda v: v.get("outlier_score", 0) or 0, reverse=True
+        )[:max_videos]
+
     lines = [
         f"Current taxonomy node: id={node['id']}, label={node['label']}, keywords={node.get('keywords', [])}",
         f"Depth: {node.get('depth')}, Schema version: {node.get('schema_version', 1)}",
@@ -63,7 +89,13 @@ def _build_prompt(node: dict, channels: list[dict], videos: list[dict]) -> str:
             f"outlier_score={v.get('outlier_score',0)}"
         )
     lines.append("")
-    lines.append(f"Total channels: {len(channels)}, Total videos: {len(videos)}")
+    if total_channels != len(channels) or total_videos != len(videos):
+        lines.append(
+            f"Showing {len(channels)} of {total_channels} channels and "
+            f"{len(videos)} of {total_videos} videos "
+            f"(highest subscribers / outlier scores first)."
+        )
+    lines.append(f"Total channels: {total_channels}, Total videos: {total_videos}")
     return "\n".join(lines)
 
 
@@ -95,8 +127,14 @@ async def compact_branch(state: dict) -> dict:
     node = tree[active_node_id]
     node_id = node["id"]
     node_label = node.get("label", "")
-    channel_ids = list(
-        set(node.get("seed_channel_ids", []) + node.get("unexpanded_channel_ids", []))
+
+    # The channels this branch actually resolved, recorded by each discovery
+    # track as it ran. `seed_channel_ids` cannot be used for this: taxonomy
+    # seeds are `@handle` strings, not UC ids, so looking the store up by them
+    # matches nothing — which is how a run could hydrate 22 channels and 646
+    # videos and still compact an empty branch.
+    channel_ids = sorted(
+        set(node.get("_kw_channel_ids") or []) | set(node.get("_gw_channel_ids") or [])
     )
 
     store = get_store()
@@ -104,7 +142,12 @@ async def compact_branch(state: dict) -> dict:
     channel_ids_found = [ch["channel_id"] for ch in channels]
     videos = await store.get_videos_for_channels(channel_ids_found)
 
-    prompt = _build_prompt(node, channels, videos)
+    cfg = get_config().harness
+    prompt = _build_prompt(
+        node, channels, videos,
+        max_channels=cfg.max_prompt_channels,
+        max_videos=cfg.max_prompt_videos,
+    )
 
     for attempt in range(2):
         try:

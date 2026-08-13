@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Optional
 
 import psycopg
-from psycopg_pool import ConnectionPool
+from psycopg_pool import AsyncConnectionPool, ConnectionPool
 
 from src.config import get_config
 
 _pool: Optional[ConnectionPool] = None
+_async_pool: Optional[AsyncConnectionPool] = None
 
 
 def get_pool() -> ConnectionPool:
@@ -46,6 +47,38 @@ def get_connection(timeout: float | None = None):
 
 def put_connection(conn):
     get_pool().putconn(conn)
+
+
+async def get_async_pool() -> AsyncConnectionPool:
+    """Async pool, for the async checkpointer.
+
+    The pipeline runs on `ainvoke`, so LangGraph calls the checkpointer's
+    `aget_tuple`/`aput` — which the synchronous PostgresSaver does not
+    implement. The async saver needs an async pool; the sync pool above stays
+    as it is for the store's own writes, which are synchronous.
+    """
+    global _async_pool
+    if _async_pool is None:
+        config = get_config()
+        pool = AsyncConnectionPool(
+            config.postgres.connection_string,
+            min_size=1,
+            max_size=10,
+            timeout=config.postgres.pool_timeout_seconds,
+            # Same reasoning as the sync pool: construction must not block, and
+            # the object must be memoized even if the first connect fails.
+            open=False,
+        )
+        await pool.open(wait=False)
+        _async_pool = pool
+    return _async_pool
+
+
+async def close_async_pool():
+    global _async_pool
+    if _async_pool is not None:
+        await _async_pool.close()
+        _async_pool = None
 
 
 def close_pools():

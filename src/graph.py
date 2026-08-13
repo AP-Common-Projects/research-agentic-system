@@ -69,18 +69,19 @@ def _guarded(fn, name: str):
         try:
             return await fn(state)
         except Exception as exc:
-            errors = list(state.get("errors", []))
-            errors.append(
-                {
-                    "node_name": name,
-                    "timestamp": "",
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                    "recoverable": False,
-                }
-            )
+            # A delta, not the accumulated list. `errors` is an appending
+            # channel: reading it, appending, and returning the whole thing
+            # doubles it every round.
             return {
-                "errors": errors,
+                "errors": [
+                    {
+                        "node_name": name,
+                        "timestamp": "",
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                        "recoverable": False,
+                    }
+                ],
                 f"{name}_done": True,
                 "node_logs": [
                     {
@@ -101,8 +102,24 @@ def route_after_scan(state: dict) -> list[str]:
     return [END]
 
 
+#: Terminal states. Once a run-level ceiling has tripped, the only legal
+#: destination is synthesis — see route_after_select.
+_TERMINAL_ACTIONS = {"all_done", "budget_exhausted"}
+
+
 def route_after_select(state: dict) -> list[str]:
-    if state.get("next_action") == "all_done":
+    """Dispatch the discovery fan-out, unless the run is finished or broke.
+
+    `budget_exhausted` has to be terminal here, not just at check_saturation.
+    The circuit breaker fires *downstream* of the spend: check_saturation trips
+    a ceiling, routes to compact_branch, compaction proposes a new node,
+    route_after_compaction sends that to select_next_node, and select_next_node
+    activates it without clearing next_action. Without this guard the run then
+    dispatches a full paid discovery round after the ceiling already tripped —
+    once per proposable node, and under the `full` profile (every cap 0) that
+    is bounded only by the recursion limit.
+    """
+    if state.get("next_action") in _TERMINAL_ACTIONS:
         return ["synthesize"]
     return ["keyword_search", "graph_walk"]
 
@@ -115,6 +132,10 @@ def route_after_saturation(state: dict) -> list[str]:
 
 
 def route_after_compaction(state: dict) -> list[str]:
+    # A tripped ceiling ends the run at synthesis; it must not re-enter node
+    # selection, which is what would put a proposed node back on the frontier.
+    if state.get("next_action") == "budget_exhausted":
+        return ["synthesize"]
     tree = state.get("tree", {})
     has_pending = any(n.get("status") == "pending" for n in tree.values())
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
@@ -187,14 +208,44 @@ async def run_pipeline(
     thread_id (migrating it first) and continues from where it left off,
     instead of overwriting checkpointed state with a fresh initial state.
     """
-    config = {"configurable": {"thread_id": thread_id}}
+    # LangGraph's default recursion_limit is 25 supersteps, which a legitimate
+    # multi-branch run exceeds — and when it trips it raises rather than
+    # producing a report. The real termination guarantees are the governors in
+    # check_saturation; this is the backstop behind them, set explicitly so the
+    # ceiling is a decision rather than an inherited default.
+    from src.config import get_config
+
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": get_config().harness.graph_recursion_limit,
+    }
     app = compile_graph(checkpointer=checkpointer)
 
     if resume and checkpointer is not None:
-        snapshot = app.get_state(config)
+        # Async accessors, to match the async checkpointer the pipeline runs
+        # on — the sync `get_state`/`update_state` reach for `get_tuple`/`put`,
+        # which AsyncPostgresSaver does not implement.
+        snapshot = await app.aget_state(config)
         if snapshot.values:
-            migrated = migrate_state(dict(snapshot.values))
-            app.update_state(config, migrated)
+            existing = dict(snapshot.values)
+            migrated = migrate_state(dict(existing))
+
+            # Write back ONLY the keys migration added. update_state applies
+            # values through the channel reducers, exactly as if a node had
+            # returned them — so handing it the full snapshot re-adds every
+            # accumulator to itself: budget_spent_usd and
+            # brightdata_records_used double, errors and node_logs duplicate.
+            # That is fatal now that those fields are the cost governors: a
+            # resumed run reads its spend at 2x and check_saturation trips
+            # budget_exhausted before doing any work, compounding 4x, 8x on
+            # each further resume. New keys are safe because their channels
+            # are empty, so reducer(empty, default) == default.
+            delta = {k: v for k, v in migrated.items() if k not in existing}
+            if migrated.get("schema_version") != existing.get("schema_version"):
+                delta["schema_version"] = migrated["schema_version"]
+            if delta:
+                await app.aupdate_state(config, delta)
+
             final = await app.ainvoke(None, config=config)
             return migrate_state(final)
 
