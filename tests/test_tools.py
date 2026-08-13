@@ -216,7 +216,13 @@ class TestGraphWalkFrontier:
             result = await graph_walk(state)
 
         assert set(result["discovered_channel_ids"]) == {"UC_A", "UC_B"}
-        assert result["expanded_channel_refs"] == {A, B}
+        # Both identities per expanded channel — see the ref-canonicalisation
+        # note in graph_walk: string normalisation cannot collapse `/@handle`
+        # and `/channel/UC…`, so both are recorded to prevent a re-walk paying
+        # for the same channel under its other name.
+        assert result["expanded_channel_refs"] == {
+            A, B, f"{YT}channel/UC_A", f"{YT}channel/UC_B",
+        }
         assert set(result["tree"]["node1"]["_gw_refs"]) == {C, D}
         assert len(result["novelty_rates"]) == 1
         assert result["brightdata_records_used"] == 2
