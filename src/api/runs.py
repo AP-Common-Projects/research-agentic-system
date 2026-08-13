@@ -158,7 +158,13 @@ def known_run_ids() -> list[str]:
     d = log_dir()
     if not d.exists():
         return []
-    files = [p for p in d.glob("*.jsonl") if p.stem != "registry"]
+    # Only NodeLog streams. `registry` is the launch index, and `*.spend.jsonl`
+    # is the Bright Data spend ledger — a different shape entirely, which the
+    # loop below would read as a malformed run.
+    files = [
+        p for p in d.glob("*.jsonl")
+        if p.stem != "registry" and not p.stem.endswith(".spend")
+    ]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return [p.stem for p in files]
 
@@ -197,7 +203,10 @@ def list_runs() -> list[dict[str, Any]]:
             {
                 **entry,
                 "status": status,
-                "last_node": entries[-1]["node_name"] if entries else None,
+                # .get, not [...]: one unexpected line shape must not 500 the
+                # whole run listing. A sibling .jsonl written by another
+                # subsystem once did exactly that.
+                "last_node": entries[-1].get("node_name") if entries else None,
                 "last_activity_at": entries[-1].get("timestamp") if entries else None,
                 "log_lines": len(entries),
                 "cost_usd": round(sum(float(e.get("cost_usd") or 0.0) for e in entries), 6),

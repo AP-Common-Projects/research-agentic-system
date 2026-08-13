@@ -74,15 +74,30 @@ def hydrate_metadata(state: dict) -> dict:
     gw_found = set(state.get("graph_walk_channel_ids", set()))
 
     all_video_ids: list[str] = []
+    errors: list[dict] = []
     for ch in channels:
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
         ch["first_seen_at"] = ch.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
-        videos = client.get_channel_videos(ch["channel_id"], max_results=50)
+        # Per channel, not per round. This node is the fan-in join and is not
+        # wrapped by graph.py's _guarded, so anything escaping here ends the
+        # run — and by this point the round's Bright Data records are already
+        # paid for. One channel's metadata is worth losing; a round is not.
+        try:
+            videos = client.get_channel_videos(ch["channel_id"], max_results=50)
+        except Exception as exc:
+            errors.append(
+                ErrorRecord(
+                    node_name="hydrate_metadata",
+                    error_type=type(exc).__name__,
+                    message=f"video hydration failed for {ch['channel_id']}: {exc}",
+                    recoverable=True,
+                ).model_dump()
+            )
+            videos = []
         scored = score_channel_videos(videos)
         ch["_videos"] = scored
         all_video_ids.extend(v["video_id"] for v in scored)
 
-    errors: list[dict] = []
     try:
         from src.db.connection import get_connection, put_connection
 

@@ -57,10 +57,17 @@ def configure_logging() -> None:
 
 
 def _ledger_path(run_id: str) -> Path:
+    """`logs/spend/<run_id>.jsonl` — a subdirectory, deliberately.
+
+    The run listing globs `logs/*.jsonl` and treats every line as a NodeLog, so
+    a ledger file sitting beside them is read as a malformed run and 500s the
+    console. Keeping the two streams in separate directories means neither has
+    to know about the other's shape.
+    """
     cfg = get_config()
-    log_dir = Path(cfg.harness.log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / f"{run_id}.spend.jsonl"
+    ledger_dir = Path(cfg.harness.log_dir) / "spend"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    return ledger_dir / f"{run_id}.jsonl"
 
 
 def record_spend_intent(
