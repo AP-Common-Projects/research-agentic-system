@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import time
 
+from src.config import get_config
 from src.state import NodeLog
 
 
 def select_next_node(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     start = time.monotonic()
+    cfg = get_config().harness
     tree: dict[str, dict] = state.get("tree", {})
     next_action = state.get("next_action", "")
     active_node_id = state.get("active_node_id")
@@ -40,11 +42,20 @@ def select_next_node(state: dict) -> dict:
             "node_logs": _log({"decision": "continue_active", "node_id": active_node_id}),
         }
 
+    # Governors on tree growth. compact_branch can propose new nodes every
+    # time it runs, and each new node starts a fresh discovery loop of its own —
+    # so without a depth and a total-branch ceiling the tree, and the spend,
+    # grow without bound. 0 means uncapped (the `full` profile).
     for node_id, node in tree.items():
         proposed = node.get("proposed_new_nodes", [])
         if proposed:
             for p in proposed:
                 proposed_id = p.get("label", proposed_id_hint(p)).lower().replace(" ", "_")
+                child_depth = node.get("depth", 0) + 1
+                if cfg.max_tree_depth > 0 and child_depth > cfg.max_tree_depth:
+                    continue
+                if cfg.max_branches > 0 and len(tree) >= cfg.max_branches:
+                    continue
                 if proposed_id not in tree:
                     new_node = {
                         "id": proposed_id,

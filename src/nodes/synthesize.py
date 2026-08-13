@@ -13,6 +13,7 @@ import statistics
 import time
 from typing import Any
 
+from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.nodes.store import get_store
 from src.state import GradedFinding, FinalReport, NodeLog, ErrorRecord
@@ -210,12 +211,23 @@ async def synthesize(state: dict) -> dict:
         indent=2,
         default=str,
     )
+    # Hard-coded 200/500 slices previously served as indented JSON — easily a
+    # six-figure-token prompt. Now governed, ranked so the truncation keeps the
+    # highest-signal rows, and serialised compactly: `indent=2` on a few hundred
+    # records spends a large share of the context window on whitespace alone.
+    cfg = get_config().harness
+    ranked_channels = sorted(
+        channels, key=lambda c: c.get("subscriber_count", 0) or 0, reverse=True
+    )[: cfg.max_prompt_channels or None]
+    ranked_videos = sorted(
+        videos, key=lambda v: v.get("outlier_score", 0) or 0, reverse=True
+    )[: cfg.max_prompt_videos or None]
     store_text = json.dumps(
         {
-            "channels": channels[:200],
-            "videos": videos[:500],
+            "channels": ranked_channels,
+            "videos": ranked_videos,
+            "totals": {"channels": len(channels), "videos": len(videos)},
         },
-        indent=2,
         default=str,
     )
 

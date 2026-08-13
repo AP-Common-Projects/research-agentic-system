@@ -5,7 +5,14 @@ Each round: broaden_or_pivot() generates new queries, excluding already-run
 queries. Novelty rate = new_channels_found / total_channels_returned.
 
 Writes only its OWN fields to the tree node (queries_run, keyword novelty
-history, exhaustion flag) so the parallel graph_walk write isn't clobbered.
+history, exhaustion flag, `_kw_refs`) so the parallel graph_walk write isn't
+clobbered.
+
+Cost discipline (docs/first-run-plan.md rung 02): the query list is truncated
+to `keyword_queries_per_round` and every discovery job carries
+`limit_per_input`. Measured live, an uncapped keyword returned 469 records
+($0.70); the previous unbounded 6-qualifiers-per-keyword fan-out would have
+issued ~30 of those per round.
 
 Plan §0.2 item 3 required specifying this; the source material had it as
 "not yet specified" — we specify it here.
@@ -16,6 +23,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+from src.config import get_config
 from src.tools.bright_data import BrightDataClient
 from src.state import NodeLog
 
@@ -61,6 +69,7 @@ def broaden_or_pivot(
 async def keyword_search(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     start = time.monotonic()
+    cfg = get_config().harness
     tree = state.get("tree", {})
     active_node_id = state.get("active_node_id")
     if not active_node_id:
@@ -70,14 +79,20 @@ async def keyword_search(state: dict) -> dict:
     if node is None:
         return {}
 
+    # Reported for logging only; check_saturation owns the counter.
+    round_no = state.get("rounds_by_node", {}).get(active_node_id, 0) + 1
     keywords = node.get("keywords", [])
     queries_run = set(node.get("queries_run", []))
     kw_history = list(node.get("_kw_novelty_history", []))
 
     previous_results: list[dict] = []
     new_queries = broaden_or_pivot(list(keywords), list(queries_run), previous_results)
-
     new_queries = [q for q in new_queries if q not in queries_run]
+
+    # The governor. Without it this list is len(keywords) x 6 every round.
+    if cfg.keyword_queries_per_round > 0:
+        new_queries = new_queries[: cfg.keyword_queries_per_round]
+
     if not new_queries:
         kw_history.append(0.0)
         return {
@@ -100,35 +115,44 @@ async def keyword_search(state: dict) -> dict:
         }
 
     client = BrightDataClient()
+    channels, records = await client.discover_channels_by_keyword(
+        new_queries, limit_per_input=cfg.keyword_results_per_query
+    )
+    cost = round(records * cfg.brightdata_cost_per_record_usd, 8)
+
     all_channels: dict[str, dict] = {}
-    total_returned = 0
+    refs: dict[str, int] = {}
+    for ch in channels:
+        ch_id = ch.get("channel_id", "")
+        if ch_id and ch_id not in all_channels:
+            all_channels[ch_id] = ch
+        ref = ch.get("channel_ref") or ch.get("handle") or ""
+        if ref:
+            refs[ref] = ch.get("subscriber_count", 0)
 
-    for query in new_queries:
-        results = client.search_youtube(query, max_results=20)
-        total_returned += len(results)
-        for result in results:
-            ch_id = result.get("channel_id", "")
-            if ch_id and ch_id not in all_channels:
-                all_channels[ch_id] = result
+    discovered_set = set(state.get("discovered_channel_ids", []))
+    new_channels = [ch_id for ch_id in all_channels if ch_id not in discovered_set]
 
-    discovered = state.get("discovered_channel_ids", [])
-    discovered_set = set(discovered)
-    new_channels = [
-        ch_id for ch_id in all_channels if ch_id not in discovered_set
-    ]
-
-    novelty = len(new_channels) / total_returned if total_returned > 0 else 0.0
-
+    # Novelty is measured against records actually returned, not against the
+    # capped query count — capping queries must not look like saturation.
+    novelty = len(new_channels) / records if records > 0 else 0.0
     kw_history.append(round(novelty, 4))
 
     return {
         "discovered_channel_ids": new_channels,
         "keyword_channel_ids": set(all_channels),
+        "brightdata_records_used": records,
+        "budget_spent_usd": cost,
         "tree": {
             active_node_id: {
                 "queries_run": list(queries_run) + new_queries,
                 "_kw_novelty_history": kw_history,
                 "_kw_exhausted": False,
+                "_kw_refs": refs,
+                # Per-branch attribution. compact_branch needs the channels
+                # belonging to THIS node; discovered_channel_ids is run-wide
+                # and seed_channel_ids are handles, not UC ids.
+                "_kw_channel_ids": sorted(all_channels),
                 "_last_keyword_search_at": datetime.now(timezone.utc).isoformat(),
             }
         },
@@ -140,12 +164,14 @@ async def keyword_search(state: dict) -> dict:
                 thread_id=thread_id,
                 input_summary={
                     "node_id": active_node_id,
+                    "round": round_no,
                     "queries_run": len(new_queries),
+                    "records_consumed": records,
                     "channels_found": len(new_channels),
                     "novelty": round(novelty, 4),
                 },
                 latency_ms=(time.monotonic() - start) * 1000,
-                cost_usd=0.0,
+                cost_usd=cost,
             ).model_dump()
         ],
     }

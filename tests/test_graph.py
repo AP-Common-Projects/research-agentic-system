@@ -100,10 +100,21 @@ def _patch_llm_nodes():
 
 
 def _mock_bright_data(bd_mock):
+    """A client that succeeds and returns nothing.
+
+    Both tracks must genuinely *complete* — a client whose methods aren't
+    awaitable makes every round raise, which leaves no novelty history and no
+    exhaustion flag, so the branch can never saturate and the graph runs to the
+    recursion limit. Returning empty results is what drives the run down the
+    real stop path: empty frontier and no new queries mark both tracks
+    exhausted, and check_saturation ends the branch on `both_tracks_exhausted`.
+    """
     client = MagicMock()
     bd_mock.return_value = client
-    client.search_youtube.return_value = []
-    client.crawl_channel_relationships.return_value = []
+    client.discover_channels_by_keyword = AsyncMock(return_value=([], 0))
+    client.get_channels = AsyncMock(return_value=([], 0))
+    client.get_channel_videos = AsyncMock(return_value=([], 0))
+    client.get_comments = AsyncMock(return_value=([], 0))
     return client
 
 

@@ -5,6 +5,11 @@ fall back to the Kimi family on rate-limit/timeout. cross_judge and
 thumbnail_vision have no fallback: cross_judge must stay a different family
 than production (a model can't grade its own output), and thumbnail_vision
 needs Kimi's native vision (DeepSeek V4 is text-only).
+
+Scope note: `thumbnail_vision` is defined but **not used anywhere in v1** —
+this harness does no image or video processing. It reasons over engagement
+metrics and graph structure only. The tier is kept as a working definition for
+when multimodal analysis is picked up in v2; nothing routes to it today.
 """
 
 from __future__ import annotations

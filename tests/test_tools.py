@@ -6,9 +6,13 @@ check_saturation, niche_scanner, dedup, signal_scoring.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import make_harness_config
+
+YT = "https://www.youtube.com/"
 
 from src.tools.dedup import (
     check_near_duplicate,
@@ -141,230 +145,201 @@ class TestScoreChannelVideos:
 # ============================================================================
 
 class TestGraphWalkFrontier:
-    @pytest.mark.asyncio
-    async def test_fast_saturating_graph(self):
-        state = {
+    """Frontier discipline: each round expands ONLY refs not already expanded.
+
+    Rewritten for the real Bright Data surface. The walk now fetches channel
+    records and reads `featured_channels` off them (one record per channel),
+    rather than calling a `crawl_channel_relationships` helper that never
+    existed on the vendor's API.
+    """
+
+    @staticmethod
+    def _channel(cid, ref, featured=(), subs=5000):
+        return {
+            "channel_id": cid,
+            "channel_ref": ref,
+            "handle": "",
+            "title": cid,
+            "description": "",
+            "subscriber_count": subs,
+            "video_count": 0,
+            "view_count": 0,
+            "published_at": "",
+            "featured_channel_refs": [f["ref"] for f in featured],
+            "featured_channel_edges": list(featured),
+            "discovery_input": {},
+        }
+
+    @staticmethod
+    def _edge(ref, subs=5000):
+        return {"ref": ref, "name": ref, "subscriber_count": subs}
+
+    @staticmethod
+    def _client(mock_bd, channels=()):
+        client = MagicMock()
+        mock_bd.return_value = client
+        client.get_channels = AsyncMock(return_value=(list(channels), len(channels)))
+        client.get_channel_videos = AsyncMock(return_value=([], 0))
+        client.get_comments = AsyncMock(return_value=([], 0))
+        return client
+
+    @staticmethod
+    def _state(seeds=(), gw_refs=None, expanded_refs=(), discovered=()):
+        return {
+            "run_id": "run-test",
             "tree": {
                 "node1": {
                     "id": "node1",
                     "label": "test",
-                    "seed_channel_ids": ["ch_a", "ch_b"],
-                    "unexpanded_channel_ids": [],
+                    "seed_channel_ids": list(seeds),
+                    "_gw_refs": dict(gw_refs or {}),
                 },
             },
             "active_node_id": "node1",
-            "discovered_channel_ids": [],
-            "visited_channel_ids": set(),
-            "expanded_channel_ids": set(),
+            "discovered_channel_ids": list(discovered),
+            "expanded_channel_refs": set(expanded_refs),
             "novelty_rates": [],
+            "rounds_by_node": {},
         }
 
+    @pytest.mark.asyncio
+    async def test_fast_saturating_graph(self, no_edge_store):
+        A, B = f"{YT}@ch_a", f"{YT}@ch_b"
+        C, D = f"{YT}@ch_c", f"{YT}@ch_d"
+        state = self._state(seeds=[A, B])
+
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
-            mock_client = MagicMock()
-            mock_bd.return_value = mock_client
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_c", "edge_type": "playlist"},
-                {"source_channel_id": "ch_b", "target_channel_id": "ch_d", "edge_type": "playlist"},
-            ]
+            self._client(mock_bd, [
+                self._channel("UC_A", A, [self._edge(C)]),
+                self._channel("UC_B", B, [self._edge(D)]),
+            ])
             result = await graph_walk(state)
 
-        assert "ch_c" in result["discovered_channel_ids"]
-        assert "ch_d" in result["discovered_channel_ids"]
-        assert "ch_a" in result["visited_channel_ids"]
-        assert "ch_b" in result["visited_channel_ids"]
-        assert "ch_a" in result["expanded_channel_ids"]
-        assert "ch_b" in result["expanded_channel_ids"]
+        assert set(result["discovered_channel_ids"]) == {"UC_A", "UC_B"}
+        assert result["expanded_channel_refs"] == {A, B}
+        assert set(result["tree"]["node1"]["_gw_refs"]) == {C, D}
         assert len(result["novelty_rates"]) == 1
+        assert result["brightdata_records_used"] == 2
 
     @pytest.mark.asyncio
-    async def test_slow_saturating_graph_multi_round(self):
-        state = {
-            "tree": {
-                "node1": {
-                    "id": "node1",
-                    "label": "test",
-                    "seed_channel_ids": ["ch_a"],
-                    "unexpanded_channel_ids": [],
-                },
-            },
-            "active_node_id": "node1",
-            "discovered_channel_ids": [],
-            "visited_channel_ids": set(),
-            "expanded_channel_ids": set(),
-            "novelty_rates": [],
-        }
+    async def test_slow_saturating_graph_multi_round(self, no_edge_store):
+        A, B, C = f"{YT}@ch_a", f"{YT}@ch_b", f"{YT}@ch_c"
+        state = self._state(seeds=[A])
 
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
-            mock_client = MagicMock()
-            mock_bd.return_value = mock_client
-
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_b", "edge_type": "playlist"},
-            ]
+            client = self._client(mock_bd, [self._channel("UC_A", A, [self._edge(B)])])
             r1 = await graph_walk(state)
-            state["discovered_channel_ids"].extend(r1["discovered_channel_ids"])
-            state["visited_channel_ids"] |= r1["visited_channel_ids"]
-            state["expanded_channel_ids"] |= r1["expanded_channel_ids"]
-            state["tree"].update(r1.get("tree", {}))
+            assert r1["novelty_rates"][0] == 1.0
 
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_b", "target_channel_id": "ch_c", "edge_type": "playlist"},
-            ]
+            self._apply(state, r1)
+            client.get_channels = AsyncMock(
+                return_value=([self._channel("UC_B", B, [self._edge(C)])], 1)
+            )
             r2 = await graph_walk(state)
-            state["discovered_channel_ids"].extend(r2["discovered_channel_ids"])
-            state["visited_channel_ids"] |= r2["visited_channel_ids"]
-            state["tree"].update(r2.get("tree", {}))
 
-            mock_client.crawl_channel_relationships.return_value = []
+            self._apply(state, r2)
+            client.get_channels = AsyncMock(
+                return_value=([self._channel("UC_C", C, [])], 1)
+            )
             r3 = await graph_walk(state)
-            state["visited_channel_ids"] |= r3["visited_channel_ids"]
+            self._apply(state, r3)
 
-        assert "ch_b" in state["discovered_channel_ids"]
-        assert "ch_c" in state["discovered_channel_ids"]
-        assert "ch_a" in state["visited_channel_ids"]
-        assert "ch_b" in state["visited_channel_ids"]
-        assert "ch_c" in state["visited_channel_ids"]
-        assert len(r3["discovered_channel_ids"]) == 0
+        # Novelty decays as the graph runs out of unseen neighbours.
         assert r3["novelty_rates"][0] == 0.0
+        assert set(state["discovered_channel_ids"]) == {"UC_A", "UC_B", "UC_C"}
 
     @pytest.mark.asyncio
-    async def test_re_scan_regression_fixture(self):
-        state = {
-            "tree": {
-                "node1": {
-                    "id": "node1",
-                    "label": "test",
-                    "seed_channel_ids": ["ch_a"],
-                    "unexpanded_channel_ids": [],
-                },
-            },
-            "active_node_id": "node1",
-            "discovered_channel_ids": [],
-            "visited_channel_ids": set(),
-            "expanded_channel_ids": set(),
-            "novelty_rates": [],
-        }
+    async def test_re_scan_regression_fixture(self, no_edge_store):
+        """Round 2 must expand ONLY the newly found ref, never the cumulative set.
+
+        Re-expanding everything discovered so far is the bug this whole design
+        exists to prevent: it re-bills every channel each round and collapses
+        the novelty signal, which is what saturation is measured on.
+        """
+        A, B = f"{YT}@ch_a", f"{YT}@ch_b"
+        state = self._state(seeds=[A])
 
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
-            mock_client = MagicMock()
-            mock_bd.return_value = mock_client
-
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_b", "edge_type": "playlist"},
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_c", "edge_type": "playlist"},
-            ]
+            client = self._client(mock_bd, [self._channel("UC_A", A, [self._edge(B)])])
             r1 = await graph_walk(state)
-            assert r1["novelty_rates"][0] == 2.0
+            self._apply(state, r1)
 
-            state["discovered_channel_ids"].extend(r1["discovered_channel_ids"])
-            state["visited_channel_ids"] |= r1["visited_channel_ids"]
-            state["expanded_channel_ids"] |= r1["expanded_channel_ids"]
-            state["tree"].update(r1.get("tree", {}))
+            client.get_channels = AsyncMock(
+                return_value=([self._channel("UC_B", B, [])], 1)
+            )
+            await graph_walk(state)
+            second_round_frontier = client.get_channels.call_args[0][0]
 
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_b", "target_channel_id": "ch_d", "edge_type": "playlist"},
-                {"source_channel_id": "ch_c", "target_channel_id": "ch_e", "edge_type": "playlist"},
-            ]
-            r2 = await graph_walk(state)
-            assert len(r2["discovered_channel_ids"]) == 2
-            assert r2["novelty_rates"][0] == 1.0
-
-            state["discovered_channel_ids"].extend(r2["discovered_channel_ids"])
-            state["visited_channel_ids"] |= r2["visited_channel_ids"]
-            state["tree"].update(r2.get("tree", {}))
-
-            mock_client.crawl_channel_relationships.return_value = []
-            r3 = await graph_walk(state)
-            assert r3["novelty_rates"][0] == 0.0
-
-        assert set(state["discovered_channel_ids"]) == {"ch_b", "ch_c", "ch_d", "ch_e"}
+        assert second_round_frontier == [B], "must expand the frontier, not the cumulative set"
 
     @pytest.mark.asyncio
-    async def test_graph_walk_respects_visited(self):
-        state = {
-            "tree": {
-                "node1": {
-                    "id": "node1",
-                    "label": "test",
-                    "seed_channel_ids": ["ch_a"],
-                    "unexpanded_channel_ids": [],
-                },
-            },
-            "active_node_id": "node1",
-            "discovered_channel_ids": ["ch_b"],
-            "visited_channel_ids": {"ch_a"},
-            "expanded_channel_ids": {"ch_a"},
-            "novelty_rates": [],
-        }
+    async def test_graph_walk_respects_already_expanded(self, no_edge_store):
+        A = f"{YT}@ch_a"
+        state = self._state(seeds=[A], expanded_refs=[A])
 
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
-            mock_client = MagicMock()
-            mock_bd.return_value = mock_client
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_b", "edge_type": "playlist"},
-            ]
+            client = self._client(mock_bd, [])
             result = await graph_walk(state)
 
         assert "discovered_channel_ids" not in result
         assert result["graph_walk_done"] is True
         assert result["tree"]["node1"]["_gw_exhausted"] is True
-        mock_client.crawl_channel_relationships.assert_not_called()
+        client.get_channels.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_graph_walk_expands_new_unexpanded_not_seed(self):
-        state = {
-            "tree": {
-                "node1": {
-                    "id": "node1",
-                    "label": "test",
-                    "seed_channel_ids": ["ch_a"],
-                    "unexpanded_channel_ids": ["ch_b"],
-                },
-            },
-            "active_node_id": "node1",
-            "discovered_channel_ids": ["ch_b"],
-            "visited_channel_ids": {"ch_a"},
-            "expanded_channel_ids": {"ch_a"},
-            "novelty_rates": [],
-        }
+    async def test_expands_new_ref_not_the_spent_seed(self, no_edge_store):
+        A, B, C = f"{YT}@ch_a", f"{YT}@ch_b", f"{YT}@ch_c"
+        state = self._state(seeds=[A], gw_refs={B: 5000}, expanded_refs=[A])
 
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
-            mock_client = MagicMock()
-            mock_bd.return_value = mock_client
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_b", "target_channel_id": "ch_c", "edge_type": "playlist"},
-            ]
+            client = self._client(mock_bd, [self._channel("UC_B", B, [self._edge(C)])])
             result = await graph_walk(state)
 
-        assert result["discovered_channel_ids"] == ["ch_c"]
+        assert client.get_channels.call_args[0][0] == [B]
+        assert result["discovered_channel_ids"] == ["UC_B"]
+
+    @pytest.mark.asyncio
+    async def test_frontier_capped_and_ranked_by_subscribers(self, no_edge_store):
+        """The cap is a cost control: uncapped, every discovered channel is
+        expanded every round at one paid record each. Ranking by size is why
+        the cap does not simply discard the useful half — `featured_channels`
+        is present on 1% of sub-100-subscriber channels but 18% of 100k+ ones.
+        """
+        small, mid, big = f"{YT}@small", f"{YT}@mid", f"{YT}@big"
+        state = self._state(gw_refs={small: 10, mid: 5_000, big: 900_000})
+
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
+            client = self._client(mock_bd, [])
+            with patch("src.tools.graph_walk.get_config") as cfg:
+                cfg.return_value.harness = make_harness_config(
+                    graph_walk_frontier_per_round=2,
+                    min_subscribers_for_expansion=1000,
+                )
+                await graph_walk(state)
+
+        assert client.get_channels.call_args[0][0] == [big, mid]
 
     @pytest.mark.asyncio
     async def test_no_active_node(self):
-        state = {"tree": {}, "active_node_id": None}
-        result = await graph_walk(state)
+        result = await graph_walk({"tree": {}, "active_node_id": None})
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_empty_frontier(self):
-        state = {
-            "tree": {
-                "node1": {
-                    "id": "node1",
-                    "label": "test",
-                    "seed_channel_ids": [],
-                    "unexpanded_channel_ids": [],
-                },
-            },
-            "active_node_id": "node1",
-            "discovered_channel_ids": [],
-            "visited_channel_ids": set(),
-            "expanded_channel_ids": set(),
-            "novelty_rates": [],
-        }
+        state = self._state()
         result = await graph_walk(state)
         assert result["graph_walk_done"] is True
         assert result["tree"]["node1"]["_gw_exhausted"] is True
 
+    @staticmethod
+    def _apply(state, result):
+        """Fold a round's result back into state the way the reducers would."""
+        for cid in result.get("discovered_channel_ids", []):
+            if cid not in state["discovered_channel_ids"]:
+                state["discovered_channel_ids"].append(cid)
+        state["expanded_channel_refs"] |= result.get("expanded_channel_refs", set())
+        for node_id, patch_ in result.get("tree", {}).items():
+            state["tree"][node_id] = {**state["tree"][node_id], **patch_}
 
 # ============================================================================
 # Keyword search — frontier-equivalent
@@ -440,15 +415,27 @@ class TestKeywordSearch:
         with patch("src.tools.keyword_search.BrightDataClient") as mock_bd:
             mock_client = MagicMock()
             mock_bd.return_value = mock_client
-            mock_client.search_youtube.return_value = [
-                {"channel_id": "ch_new", "title": "Cooking 101"},
-            ]
+            mock_client.discover_channels_by_keyword = AsyncMock(
+                return_value=(
+                    [{
+                        "channel_id": "ch_new",
+                        "channel_ref": f"{YT}@cooking101",
+                        "title": "Cooking 101",
+                        "subscriber_count": 4200,
+                    }],
+                    1,
+                )
+            )
             result = await keyword_search(state)
 
         assert "ch_new" in result["discovered_channel_ids"]
         assert result["keyword_search_done"] is True
         updated_node = result["tree"]["node1"]
         assert "cooking" in updated_node["queries_run"]
+        # Refs and their subscriber counts are recorded so graph_walk can rank
+        # its frontier without paying a record to find out how big each is.
+        assert updated_node["_kw_refs"] == {f"{YT}@cooking101": 4200}
+        assert result["brightdata_records_used"] == 1
 
     @pytest.mark.asyncio
     async def test_skips_already_run_queries(self):
@@ -492,9 +479,7 @@ class TestCheckSaturation:
     def setup_method(self):
         self._cfg_patcher = patch("src.tools.saturation.get_config")
         mock_cfg = MagicMock()
-        mock_cfg.harness.saturation_novelty_threshold = 0.05
-        mock_cfg.harness.saturation_consecutive_window = 3
-        mock_cfg.harness.budget_limit_usd = 10.0
+        mock_cfg.harness = make_harness_config()
         self.mock_cfg = mock_cfg
         self._cfg_patcher.start().return_value = mock_cfg
 
@@ -905,32 +890,53 @@ class TestDiscoveryAttribution:
         with patch("src.tools.keyword_search.BrightDataClient") as mock_bd:
             mock_client = MagicMock()
             mock_bd.return_value = mock_client
-            mock_client.search_youtube.return_value = [
-                {"channel_id": "ch_seen", "title": "already discovered"},
-                {"channel_id": "ch_new", "title": "brand new"},
-            ]
+            mock_client.discover_channels_by_keyword = AsyncMock(
+                return_value=(
+                    [
+                        {"channel_id": "ch_seen", "channel_ref": f"{YT}@seen",
+                         "title": "already discovered", "subscriber_count": 10},
+                        {"channel_id": "ch_new", "channel_ref": f"{YT}@new",
+                         "title": "brand new", "subscriber_count": 20},
+                    ],
+                    2,
+                )
+            )
             result = await keyword_search(state)
 
         assert result["keyword_channel_ids"] == {"ch_seen", "ch_new"}
         assert result["discovered_channel_ids"] == ["ch_new"]
 
     @pytest.mark.asyncio
-    async def test_graph_walk_records_all_reachable_channels(self):
+    async def test_graph_walk_records_all_reachable_channels(self, no_edge_store):
+        """graph_walk attributes every channel it *resolved*, including ones
+        already discovered — the two attribution sets overlap by design, since
+        "found by both tracks" is a distinct and meaningful case."""
+        A, B = f"{YT}@ch_a", f"{YT}@ch_b"
         state = {
-            "tree": {"n1": {"id": "n1", "seed_channel_ids": ["ch_a"], "unexpanded_channel_ids": []}},
+            "run_id": "run-test",
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": [A, B]}},
             "active_node_id": "n1",
             "discovered_channel_ids": ["ch_known"],
-            "visited_channel_ids": set(),
-            "expanded_channel_ids": set(),
+            "expanded_channel_refs": set(),
             "novelty_rates": [],
+            "rounds_by_node": {},
         }
         with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
             mock_client = MagicMock()
             mock_bd.return_value = mock_client
-            mock_client.crawl_channel_relationships.return_value = [
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_known", "edge_type": "playlist"},
-                {"source_channel_id": "ch_a", "target_channel_id": "ch_fresh", "edge_type": "playlist"},
-            ]
+            mock_client.get_channels = AsyncMock(
+                return_value=(
+                    [
+                        {"channel_id": "ch_known", "channel_ref": A,
+                         "featured_channel_edges": []},
+                        {"channel_id": "ch_fresh", "channel_ref": B,
+                         "featured_channel_edges": []},
+                    ],
+                    2,
+                )
+            )
+            mock_client.get_channel_videos = AsyncMock(return_value=([], 0))
+            mock_client.get_comments = AsyncMock(return_value=([], 0))
             result = await graph_walk(state)
 
         assert result["graph_walk_channel_ids"] == {"ch_known", "ch_fresh"}

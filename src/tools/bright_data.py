@@ -1,10 +1,43 @@
-"""Bright Data Scraper API client with concurrency control and retry discipline."""
+"""Bright Data Datasets API client — trigger, poll, collect.
+
+This replaces an earlier client written against endpoints that do not exist
+(`scraper/youtube/search`, `/channel`, `/playlists`, ...) returning
+YouTube-Data-API-v3-shaped JSON. The real surface, verified live 2026-08-13:
+
+    POST /datasets/v3/trigger?dataset_id=<id>[&type=discover_new
+         &discover_by=keyword][&limit_per_input=N]      -> {"snapshot_id": ...}
+    GET  /datasets/v3/progress/<snapshot_id>            -> {"status": "running"|"ready"}
+    GET  /datasets/v3/snapshot/<snapshot_id>?format=json-> [ {...}, ... ]
+
+Three separate collectors (Channels / Videos posts / Comments), each billed per
+record at $0.0015. Every public method therefore returns
+`(parsed_rows, records_consumed)` — cost accounting is not optional here,
+because the budget circuit breaker in check_saturation is only as honest as
+the numbers it is given.
+
+Cost controls, all measured rather than assumed:
+  * `limit_per_input` caps discovery. Without it a single keyword returned 469
+    records; with `limit_per_input=3` it returned exactly 3.
+  * `num_of_comments` caps the Comments collector. `limit` and `max_results`
+    are rejected by the API as unknown fields.
+  * `featured_channels` on a Channels record carries the channel->channel edges
+    for free, so graph expansion costs 1 record/channel. Comment mining is an
+    escalation path, not the default. `Links` is NOT an edge source — it holds
+    external websites (pwlcapital.com, x.com/...), not channels.
+
+Timing: by-URL collection returns in ~5s; keyword discovery runs for MINUTES
+(a Channels discovery took ~6min, a Videos discovery was still running at 12).
+Hence async polling with a hard ceiling, and concurrent fan-out.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable, Literal
 
 import httpx
 import structlog
@@ -19,27 +52,45 @@ from src.config import get_config
 
 logger = structlog.get_logger(__name__)
 
-MAX_CONCURRENCY = 10
-
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+CollectorName = Literal["channels", "videos", "comments"]
+
+
+class BrightDataError(RuntimeError):
+    """Non-retryable failure from the Datasets API (validation, auth, timeout)."""
 
 
 def _is_retryable(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
-        code = exception.response.status_code
-        if 400 <= code < 500 and code not in RETRYABLE_STATUSES:
-            return False
-        return code in RETRYABLE_STATUSES
+        return exception.response.status_code in RETRYABLE_STATUSES
     if isinstance(exception, (httpx.TimeoutException, httpx.ConnectError)):
         return True
     return False
 
 
-def _create_retry_decorator():
+def _is_retryable_trigger(exception: BaseException) -> bool:
+    """Only 429 may be retried on the trigger call.
+
+    `trigger` is the one request in this client that spends money, and the API
+    offers no idempotency key. A timeout or a 5xx means the *response* was lost
+    — the job may well have been created and be billing right now — so
+    re-issuing buys a second snapshot and a second full charge, up to five
+    times. A 429 is different: the server explicitly refused the request, so no
+    job exists and retrying is free.
+
+    Polling and fetching are read-only and keep the general retry policy.
+    """
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code == 429
+    return False
+
+
+def _create_retry_decorator(predicate=_is_retryable):
     return retry(
         wait=wait_exponential_jitter(initial=1, max=60, jitter=2),
         stop=stop_after_attempt(5),
-        retry=retry_if_exception(_is_retryable),
+        retry=retry_if_exception(predicate),
         before_sleep=lambda retry_state: logger.warning(
             "brightdata_retry",
             attempt=retry_state.attempt_number,
@@ -48,14 +99,205 @@ def _create_retry_decorator():
     )
 
 
+# ---------------------------------------------------------------------------
+# Reference normalisation
+# ---------------------------------------------------------------------------
+
+_UC_ID = re.compile(r"^UC[A-Za-z0-9_-]{20,}$")
+
+
+def normalize_channel_ref(ref: str) -> str:
+    """Turn a channel handle / UC id / URL into a URL the collector accepts.
+
+    Traversal is keyed on *refs* rather than UC ids because that is what the
+    data gives us: `featured_channels` entries carry `url` and `handle` but no
+    UC id, and the taxonomy LLM emits `@handle` seeds. The UC id only becomes
+    known once the channel record itself is fetched — which is exactly the call
+    that expands it, so nothing extra is spent resolving them.
+
+    The result is canonical, because `expanded_channel_refs` is the only thing
+    standing between the walk and paying twice for the same channel. Without
+    canonicalisation `.../@Handle`, `.../@handle/videos` and `.../@handle?x=1`
+    are three distinct refs for one channel, and each one re-bills.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+
+    if ref.startswith("http://") or ref.startswith("https://"):
+        # Strip scheme/host variation, query and fragment, then re-derive.
+        without_scheme = ref.split("://", 1)[1]
+        path = without_scheme.split("/", 1)[1] if "/" in without_scheme else ""
+        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+        if not path:
+            return ""
+        segments = path.split("/")
+        if segments[0] == "channel" and len(segments) > 1:
+            return f"https://www.youtube.com/channel/{segments[1]}"
+        # /@handle/videos, /c/name, /user/name -> keep the identifying segment
+        head = segments[0]
+        if head in ("c", "user") and len(segments) > 1:
+            head = segments[1]
+        return f"https://www.youtube.com/@{head.lstrip('@').lower()}"
+
+    if _UC_ID.match(ref):
+        return f"https://www.youtube.com/channel/{ref}"
+    return f"https://www.youtube.com/@{ref.lstrip('@').lower()}"
+
+
+def normalize_video_ref(ref: str) -> str:
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("http://") or ref.startswith("https://"):
+        return ref
+    return f"https://www.youtube.com/watch?v={ref}"
+
+
+def _to_int(value: Any) -> int:
+    """Bright Data returns counts as ints, numeric strings, or None."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    digits = re.sub(r"[^\d]", "", str(value))
+    return int(digits) if digits else 0
+
+
+# ---------------------------------------------------------------------------
+# Parsers — field names taken from live records, not from the vendor's docs
+# ---------------------------------------------------------------------------
+
+def parse_channel(row: dict) -> dict:
+    """Channels collector record -> our channel shape.
+
+    `featured_channels` is the channel->channel edge source and rides along on
+    this record at no extra cost. `Links` is deliberately ignored: inspected
+    live, it contains external sites, not channels.
+    """
+    featured = row.get("featured_channels") or []
+    refs: list[str] = []
+    edges: list[dict] = []
+    for entry in featured:
+        if not isinstance(entry, dict):
+            continue
+        target = entry.get("url") or entry.get("handle") or ""
+        if not target:
+            continue
+        ref = normalize_channel_ref(str(target))
+        refs.append(ref)
+        # The subscriber count of the *target* comes along inside the edge, so
+        # the frontier can be ranked and filtered before spending a record on
+        # any of them. Measured: featured_channels is present on 1% of
+        # sub-100-subscriber channels but 18% of 100k+ ones, so expanding small
+        # channels costs records and returns no edges.
+        edges.append(
+            {
+                "ref": ref,
+                "name": str(entry.get("name") or ""),
+                "subscriber_count": _to_int(entry.get("subscribers")),
+            }
+        )
+
+    return {
+        "channel_id": str(row.get("id") or ""),
+        "channel_ref": str(row.get("url") or ""),
+        "handle": str(row.get("handle") or ""),
+        "title": str(row.get("name") or ""),
+        "description": str(row.get("Description") or ""),
+        "subscriber_count": _to_int(row.get("subscribers")),
+        "video_count": _to_int(row.get("videos_count")),
+        "view_count": _to_int(row.get("views")),
+        "published_at": str(row.get("created_date") or ""),
+        "featured_channel_refs": refs,
+        "featured_channel_edges": edges,
+        "discovery_input": row.get("discovery_input") or {},
+    }
+
+
+def parse_video(row: dict) -> dict:
+    """Videos posts collector record -> our video shape.
+
+    `next_recommended_videos` is a secondary (Tier B) edge source; entries are
+    kept raw and mined by the caller, since only some carry a channel ref.
+
+    Deliberately dropped: `transcript`, `formatted_transcript`, `chapters`,
+    `preview_image`, `codecs`, `quality*`, `viewport_frames`, `audio_tracks`
+    and the other media fields the collector returns. This harness does no
+    image or video processing — v1 reasons over engagement metrics and graph
+    structure only. Carrying media payloads would bloat state and the compaction
+    prompts for data nothing consumes. Transcript/scene analysis stays a v2
+    concern (master plan §8.4 `analysis_results`), and the `thumbnail_vision`
+    tier in cascade.py is unused for the same reason.
+    """
+    recommended = row.get("next_recommended_videos") or []
+    return {
+        "video_id": str(row.get("video_id") or ""),
+        "channel_id": str(row.get("youtuber_id") or row.get("channel_id") or ""),
+        "channel_ref": str(row.get("channel_url") or row.get("youtuber") or ""),
+        "title": str(row.get("title") or ""),
+        "description": str(row.get("description") or ""),
+        "view_count": _to_int(row.get("views")),
+        "like_count": _to_int(row.get("likes")),
+        "comment_count": _to_int(row.get("num_comments")),
+        "published_at": str(row.get("date_posted") or ""),
+        "next_recommended": recommended if isinstance(recommended, list) else [],
+    }
+
+
+def parse_comment(row: dict) -> dict:
+    """Comments collector record -> our comment shape.
+
+    `user_channel` is the commenter's own channel and `user_id` its UC id —
+    the actual edge, structured. The older client tried to regex `@mentions`
+    out of comment text; that is guesswork next to fields that are simply
+    present.
+
+    Timestamps: `date` is relative ("10 minutes ago") and useless downstream;
+    `date_iso` is the real ISO-8601 value.
+    """
+    return {
+        "comment_id": str(row.get("comment_id") or ""),
+        "video_id": str(row.get("video_id") or ""),
+        "text": str(row.get("comment_text") or ""),
+        "author_name": str(row.get("username") or ""),
+        "author_channel_ref": str(row.get("user_channel") or ""),
+        "author_channel_id": str(row.get("user_id") or ""),
+        "like_count": _to_int(row.get("likes")),
+        "reply_count": _to_int(row.get("replies")),
+        "published_at": str(row.get("date_iso") or ""),
+    }
+
+
+_PARSERS = {
+    "channels": parse_channel,
+    "videos": parse_video,
+    "comments": parse_comment,
+}
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
+
 class BrightDataClient:
-    BASE_URL = "https://api.brightdata.com"
+    BASE_URL = "https://api.brightdata.com/datasets/v3"
 
     def __init__(self) -> None:
         cfg = get_config()
+        self._cfg = cfg.brightdata
         self._api_key = cfg.brightdata.api_key
-        self._dataset_id = cfg.brightdata.dataset_id
+        self._mode = cfg.brightdata.mode
         self._semaphore = asyncio.Semaphore(cfg.harness.brightdata_max_concurrency)
+        self._dataset_ids: dict[str, str] = {
+            "channels": cfg.brightdata.channels_dataset_id,
+            "videos": cfg.brightdata.videos_dataset_id,
+            "comments": cfg.brightdata.comments_dataset_id,
+        }
+
+    # -- transport ---------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -63,203 +305,212 @@ class BrightDataClient:
             "Content-Type": "application/json",
         }
 
-    def _get_sync(self, endpoint: str, params: dict[str, Any] | None = None) -> dict:
-        response = httpx.get(
-            f"{self.BASE_URL}/{endpoint}",
+    @_create_retry_decorator(_is_retryable_trigger)
+    async def _trigger(
+        self,
+        client: httpx.AsyncClient,
+        dataset_id: str,
+        payload: list[dict],
+        params: dict[str, Any],
+    ) -> str:
+        response = await client.post(
+            f"{self.BASE_URL}/trigger",
             headers=self._headers(),
-            params=params or {},
+            params={"dataset_id": dataset_id, **params},
+            json=payload,
+            timeout=60.0,
+        )
+        if response.status_code >= 400 and response.status_code not in RETRYABLE_STATUSES:
+            # Validation errors are informative and permanent — surface the
+            # body rather than burning five retries on an input the API will
+            # never accept.
+            raise BrightDataError(
+                f"trigger rejected ({response.status_code}): {response.text[:400]}"
+            )
+        response.raise_for_status()
+        data = response.json()
+        snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else None
+        if not snapshot_id:
+            raise BrightDataError(f"trigger returned no snapshot_id: {data}")
+        return str(snapshot_id)
+
+    @_create_retry_decorator()
+    async def _progress(self, client: httpx.AsyncClient, snapshot_id: str) -> str:
+        response = await client.get(
+            f"{self.BASE_URL}/progress/{snapshot_id}",
+            headers=self._headers(),
             timeout=30.0,
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return str(data.get("status", "")) if isinstance(data, dict) else ""
 
     @_create_retry_decorator()
-    async def _get_async(
-        self, client: httpx.AsyncClient, endpoint: str, params: dict[str, Any] | None = None
-    ) -> dict:
+    async def _fetch(self, client: httpx.AsyncClient, snapshot_id: str) -> list[dict]:
+        response = await client.get(
+            f"{self.BASE_URL}/snapshot/{snapshot_id}",
+            headers=self._headers(),
+            params={"format": "json"},
+            timeout=180.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        # A dict here means "still running" despite progress saying ready.
+        raise BrightDataError(f"snapshot not ready: {str(data)[:200]}")
+
+    async def _collect(
+        self,
+        collector: CollectorName,
+        payload: list[dict],
+        params: dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Trigger a job, poll it to completion, return its raw rows."""
+        if not payload:
+            return []
+        if self._mode == "replay":
+            return self._replay(collector)
+
+        dataset_id = self._dataset_ids[collector]
+        deadline = time.monotonic() + self._cfg.poll_max_seconds
+
         async with self._semaphore:
-            response = await client.get(
-                f"{self.BASE_URL}/{endpoint}",
-                headers=self._headers(),
-                params=params or {},
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()
+            async with httpx.AsyncClient() as client:
+                snapshot_id = await self._trigger(
+                    client, dataset_id, payload, params or {}
+                )
+                logger.info(
+                    "brightdata_triggered",
+                    collector=collector,
+                    snapshot_id=snapshot_id,
+                    inputs=len(payload),
+                    params=params or {},
+                )
 
-    def search_youtube(self, keyword: str, max_results: int = 20) -> list[dict]:
-        data = self._get_sync(
-            "scraper/youtube/search",
-            {"keyword": keyword, "max_results": max_results},
+                while True:
+                    status = await self._progress(client, snapshot_id)
+                    if status == "ready":
+                        break
+                    if status in ("failed", "canceled"):
+                        raise BrightDataError(
+                            f"snapshot {snapshot_id} ended with status={status}"
+                        )
+                    if time.monotonic() > deadline:
+                        raise BrightDataError(
+                            f"snapshot {snapshot_id} still {status!r} after "
+                            f"{self._cfg.poll_max_seconds}s"
+                        )
+                    await asyncio.sleep(self._cfg.poll_interval_seconds)
+
+                rows = await self._fetch(client, snapshot_id)
+
+        logger.info(
+            "brightdata_collected",
+            collector=collector,
+            snapshot_id=snapshot_id,
+            records=len(rows),
         )
-        return self._parse_search_results(data)
+        return rows
 
-    def get_channel_details(self, channel_id: str) -> dict | None:
-        try:
-            data = self._get_sync(
-                "scraper/youtube/channel",
-                {"channel_id": channel_id},
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return None
-            raise
-        return self._parse_channel(data)
+    def _replay(self, collector: CollectorName) -> list[dict]:
+        """Serve a recorded fixture instead of calling the API.
 
-    def get_channel_playlists(self, channel_id: str) -> list[dict]:
-        data = self._get_sync(
-            "scraper/youtube/playlists",
-            {"channel_id": channel_id},
-        )
-        return self._parse_playlists(data)
+        Missing fixtures return empty rather than raising — a replay run should
+        exercise the graph's empty-result paths too, not crash on them.
+        """
+        path = Path(self._cfg.fixtures_dir) / f"{collector}.json"
+        if not path.exists():
+            logger.warning("brightdata_replay_missing", collector=collector, path=str(path))
+            return []
+        with path.open() as handle:
+            data = json.load(handle)
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
 
-    def get_video_comments(
-        self, video_id: str, max_results: int = 50
-    ) -> list[dict]:
-        data = self._get_sync(
-            "scraper/youtube/comments",
-            {"video_id": video_id, "max_results": max_results},
-        )
-        return self._parse_comments(data)
+    # -- public API --------------------------------------------------------
 
-    def get_video_details(self, video_id: str) -> dict | None:
-        try:
-            data = self._get_sync(
-                "scraper/youtube/video",
-                {"video_id": video_id},
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                return None
-            raise
-        return self._parse_video(data)
+    async def discover_channels_by_keyword(
+        self, keywords: Iterable[str], limit_per_input: int
+    ) -> tuple[list[dict], int]:
+        """Keyword -> channels, via the collector's discovery mode.
 
-    def crawl_channel_relationships(
-        self, channel_ids: list[str]
-    ) -> list[dict]:
-        edges: list[dict] = []
-        for ch_id in channel_ids:
-            edges.extend(self._crawl_one_channel(ch_id))
-        return edges
+        `limit_per_input` is mandatory in practice: uncapped, one keyword
+        returned 469 records ($0.70, 9% of the monthly free tier).
+        """
+        payload = [{"keyword": kw} for kw in keywords if kw and kw.strip()]
+        if not payload:
+            return [], 0
+        params: dict[str, Any] = {"type": "discover_new", "discover_by": "keyword"}
+        if limit_per_input > 0:
+            params["limit_per_input"] = limit_per_input
+        rows = await self._collect("channels", payload, params)
+        return [parse_channel(row) for row in rows], len(rows)
 
-    def _crawl_one_channel(self, channel_id: str) -> list[dict]:
-        edges: list[dict] = []
+    async def get_channels(self, refs: Iterable[str]) -> tuple[list[dict], int]:
+        """Fetch channel records by handle / UC id / URL.
 
-        playlists = self.get_channel_playlists(channel_id)
-        for pl in playlists:
-            linked_channel_id = pl.get("channel_id", "")
-            if linked_channel_id and linked_channel_id != channel_id:
-                edges.append({
-                    "source_channel_id": channel_id,
-                    "target_channel_id": linked_channel_id,
-                    "edge_type": "playlist",
-                })
+        This is the Tier A graph-walk call: one record per channel, and the
+        `featured_channels` edges come back inside it for free.
+        """
+        urls = _dedupe(normalize_channel_ref(r) for r in refs)
+        if not urls:
+            return [], 0
+        rows = await self._collect("channels", [{"url": u} for u in urls])
+        return [parse_channel(row) for row in rows], len(rows)
 
-        try:
-            videos = self.search_youtube(f"uploader:{channel_id}", max_results=5)
-        except Exception:
-            videos = []
+    async def get_channel_videos(
+        self, refs: Iterable[str], limit_per_input: int
+    ) -> tuple[list[dict], int]:
+        """Tier B: recent videos for channels, capped per channel."""
+        urls = _dedupe(normalize_channel_ref(r) for r in refs)
+        if not urls:
+            return [], 0
+        params: dict[str, Any] = {"type": "discover_new", "discover_by": "url"}
+        if limit_per_input > 0:
+            params["limit_per_input"] = limit_per_input
+        rows = await self._collect("videos", [{"url": u} for u in urls], params)
+        return [parse_video(row) for row in rows], len(rows)
 
-        for vid in videos[:5]:
-            vid_id = vid.get("video_id") or vid.get("id", "")
-            if not vid_id:
-                continue
-            comments = self.get_video_comments(vid_id, max_results=20)
-            for comment in comments:
-                mentioned_ch = comment.get("mentioned_channel_id", "")
-                if mentioned_ch and mentioned_ch != channel_id:
-                    edges.append({
-                        "source_channel_id": channel_id,
-                        "target_channel_id": mentioned_ch,
-                        "edge_type": comment.get("edge_type", "comment_mention"),
-                    })
+    async def get_videos(self, refs: Iterable[str]) -> tuple[list[dict], int]:
+        urls = _dedupe(normalize_video_ref(r) for r in refs)
+        if not urls:
+            return [], 0
+        rows = await self._collect("videos", [{"url": u} for u in urls])
+        return [parse_video(row) for row in rows], len(rows)
 
-        return edges
+    async def get_comments(
+        self, refs: Iterable[str], num_of_comments: int
+    ) -> tuple[list[dict], int]:
+        """Tier B: comments per video, capped by `num_of_comments`.
 
-    def _parse_search_results(self, data: dict) -> list[dict]:
-        results: list[dict] = []
-        items = data.get("items") or data.get("results") or []
-        for item in items:
-            snippet = item.get("snippet", {}) or item
-            results.append({
-                "video_id": item.get("id", {}).get("videoId", "") if isinstance(item.get("id"), dict) else item.get("id", ""),
-                "channel_id": snippet.get("channelId", ""),
-                "title": snippet.get("title", ""),
-                "description": snippet.get("description", ""),
-                "channel_title": snippet.get("channelTitle", ""),
-                "published_at": snippet.get("publishedAt", ""),
-                "thumbnails": snippet.get("thumbnails", {}),
-            })
-        return results
+        That field name is not a guess — `limit` and `max_results` are rejected
+        by the API as unknown fields, and `num_of_comments=10` was measured
+        returning exactly 10 records against videos with hundreds.
+        """
+        urls = _dedupe(normalize_video_ref(r) for r in refs)
+        if not urls:
+            return [], 0
+        payload: list[dict] = []
+        for url in urls:
+            item: dict[str, Any] = {"url": url}
+            if num_of_comments > 0:
+                item["num_of_comments"] = num_of_comments
+            payload.append(item)
+        rows = await self._collect("comments", payload)
+        return [parse_comment(row) for row in rows], len(rows)
 
-    def _parse_channel(self, data: dict) -> dict:
-        snippet = data.get("snippet", {}) or data
-        stats = data.get("statistics", {}) or data
-        return {
-            "channel_id": data.get("id", ""),
-            "title": snippet.get("title", ""),
-            "description": snippet.get("description", ""),
-            "subscriber_count": int(str(stats.get("subscriberCount", 0))),
-            "video_count": int(str(stats.get("videoCount", 0))),
-            "view_count": int(str(stats.get("viewCount", 0))),
-            "published_at": snippet.get("publishedAt", ""),
-        }
 
-    def _parse_video(self, data: dict) -> dict:
-        snippet = data.get("snippet", {}) or data
-        stats = data.get("statistics", {}) or data
-        return {
-            "video_id": data.get("id", ""),
-            "channel_id": snippet.get("channelId", ""),
-            "title": snippet.get("title", ""),
-            "description": snippet.get("description", ""),
-            "view_count": int(str(stats.get("viewCount", 0))),
-            "like_count": int(str(stats.get("likeCount", 0))),
-            "comment_count": int(str(stats.get("commentCount", 0))),
-            "published_at": snippet.get("publishedAt", ""),
-        }
+def _dedupe(values: Iterable[str]) -> list[str]:
+    """Order-preserving dedupe.
 
-    def _parse_playlists(self, data: dict) -> list[dict]:
-        results: list[dict] = []
-        items = data.get("items") or data.get("playlists") or []
-        for item in items:
-            snippet = item.get("snippet", {}) or item
-            results.append({
-                "playlist_id": item.get("id", ""),
-                "title": snippet.get("title", ""),
-                "channel_id": snippet.get("channelId", ""),
-                "channel_title": snippet.get("channelTitle", ""),
-                "item_count": int(str(item.get("contentDetails", {}).get("itemCount", 0)) if isinstance(item.get("contentDetails"), dict) else 0),
-            })
-        return results
-
-    def _parse_comments(self, data: dict) -> list[dict]:
-        results: list[dict] = []
-        items = data.get("items") or data.get("comments") or []
-        for item in items:
-            snippet = (
-                item.get("snippet", {})
-                or item.get("topLevelComment", {}).get("snippet", {})
-                or item
-            )
-            text = snippet.get("textDisplay", "") or snippet.get("textOriginal", "") or ""
-            mentioned_channel_id = ""
-            mentioned_channel_title = ""
-            if "@" in text:
-                lines = text.split("\n")
-                for line in lines:
-                    if line.strip().startswith("@"):
-                        handle = line.strip().split()[0].lstrip("@")
-                        mentioned_channel_title = handle
-
-            results.append({
-                "comment_id": item.get("id", ""),
-                "text": text,
-                "author_channel_id": snippet.get("authorChannelId", {}).get("value", "") if isinstance(snippet.get("authorChannelId"), dict) else snippet.get("authorChannelId", ""),
-                "mentioned_channel_id": mentioned_channel_id,
-                "mentioned_channel_title": mentioned_channel_title,
-                "edge_type": "comment_mention",
-                "like_count": int(str(snippet.get("likeCount", 0))),
-                "published_at": snippet.get("publishedAt", ""),
-            })
-        return results
+    Bright Data bills per record, and the API offers no request idempotency
+    key — so sending the same URL twice in one payload is charged twice. This
+    is the one place that can be prevented cheaply.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out

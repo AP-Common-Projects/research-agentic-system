@@ -8,9 +8,9 @@ import json
 import uuid
 
 from src.graph import run_pipeline
-from src.db.connection import close_pools
+from src.db.connection import close_async_pool, close_pools
 from src.db.schema import ensure_schema
-from src.db.checkpointer import get_checkpointer
+from src.db.checkpointer import get_async_checkpointer
 from scripts.quota_budget_check import check_resource, format_report
 
 
@@ -39,7 +39,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
     thread_id = resume_thread_id or f"thread-{uuid.uuid4().hex[:12]}"
 
     ensure_schema()
-    checkpointer = get_checkpointer()
+    checkpointer = await get_async_checkpointer()
 
     final = await run_pipeline(
         candidate_niches=niches,
@@ -48,6 +48,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         checkpointer=checkpointer,
         resume=resume_thread_id is not None,
     )
+    await close_async_pool()
     close_pools()
     return final
 

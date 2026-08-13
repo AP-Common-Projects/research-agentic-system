@@ -58,7 +58,12 @@ def hydrate_metadata(state: dict) -> dict:
             ],
         }
 
+    # A fresh client each round means its internal quota counter starts at zero
+    # every time, so seed it from the run-level total carried in state —
+    # otherwise the 90%-of-ceiling guard only ever sees one round's usage.
     client = YouTubeAPIClient()
+    quota_baseline = state.get("youtube_quota_used", 0)
+    client.seed_quota_used(quota_baseline)
     channels = client.get_channels(to_hydrate)
 
     # Per-track attribution, not a flat label. "graph_walk" here means the
@@ -100,6 +105,7 @@ def hydrate_metadata(state: dict) -> dict:
         )
 
     newly_hydrated = set(ch["channel_id"] for ch in channels)
+    quota_spent = client.quota_consumed_this_call(quota_baseline)
 
     node_log = NodeLog(
         node_name="hydrate_metadata",
@@ -107,7 +113,8 @@ def hydrate_metadata(state: dict) -> dict:
         input_summary={
             "channels_hydrated": len(channels),
             "videos_fetched": len(all_video_ids),
-            "quota_used": client.get_quota_used(),
+            "quota_spent_this_round": quota_spent,
+            "quota_used_total": client.get_quota_used(),
             "hydration_errors": len(errors),
         },
         latency_ms=None,
@@ -117,6 +124,7 @@ def hydrate_metadata(state: dict) -> dict:
     return {
         "discovered_video_ids": all_video_ids,
         "hydrated_channel_ids": newly_hydrated,
+        "youtube_quota_used": quota_spent,
         "node_logs": [node_log.model_dump()],
         "errors": errors,
         "next_action": "continue",

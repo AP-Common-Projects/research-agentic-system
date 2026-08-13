@@ -72,6 +72,19 @@ class YouTubeAPIClient:
     def get_quota_used(self) -> int:
         return self._quota_used
 
+    def seed_quota_used(self, units: int) -> None:
+        """Carry a run's accumulated quota into a freshly constructed client.
+
+        hydrate_metadata builds a new client every round, so without this the
+        instance counter restarts at zero each time and `check_quota` can never
+        see a run approaching the daily ceiling.
+        """
+        self._quota_used = max(self._quota_used, int(units or 0))
+
+    def quota_consumed_this_call(self, baseline: int) -> int:
+        """Units spent since `baseline` — what the caller reports into state."""
+        return max(0, self._quota_used - int(baseline or 0))
+
     def check_quota(self, planned_units: int) -> bool:
         cfg = get_config().harness
         ceiling = int(cfg.youtube_daily_quota_ceiling * cfg.youtube_quota_target_ratio)

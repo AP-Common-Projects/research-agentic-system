@@ -112,31 +112,55 @@ def _mock_youtube(mock):
 
 
 def _patch_graph_walk_success(mock):
+    """Tier A returns one channel whose record resolves to found_ch_1."""
     client = MagicMock()
-    client.crawl_channel_relationships.return_value = [
-        {"source_channel_id": "seed_ch_a", "target_channel_id": "found_ch_1", "edge_type": "playlist"},
-    ]
+    client.get_channels = AsyncMock(
+        return_value=(
+            [{
+                "channel_id": "found_ch_1",
+                "channel_ref": "https://www.youtube.com/@seed_a",
+                "featured_channel_edges": [],
+            }],
+            1,
+        )
+    )
+    client.get_channel_videos = AsyncMock(return_value=([], 0))
+    client.get_comments = AsyncMock(return_value=([], 0))
     mock.return_value = client
     return client
 
 
 def _patch_keyword_success(mock):
     client = MagicMock()
-    client.search_youtube.return_value = [{"channel_id": "kw_ch_1", "title": "kw result"}]
+    client.discover_channels_by_keyword = AsyncMock(
+        return_value=(
+            [{
+                "channel_id": "kw_ch_1",
+                "channel_ref": "https://www.youtube.com/@kw1",
+                "title": "kw result",
+                "subscriber_count": 1234,
+            }],
+            1,
+        )
+    )
     mock.return_value = client
     return client
 
 
 def _patch_keyword_fail(mock):
     client = MagicMock()
-    client.search_youtube.side_effect = httpx.TimeoutException("keyword search timeout")
+    client.discover_channels_by_keyword = AsyncMock(
+        side_effect=httpx.TimeoutException("keyword search timeout")
+    )
     mock.return_value = client
     return client
 
 
 def _patch_graph_walk_fail(mock):
     client = MagicMock()
-    client.crawl_channel_relationships.side_effect = httpx.ConnectError("connection refused")
+    client.get_channels = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    client.get_channel_videos = AsyncMock(return_value=([], 0))
+    client.get_comments = AsyncMock(return_value=([], 0))
     mock.return_value = client
     return client
 
@@ -269,30 +293,67 @@ def test_hydrate_metadata_db_unavailable():
     assert any(l.get("node_name") == "hydrate_metadata" for l in result.get("node_logs", []))
 
 
+def _brightdata_config():
+    """Config double for the Bright Data client.
+
+    Typed values, not bare MagicMocks: `mode` in particular is compared against
+    "replay", and a MagicMock there would silently take the live path in a test
+    that means to exercise transport.
+    """
+    cfg = MagicMock()
+    cfg.brightdata.api_key = "test-key"
+    cfg.brightdata.mode = "live"
+    cfg.brightdata.channels_dataset_id = "gd_channels"
+    cfg.brightdata.videos_dataset_id = "gd_videos"
+    cfg.brightdata.comments_dataset_id = "gd_comments"
+    cfg.brightdata.poll_interval_seconds = 0.0
+    cfg.brightdata.poll_max_seconds = 1.0
+    cfg.harness.brightdata_max_concurrency = 10
+    return cfg
+
+
 @pytest.mark.asyncio
 async def test_rate_limit_on_bright_data():
+    request = httpx.Request("POST", "https://api.brightdata.com/datasets/v3/trigger")
+    response = httpx.Response(429, request=request)
+
     # (1) tenacity retry is invoked on a 429 (retryable) — 5 attempts, then hard failure.
     with patch("src.tools.bright_data.get_config") as mock_cfg, patch("time.sleep"):
-        cfg = MagicMock()
-        cfg.brightdata.api_key = "test-key"
-        cfg.brightdata.dataset_id = "test-ds"
-        cfg.harness.brightdata_max_concurrency = 10
-        mock_cfg.return_value = cfg
+        mock_cfg.return_value = _brightdata_config()
 
-        from src.tools.bright_data import BrightDataClient
+        from src.tools.bright_data import BrightDataClient, BrightDataError
 
         client = BrightDataClient()
-        request = httpx.Request("GET", "https://api.brightdata.com/x")
-        response = httpx.Response(429, request=request)
-        err = httpx.HTTPStatusError("rate limited", request=request, response=response)
-
         aclient = MagicMock()
-        aclient.get = AsyncMock(side_effect=err)
+        aclient.post = AsyncMock(return_value=response)
 
         with pytest.raises(RetryError):
-            await client._get_async(aclient, "scraper/youtube/search", {"keyword": "x"})
+            await client._trigger(aclient, "gd_test", [{"url": "x"}], {})
 
-        assert aclient.get.await_count == 5, "tenacity retry must attempt 5 times on 429"
+        assert aclient.post.await_count == 5, "tenacity retry must attempt 5 times on 429"
+
+    # (2) a validation error is permanent — retrying it five times just burns
+    # time on an input the API will never accept, so it must fail immediately.
+    with patch("src.tools.bright_data.get_config") as mock_cfg, patch("time.sleep"):
+        mock_cfg.return_value = _brightdata_config()
+
+        from src.tools.bright_data import BrightDataClient, BrightDataError
+
+        client = BrightDataClient()
+        bad_request = httpx.Request("POST", "https://api.brightdata.com/datasets/v3/trigger")
+        aclient = MagicMock()
+        aclient.post = AsyncMock(
+            return_value=httpx.Response(
+                400,
+                request=bad_request,
+                json={"error": "Invalid input provided", "code": "validation_error"},
+            )
+        )
+
+        with pytest.raises(BrightDataError, match="trigger rejected"):
+            await client._trigger(aclient, "gd_test", [{"limit": 5}], {})
+
+        assert aclient.post.await_count == 1, "validation errors must not be retried"
 
     # (2) the graph's guarded wrapper turns a hard failure into a recorded error, no crash.
     async def boom(state):
