@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import psycopg
+import pytest
+from psycopg_pool import ConnectionPool
+
+import src.db.connection as db_conn
+from src.db.connection import (
+    close_pools,
+    get_async_connection,
+    get_async_pool,
+    get_connection,
+    get_pool,
+    put_async_connection,
+    put_connection,
+)
+from src.db.schema import create_schema, drop_schema, ensure_schema
+
+
+@pytest.fixture(autouse=True)
+def _reset_pools():
+    close_pools()
+    yield
+    close_pools()
+
+
+class TestConnectionPool:
+    def test_get_pool_creates_singleton(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_pool)
+
+        p1 = get_pool()
+        p2 = get_pool()
+
+        assert p1 is p2
+        assert p1 is mock_pool
+
+    def test_get_pool_passes_config(self, mocker):
+        mock_constructor = mocker.patch("src.db.connection.ConnectionPool")
+
+        get_pool()
+
+        mock_constructor.assert_called_once()
+        _, kwargs = mock_constructor.call_args
+        assert kwargs["min_size"] == 2
+        assert kwargs["max_size"] == 10
+        assert kwargs["open"] is True
+
+    def test_get_async_pool_creates_singleton(self, mocker):
+        mock_pool = mocker.MagicMock()
+        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_pool)
+
+        p1 = get_async_pool()
+        p2 = get_async_pool()
+
+        assert p1 is p2
+
+    def test_get_connection_delegates_to_pool(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mock_conn = mocker.MagicMock()
+        mock_pool.getconn.return_value = mock_conn
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_pool)
+
+        conn = get_connection()
+
+        assert conn is mock_conn
+        mock_pool.getconn.assert_called_once()
+
+    def test_put_connection_returns_to_pool(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mock_conn = mocker.MagicMock()
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_pool)
+
+        put_connection(mock_conn)
+
+        mock_pool.putconn.assert_called_once_with(mock_conn)
+
+    @pytest.mark.asyncio
+    async def test_get_async_connection(self, mocker):
+        mock_pool = mocker.AsyncMock()
+        mock_pool.close = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_pool.getconn.return_value = mock_conn
+        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_pool)
+
+        conn = await get_async_connection()
+
+        assert conn is mock_conn
+        mock_pool.getconn.assert_awaited_once()
+
+    def test_close_pools_cleans_up(self, mocker):
+        mock_sync = mocker.MagicMock(spec=ConnectionPool)
+        mock_async = mocker.MagicMock()
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_sync)
+        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_async)
+
+        get_pool()
+        get_async_pool()
+        assert db_conn._pool is not None
+        assert db_conn._async_pool is not None
+
+        close_pools()
+
+        mock_sync.close.assert_called_once()
+        mock_async.close.assert_called_once()
+        assert db_conn._pool is None
+        assert db_conn._async_pool is None
+
+
+class TestCreateSchema:
+    def test_executes_ddl_and_commits(self, mocker):
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        create_schema(mock_conn)
+
+        mock_cursor.execute.assert_called_once()
+        executed_sql = mock_cursor.execute.call_args[0][0]
+        assert "CREATE TABLE IF NOT EXISTS channels" in executed_sql
+        assert "CREATE TABLE IF NOT EXISTS videos" in executed_sql
+        assert "CREATE TABLE IF NOT EXISTS category_tags" in executed_sql
+        assert "CREATE TABLE IF NOT EXISTS discovery_edges" in executed_sql
+        assert "CREATE TABLE IF NOT EXISTS analysis_results" in executed_sql
+        assert "CREATE EXTENSION IF NOT EXISTS vector" in executed_sql
+        mock_conn.commit.assert_called_once()
+        mock_cursor.close.assert_called_once()
+
+    def test_rollback_on_error(self, mocker):
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = psycopg.OperationalError("boom")
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with pytest.raises(psycopg.OperationalError, match="boom"):
+            create_schema(mock_conn)
+
+        mock_conn.rollback.assert_called_once()
+        mock_conn.commit.assert_not_called()
+        mock_cursor.close.assert_called_once()
+
+    def test_idempotent_two_calls(self, mocker):
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        create_schema(mock_conn)
+        create_schema(mock_conn)
+
+        assert mock_conn.commit.call_count == 2
+
+    def test_all_tables_present_in_ddl(self):
+        from src.db.schema import DDL
+
+        assert "CREATE TABLE IF NOT EXISTS channels" in DDL
+        assert "CREATE TABLE IF NOT EXISTS videos" in DDL
+        assert "CREATE TABLE IF NOT EXISTS category_tags" in DDL
+        assert "CREATE TABLE IF NOT EXISTS discovery_edges" in DDL
+        assert "CREATE TABLE IF NOT EXISTS analysis_results" in DDL
+
+    def test_indexes_present_in_ddl(self):
+        from src.db.schema import DDL
+
+        assert "idx_videos_channel_id" in DDL
+        assert "idx_discovery_edges_source_target" in DDL
+        assert "idx_category_tags_entity_tree" in DDL
+        assert "idx_category_tags_tree_node" in DDL
+
+    def test_channel_embedding_column_present(self):
+        from src.db.schema import DDL
+
+        assert "channel_embedding vector(1536)" in DDL
+
+    def test_fk_constraints_in_ddl(self):
+        from src.db.schema import DDL
+
+        assert "REFERENCES channels(channel_id) ON DELETE CASCADE" in DDL
+        assert "REFERENCES videos(video_id) ON DELETE CASCADE" in DDL
+
+
+class TestForeignKeyEnforcement:
+    def test_video_insert_missing_channel_raises(self, mocker):
+        fk_error = psycopg.errors.ForeignKeyViolation(
+            'insert or update on table "videos" violates foreign key constraint'
+        )
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = fk_error
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            create_schema(mock_conn)
+
+        mock_conn.rollback.assert_called_once()
+
+    def test_analysis_insert_missing_video_raises(self, mocker):
+        fk_error = psycopg.errors.ForeignKeyViolation(
+            'insert or update on table "analysis_results" violates foreign key constraint'
+        )
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = fk_error
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            create_schema(mock_conn)
+
+        mock_conn.rollback.assert_called_once()
+
+
+class TestEnsureSchema:
+    def test_gets_conn_calls_create_schema_puts_back(self, mocker):
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mocker.MagicMock()
+        mocker.patch("src.db.connection.get_connection", return_value=mock_conn)
+        mock_put = mocker.patch("src.db.connection.put_connection")
+
+        ensure_schema()
+
+        mock_put.assert_called_once_with(mock_conn)
+
+    def test_puts_back_on_error(self, mocker):
+        mock_conn = mocker.MagicMock()
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = psycopg.OperationalError("oops")
+        mock_conn.cursor.return_value = mock_cursor
+        mocker.patch("src.db.connection.get_connection", return_value=mock_conn)
+        mock_put = mocker.patch("src.db.connection.put_connection")
+
+        with pytest.raises(psycopg.OperationalError):
+            ensure_schema()
+
+        mock_put.assert_called_once_with(mock_conn)
+
+
+class TestDropSchema:
+    def test_drops_tables_in_order(self, mocker):
+        mock_cursor = mocker.MagicMock()
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        drop_schema(mock_conn)
+
+        assert mock_cursor.execute.call_count >= 5
+        calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any("analysis_results" in c for c in calls)
+        assert any("discovery_edges" in c for c in calls)
+        assert any("category_tags" in c for c in calls)
+        assert any("videos" in c for c in calls)
+        assert any("channels" in c for c in calls)
+        mock_conn.commit.assert_called_once()
+
+    def test_rollback_on_error(self, mocker):
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = [None, psycopg.OperationalError("oops")]
+        mock_conn = mocker.MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        with pytest.raises(psycopg.OperationalError):
+            drop_schema(mock_conn)
+
+        mock_conn.rollback.assert_called_once()
+        mock_conn.commit.assert_not_called()
+
+
+class TestCheckpointer:
+    def test_get_checkpointer_uses_project_pool(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mocker.patch("src.db.checkpointer.get_pool", return_value=mock_pool)
+        mock_saver_cls = mocker.patch("src.db.checkpointer.PostgresSaver")
+        mock_saver = mocker.MagicMock()
+        mock_saver_cls.return_value = mock_saver
+
+        from src.db.checkpointer import get_checkpointer
+
+        result = get_checkpointer()
+
+        mock_saver_cls.assert_called_once_with(mock_pool)
+        mock_saver.setup.assert_called_once()
+        assert result is mock_saver
+
+    def test_get_checkpointer_calls_setup(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mocker.patch("src.db.checkpointer.get_pool", return_value=mock_pool)
+        mock_saver = mocker.MagicMock()
+        mocker.patch("src.db.checkpointer.PostgresSaver", return_value=mock_saver)
+
+        from src.db.checkpointer import get_checkpointer
+
+        get_checkpointer()
+
+        mock_saver.setup.assert_called_once()

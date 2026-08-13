@@ -1,0 +1,106 @@
+"""Keyword search with its own frontier-equivalent.
+
+Frontier-equivalent: per-node `queries_run` tracks executed query terms.
+Each round: broaden_or_pivot() generates new queries, excluding already-run
+queries. Novelty rate = new_channels_found / total_channels_returned.
+
+Plan §0.2 item 3 required specifying this; the source material had it as
+"not yet specified" — we specify it here.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from src.tools.bright_data import BrightDataClient
+
+
+def broaden_or_pivot(
+    keywords: list[str],
+    queries_run: list[str],
+    previous_results: list[dict],
+) -> list[str]:
+    new_queries: list[str] = []
+
+    if not queries_run:
+        new_queries.extend(keywords)
+        return new_queries
+
+    qualifiers = ["beginner", "tutorial", "2026", "best of", "how to", "guide"]
+    for kw in keywords:
+        for q in qualifiers:
+            candidate = f"{kw} {q}"
+            if candidate not in queries_run and candidate not in new_queries:
+                new_queries.append(candidate)
+
+    if previous_results and len(previous_results) < 3:
+        pivot_terms: set[str] = set()
+        for result in previous_results:
+            title = result.get("title", "")
+            for word in title.split():
+                clean = word.strip(".,!?\"'():;#@").lower()
+                if len(clean) > 3 and clean not in {"the", "and", "for", "you", "how", "with"}:
+                    pivot_terms.add(clean)
+        for term in pivot_terms:
+            if term not in queries_run and term not in new_queries:
+                new_queries.append(term)
+
+    if not new_queries and keywords:
+        for kw in keywords:
+            if kw not in queries_run and kw not in new_queries:
+                new_queries.append(kw)
+
+    return new_queries
+
+
+async def keyword_search(state: dict) -> dict:
+    tree = state.get("tree", {})
+    active_node_id = state.get("active_node_id")
+    if not active_node_id:
+        return {}
+
+    node = tree.get(active_node_id)
+    if node is None:
+        return {}
+
+    keywords = node.get("keywords", [])
+    queries_run = set(node.get("queries_run", []))
+
+    previous_results: list[dict] = []
+    new_queries = broaden_or_pivot(list(keywords), list(queries_run), previous_results)
+
+    new_queries = [q for q in new_queries if q not in queries_run]
+    if not new_queries:
+        return {"keyword_search_done": True}
+
+    client = BrightDataClient()
+    all_channels: dict[str, dict] = {}
+    total_returned = 0
+
+    for query in new_queries:
+        results = client.search_youtube(query, max_results=20)
+        total_returned += len(results)
+        for result in results:
+            ch_id = result.get("channel_id", "")
+            if ch_id and ch_id not in all_channels:
+                all_channels[ch_id] = result
+
+    discovered = state.get("discovered_channel_ids", [])
+    discovered_set = set(discovered)
+    new_channels = [
+        ch_id for ch_id in all_channels if ch_id not in discovered_set
+    ]
+
+    novelty = len(new_channels) / total_returned if total_returned > 0 else 0.0
+
+    updated_node = dict(node)
+    updated_node["queries_run"] = list(queries_run) + new_queries
+    updated_node["_last_keyword_novelty"] = novelty
+    updated_node["_last_keyword_search_at"] = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "discovered_channel_ids": new_channels,
+        "tree": {active_node_id: updated_node},
+        "novelty_rates": [round(novelty, 4)],
+        "keyword_search_done": True,
+    }
