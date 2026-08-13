@@ -168,7 +168,7 @@ async def graph_walk(state: dict) -> dict:
             ],
         }
 
-    client = BrightDataClient()
+    client = BrightDataClient(run_id=state.get("run_id", ""))
     records = 0
 
     # --- Tier A: channel records, edges included ---------------------------

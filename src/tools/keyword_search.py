@@ -140,7 +140,7 @@ async def keyword_search(state: dict) -> dict:
             ],
         }
 
-    client = BrightDataClient()
+    client = BrightDataClient(run_id=state.get("run_id", ""))
     try:
         channels, records = await client.discover_channels_by_keyword(
             new_queries, limit_per_input=limit_per_input

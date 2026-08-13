@@ -10,6 +10,7 @@ import uuid
 from src.graph import run_pipeline
 from src.db.connection import close_async_pool, close_pools
 from src.db.schema import ensure_schema
+from src.observability.logging_config import configure_logging
 from src.db.checkpointer import get_async_checkpointer
 from scripts.quota_budget_check import check_resource, format_report
 
@@ -54,6 +55,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
