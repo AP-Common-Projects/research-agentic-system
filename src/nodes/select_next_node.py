@@ -9,6 +9,16 @@ from __future__ import annotations
 
 def select_next_node(state: dict) -> dict:
     tree: dict[str, dict] = state.get("tree", {})
+    next_action = state.get("next_action", "")
+    active_node_id = state.get("active_node_id")
+
+    if (
+        next_action == "expand_deeper"
+        and active_node_id
+        and active_node_id in tree
+        and tree[active_node_id].get("status") == "active"
+    ):
+        return {"active_node_id": active_node_id}
 
     for node_id, node in tree.items():
         proposed = node.get("proposed_new_nodes", [])

@@ -304,7 +304,37 @@ class TestGraphWalkFrontier:
             ]
             result = await graph_walk(state)
 
-        assert "ch_b" not in result["discovered_channel_ids"]
+        assert "discovered_channel_ids" not in result
+        assert result == {"graph_walk_done": True}
+        mock_client.crawl_channel_relationships.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_graph_walk_expands_new_unexpanded_not_seed(self):
+        state = {
+            "tree": {
+                "node1": {
+                    "id": "node1",
+                    "label": "test",
+                    "seed_channel_ids": ["ch_a"],
+                    "unexpanded_channel_ids": ["ch_b"],
+                },
+            },
+            "active_node_id": "node1",
+            "discovered_channel_ids": ["ch_b"],
+            "visited_channel_ids": {"ch_a"},
+            "expanded_channel_ids": {"ch_a"},
+            "novelty_rates": [],
+        }
+
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd:
+            mock_client = MagicMock()
+            mock_bd.return_value = mock_client
+            mock_client.crawl_channel_relationships.return_value = [
+                {"source_channel_id": "ch_b", "target_channel_id": "ch_c", "edge_type": "playlist"},
+            ]
+            result = await graph_walk(state)
+
+        assert result["discovered_channel_ids"] == ["ch_c"]
 
     @pytest.mark.asyncio
     async def test_no_active_node(self):

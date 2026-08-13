@@ -7,6 +7,7 @@ from src.tools.dedup import (
     persist_video,
 )
 from src.tools.graph_walk import graph_walk
+from src.tools.hydrate_metadata import hydrate_metadata
 from src.tools.keyword_search import broaden_or_pivot, keyword_search
 from src.tools.niche_scanner import compute_opportunity_score, scan_niches
 from src.tools.outlier_score import (
@@ -36,6 +37,7 @@ __all__ = [
     "compute_outlier_score",
     "compute_velocity",
     "graph_walk",
+    "hydrate_metadata",
     "is_known_channel",
     "keyword_search",
     "persist_channel",

@@ -10,7 +10,7 @@ fields; accumulating fields use Annotated with the right merge strategy.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, TypedDict, Union
 
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
@@ -155,70 +155,45 @@ class NicheScannerEvidence(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# HarnessState — the graph's TypedDict (plain dict at runtime)
+# HarnessState — the graph's TypedDict (LangGraph state schema)
 # ---------------------------------------------------------------------------
 
-class HarnessState(dict):
-    """LangGraph state for the Omniframes research pipeline.
+class HarnessState(TypedDict, total=False):
+    run_id: str
+    thread_id: str
 
-    Uses plain dict with Annotated reducers in the field definitions below.
-    This is the TypedDict-like approach that LangGraph natively supports.
-    """
+    candidate_niches: Annotated[list[str], lambda a, b: b]
+    selected_niche: str
+    niche_scanner_evidence: dict
 
-    pass
+    tree: Annotated[dict[str, dict], _merge_tree_dict]
+    active_node_id: Optional[str]
 
+    discovered_channel_ids: Annotated[list[str], _merge_discovered_channels]
+    discovered_video_ids: Annotated[list[str], _merge_discovered_videos]
+    visited_channel_ids: Annotated[set[str], _merge_set_union]
+    expanded_channel_ids: Annotated[set[str], _merge_set_union]
 
-# The state schema with reducers, built for LangGraph's StateGraph.
-HARNESS_STATE_SCHEMA = {
-    # --- Run identity ---
-    "run_id": str,
-    "thread_id": str,
+    branch_compactions: Annotated[list[dict], lambda a, b: a + b]
 
-    # --- Input ---
-    "candidate_niches": Annotated[list[str], lambda a, b: b],
-    "selected_niche": str,
-    "niche_scanner_evidence": dict,
+    novelty_rates: Annotated[list[float], lambda a, b: a + b]
+    saturated_branches: Annotated[list[str], lambda a, b: a + b]
+    budget_spent_usd: Annotated[float, _accumulate_float]
 
-    # --- Taxonomy tree (keyed by node_id) ---
-    "tree": Annotated[dict[str, dict], _merge_tree_dict],
-    "active_node_id": Optional[str],
+    next_action: str
 
-    # --- Discovery (both tracks write — needs dedup reducers) ---
-    "discovered_channel_ids": Annotated[list[str], _merge_discovered_channels],
-    "discovered_video_ids": Annotated[list[str], _merge_discovered_videos],
-    "visited_channel_ids": Annotated[set[str], _merge_set_union],
-    "expanded_channel_ids": Annotated[set[str], _merge_set_union],
+    messages: Annotated[list, add_messages]
 
-    # --- Branch results (accumulated across multiple compactions) ---
-    "branch_compactions": Annotated[list[dict], lambda a, b: a + b],
+    errors: Annotated[list[dict], lambda a, b: a + b]
 
-    # --- Saturation & budget (all accumulating) ---
-    "novelty_rates": Annotated[list[float], lambda a, b: a + b],
-    "saturated_branches": Annotated[list[str], lambda a, b: a + b],
-    "budget_spent_usd": Annotated[float, _accumulate_float],
+    node_logs: Annotated[list[dict], lambda a, b: a + b]
 
-    # --- Routing ---
-    "next_action": str,
+    schema_version: int
 
-    # --- Messages (for LLM-touching nodes) ---
-    "messages": Annotated[list, add_messages],
+    final_report: Optional[dict]
 
-    # --- Errors (accumulated, never overwrite) ---
-    "errors": Annotated[list[dict], lambda a, b: a + b],
-
-    # --- Logging (accumulated across all nodes) ---
-    "node_logs": Annotated[list[dict], lambda a, b: a + b],
-
-    # --- Schema version for migration ---
-    "schema_version": int,
-
-    # --- Report output ---
-    "final_report": Optional[dict],
-
-    # --- Fan-out tracking ---
-    "keyword_search_done": bool,
-    "graph_walk_done": bool,
-}
+    keyword_search_done: bool
+    graph_walk_done: bool
 
 
 def create_initial_state(

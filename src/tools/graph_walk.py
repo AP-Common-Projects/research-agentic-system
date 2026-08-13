@@ -24,9 +24,15 @@ async def graph_walk(state: dict) -> dict:
     if node is None:
         return {}
 
-    frontier = list(node.get("unexpanded_channel_ids") or [])
-    if not frontier:
-        frontier = list(node.get("seed_channel_ids") or [])
+    expanded = set(state.get("expanded_channel_ids", set()))
+    seeds = list(node.get("seed_channel_ids") or [])
+    unexpanded = list(node.get("unexpanded_channel_ids") or [])
+
+    frontier: list[str] = []
+    for c in unexpanded + seeds:
+        if c not in expanded and c not in frontier:
+            frontier.append(c)
+
     if not frontier:
         return {"graph_walk_done": True}
 

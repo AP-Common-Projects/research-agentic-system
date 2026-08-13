@@ -7,11 +7,8 @@ from psycopg_pool import ConnectionPool
 import src.db.connection as db_conn
 from src.db.connection import (
     close_pools,
-    get_async_connection,
-    get_async_pool,
     get_connection,
     get_pool,
-    put_async_connection,
     put_connection,
 )
 from src.db.schema import create_schema, drop_schema, ensure_schema
@@ -46,15 +43,6 @@ class TestConnectionPool:
         assert kwargs["max_size"] == 10
         assert kwargs["open"] is True
 
-    def test_get_async_pool_creates_singleton(self, mocker):
-        mock_pool = mocker.MagicMock()
-        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_pool)
-
-        p1 = get_async_pool()
-        p2 = get_async_pool()
-
-        assert p1 is p2
-
     def test_get_connection_delegates_to_pool(self, mocker):
         mock_pool = mocker.MagicMock(spec=ConnectionPool)
         mock_conn = mocker.MagicMock()
@@ -75,36 +63,28 @@ class TestConnectionPool:
 
         mock_pool.putconn.assert_called_once_with(mock_conn)
 
-    @pytest.mark.asyncio
-    async def test_get_async_connection(self, mocker):
-        mock_pool = mocker.AsyncMock()
-        mock_pool.close = mocker.MagicMock()
+    def test_get_connection_delegates_sync(self, mocker):
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
         mock_conn = mocker.MagicMock()
         mock_pool.getconn.return_value = mock_conn
-        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_pool)
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_pool)
 
-        conn = await get_async_connection()
+        conn = get_connection()
 
         assert conn is mock_conn
-        mock_pool.getconn.assert_awaited_once()
+        mock_pool.getconn.assert_called_once()
 
     def test_close_pools_cleans_up(self, mocker):
         mock_sync = mocker.MagicMock(spec=ConnectionPool)
-        mock_async = mocker.MagicMock()
         mocker.patch("src.db.connection.ConnectionPool", return_value=mock_sync)
-        mocker.patch("src.db.connection.AsyncConnectionPool", return_value=mock_async)
 
         get_pool()
-        get_async_pool()
         assert db_conn._pool is not None
-        assert db_conn._async_pool is not None
 
         close_pools()
 
         mock_sync.close.assert_called_once()
-        mock_async.close.assert_called_once()
         assert db_conn._pool is None
-        assert db_conn._async_pool is None
 
 
 class TestCreateSchema:
