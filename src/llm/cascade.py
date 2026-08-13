@@ -13,7 +13,7 @@ from typing import Any, TypedDict
 
 import structlog
 
-from src.llm.client import get_client
+from src.llm.client import MODEL_PRICING, get_client
 
 logger = structlog.get_logger(__name__)
 
@@ -28,15 +28,16 @@ class TierConfig(TypedDict):
     output_cost_per_1m: float
 
 
-TIER_MAP: dict[str, TierConfig] = {
+# Pricing is NOT duplicated here — it's looked up from src.llm.client.MODEL_PRICING
+# by model_name (see _with_pricing) so there is exactly one source of truth for
+# per-model cost. TIER_MAP only maps a logical tier to a model + call params.
+_TIER_MAP_BASE: dict[str, dict[str, Any]] = {
     "frontier": {
         "provider": "deepseek",
         "model_name": "deepseek-v4-pro",
         "thinking": True,
         "temperature": 0.0,
         "max_tokens": 16384,
-        "input_cost_per_1m": 0.44,
-        "output_cost_per_1m": 0.87,
     },
     "mid": {
         "provider": "deepseek",
@@ -44,8 +45,6 @@ TIER_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.0,
         "max_tokens": 8192,
-        "input_cost_per_1m": 0.44,
-        "output_cost_per_1m": 0.87,
     },
     "cheap": {
         "provider": "deepseek",
@@ -53,8 +52,6 @@ TIER_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.7,
         "max_tokens": 4096,
-        "input_cost_per_1m": 0.14,
-        "output_cost_per_1m": 0.28,
     },
     "cross_judge": {
         "provider": "kimi",
@@ -62,8 +59,6 @@ TIER_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.0,
         "max_tokens": 4096,
-        "input_cost_per_1m": 3.00,
-        "output_cost_per_1m": 15.00,
     },
     "thumbnail_vision": {
         "provider": "kimi",
@@ -71,20 +66,16 @@ TIER_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.0,
         "max_tokens": 4096,
-        "input_cost_per_1m": 0.95,
-        "output_cost_per_1m": 4.00,
     },
 }
 
-FALLBACK_MAP: dict[str, TierConfig] = {
+_FALLBACK_MAP_BASE: dict[str, dict[str, Any]] = {
     "frontier": {
         "provider": "kimi",
         "model_name": "kimi-k3",
         "thinking": False,
         "temperature": 0.0,
         "max_tokens": 16384,
-        "input_cost_per_1m": 3.00,
-        "output_cost_per_1m": 15.00,
     },
     "mid": {
         "provider": "kimi",
@@ -92,8 +83,6 @@ FALLBACK_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.0,
         "max_tokens": 8192,
-        "input_cost_per_1m": 3.00,
-        "output_cost_per_1m": 15.00,
     },
     "cheap": {
         "provider": "kimi",
@@ -101,9 +90,25 @@ FALLBACK_MAP: dict[str, TierConfig] = {
         "thinking": False,
         "temperature": 0.7,
         "max_tokens": 4096,
-        "input_cost_per_1m": 0.95,
-        "output_cost_per_1m": 4.00,
     },
+}
+
+
+def _with_pricing(cfg: dict[str, Any]) -> TierConfig:
+    pricing = MODEL_PRICING.get(cfg["model_name"], {"input": 0.0, "output": 0.0})
+    return {
+        **cfg,
+        "input_cost_per_1m": pricing["input"],
+        "output_cost_per_1m": pricing["output"],
+    }  # type: ignore[return-value]
+
+
+TIER_MAP: dict[str, TierConfig] = {
+    tier: _with_pricing(cfg) for tier, cfg in _TIER_MAP_BASE.items()
+}
+
+FALLBACK_MAP: dict[str, TierConfig] = {
+    tier: _with_pricing(cfg) for tier, cfg in _FALLBACK_MAP_BASE.items()
 }
 
 

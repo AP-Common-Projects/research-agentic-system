@@ -11,6 +11,27 @@ from src.graph import run_pipeline
 from src.db.connection import close_pools
 from src.db.schema import ensure_schema
 from src.db.checkpointer import get_checkpointer
+from scripts.quota_budget_check import check_resource, format_report
+
+
+def _preflight_quota_check(config_path: str) -> bool:
+    """Run the quota_budget_check gate before starting a run.
+
+    Returns True if the run should proceed, False if a resource EXCEEDS its
+    ceiling and the run should be aborted before burning any real quota.
+    """
+    with open(config_path) as f:
+        config = json.load(f)
+
+    results = [check_resource(r) for r in config["resources"]]
+    print(format_report(results))
+
+    if any(r["status"] == "EXCEEDS" for r in results):
+        print("\nAborting: at least one resource EXCEEDS its ceiling per the quota config.")
+        return False
+    if any(r["status"] == "WARN" for r in results):
+        print("\nWARNING: at least one resource is at or above its warn threshold. Proceeding.")
+    return True
 
 
 async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
@@ -32,11 +53,23 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Omniframes YouTube niche research harness")
+    parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
     parser.add_argument("--json", action="store_true", help="Emit final state as JSON")
+    parser.add_argument(
+        "--quota-check",
+        metavar="CONFIG_JSON",
+        help=(
+            "Path to a quota_budget_check config (see "
+            "scripts/quota_budget_check.py --write-example). Run as a "
+            "pre-flight gate; aborts before starting if any resource EXCEEDS."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.quota_check and not _preflight_quota_check(args.quota_check):
+        raise SystemExit(1)
 
     final = asyncio.run(_run(args.niches, args.resume))
 

@@ -13,7 +13,14 @@ from openai.types.chat.chat_completion import Choice
 from openai.types.completion_usage import CompletionUsage
 
 from src.llm.cascade import complete_tier, estimate_cost, get_model_for_tier
-from src.llm.client import LLMClient, get_client
+from src.llm.client import OPENROUTER_MODEL_SLUGS, LLMClient, get_client
+
+
+def _mock_openrouter_config():
+    mock_cfg = MagicMock()
+    mock_cfg.openrouter.api_key = "sk-test"
+    mock_cfg.openrouter.base_url = "https://openrouter.ai/api/v1"
+    return mock_cfg
 
 
 def _fake_completion(content: str, prompt_tokens: int = 100, completion_tokens: int = 50) -> ChatCompletion:
@@ -44,17 +51,13 @@ def _fake_completion(content: str, prompt_tokens: int = 100, completion_tokens: 
 class TestLLMClientComplete:
     @patch("src.llm.client.get_config")
     def test_returns_expected_structure(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("Hello, world!")
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(
                 prompt="Say hello",
                 system="You are helpful.",
@@ -74,11 +77,7 @@ class TestLLMClientComplete:
 
     @patch("src.llm.client.get_config")
     def test_handles_none_content(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
@@ -97,18 +96,14 @@ class TestLLMClientComplete:
             usage=CompletionUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="deepseek-v4-pro")
 
         assert result["content"] == ""
 
     @patch("src.llm.client.get_config")
     def test_handles_no_usage(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
@@ -127,7 +122,7 @@ class TestLLMClientComplete:
             usage=None,
         )
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="deepseek-v4-pro")
 
         assert result["usage"]["prompt_tokens"] == 0
@@ -136,102 +131,78 @@ class TestLLMClientComplete:
 
     @patch("src.llm.client.get_config")
     def test_pricing_deepseek_v4_pro(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok", prompt_tokens=1_000_000, completion_tokens=1_000_000)
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="deepseek-v4-pro")
 
         assert result["cost_usd"] == pytest.approx(0.44 + 0.87)
 
     @patch("src.llm.client.get_config")
     def test_pricing_deepseek_v4_flash(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok", prompt_tokens=1_000_000, completion_tokens=1_000_000)
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="deepseek-v4-flash")
 
         assert result["cost_usd"] == pytest.approx(0.14 + 0.28)
 
     @patch("src.llm.client.get_config")
     def test_pricing_kimi_k3(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok", prompt_tokens=1_000_000, completion_tokens=1_000_000)
 
-        with patch.object(client._get_client("kimi").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="kimi-k3")
 
         assert result["cost_usd"] == pytest.approx(3.00 + 15.00)
 
     @patch("src.llm.client.get_config")
     def test_pricing_kimi_k2_6(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok", prompt_tokens=1_000_000, completion_tokens=1_000_000)
 
-        with patch.object(client._get_client("kimi").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="kimi-k2.6")
 
         assert result["cost_usd"] == pytest.approx(0.95 + 4.00)
 
     @patch("src.llm.client.get_config")
     def test_unknown_model_zero_cost(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok", prompt_tokens=1000, completion_tokens=500)
 
-        with patch.object(client._get_client("deepseek").chat.completions, "create", return_value=fake):
+        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
             result = client.complete(prompt="test", model="unknown-model")
 
         assert result["cost_usd"] == 0.0
 
     @patch("src.llm.client.get_config")
     def test_system_prompt_included(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok")
         mock_create = MagicMock(return_value=fake)
-        client._get_client("deepseek").chat.completions.create = mock_create
+        client._get_client().chat.completions.create = mock_create
 
         client.complete(
             prompt="user message",
@@ -245,17 +216,13 @@ class TestLLMClientComplete:
 
     @patch("src.llm.client.get_config")
     def test_no_system_prompt(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok")
         mock_create = MagicMock(return_value=fake)
-        client._get_client("deepseek").chat.completions.create = mock_create
+        client._get_client().chat.completions.create = mock_create
 
         client.complete(prompt="user message", model="deepseek-v4-pro")
 
@@ -265,17 +232,13 @@ class TestLLMClientComplete:
 
     @patch("src.llm.client.get_config")
     def test_thinking_enabled_for_deepseek_v4_pro(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok")
         mock_create = MagicMock(return_value=fake)
-        client._get_client("deepseek").chat.completions.create = mock_create
+        client._get_client().chat.completions.create = mock_create
 
         client.complete(prompt="test", model="deepseek-v4-pro", thinking=True)
 
@@ -283,60 +246,94 @@ class TestLLMClientComplete:
 
     @patch("src.llm.client.get_config")
     def test_thinking_not_sent_for_cheap_model(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok")
         mock_create = MagicMock(return_value=fake)
-        client._get_client("deepseek").chat.completions.create = mock_create
+        client._get_client().chat.completions.create = mock_create
 
         client.complete(prompt="test", model="deepseek-v4-flash", thinking=True)
 
         assert "extra_body" not in mock_create.call_args.kwargs
 
     @patch("src.llm.client.get_config")
-    def test_provider_routing_deepseek(self, mock_get_config):
+    def test_uses_openrouter_credentials(self, mock_get_config):
+        """DeepSeek and Kimi both route through the same OpenRouter client now
+        (ADR-0005) — one key, one base_url, not per-family credentials."""
         mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-ds"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-kimi"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg.openrouter.api_key = "sk-or-test"
+        mock_cfg.openrouter.base_url = "https://openrouter.ai/api/v1"
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
-        ds_key = client._get_client("deepseek").api_key
-        assert ds_key == "sk-ds"
+        openai_client = client._get_client()
+
+        assert openai_client.api_key == "sk-or-test"
+        assert str(openai_client.base_url) == "https://openrouter.ai/api/v1/"
 
     @patch("src.llm.client.get_config")
-    def test_provider_routing_kimi(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-ds"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-kimi"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+    def test_get_client_is_memoized(self, mock_get_config):
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
-        kimi_key = client._get_client("kimi").api_key
-        assert kimi_key == "sk-kimi"
+        assert client._get_client() is client._get_client()
 
     @patch("src.llm.client.get_config")
-    def test_unknown_provider_raises(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+    def test_deepseek_and_kimi_models_share_one_client(self, mock_get_config):
+        """Regression: this used to be a per-provider client dict keyed on
+        "deepseek"/"kimi"; both families must now resolve to the identical
+        OpenRouter-backed client object."""
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
-        with pytest.raises(ValueError, match="Unknown provider"):
-            client._get_client("openai")
+        fake = _fake_completion("ok")
+        mock_create = MagicMock(return_value=fake)
+        client._get_client().chat.completions.create = mock_create
+
+        client.complete(prompt="test", model="deepseek-v4-pro")
+        client.complete(prompt="test", model="kimi-k3")
+
+        assert mock_create.call_count == 2
+
+    @patch("src.llm.client.get_config")
+    def test_sends_openrouter_slug_not_internal_name(self, mock_get_config):
+        """The internal model id ("deepseek-v4-pro") is what pricing, cost
+        tracking, and state key on throughout the codebase — OpenRouter needs
+        its own "<vendor>/<slug>" form, and that translation must happen only
+        at the outgoing request, not leak into the result."""
+        mock_cfg = _mock_openrouter_config()
+        mock_get_config.return_value = mock_cfg
+
+        client = LLMClient()
+        fake = _fake_completion("ok")
+        mock_create = MagicMock(return_value=fake)
+        client._get_client().chat.completions.create = mock_create
+
+        result = client.complete(prompt="test", model="deepseek-v4-pro")
+
+        assert mock_create.call_args.kwargs["model"] == OPENROUTER_MODEL_SLUGS["deepseek-v4-pro"]
+        assert result["model"] == "deepseek-v4-pro"
+
+    @patch("src.llm.client.get_config")
+    def test_unknown_model_sent_through_unchanged(self, mock_get_config):
+        """A model with no OpenRouter slug mapping (e.g. one not yet added to
+        OPENROUTER_MODEL_SLUGS) is passed through as-is rather than dropped or
+        erroring — the API call fails loudly on OpenRouter's side instead."""
+        mock_cfg = _mock_openrouter_config()
+        mock_get_config.return_value = mock_cfg
+
+        client = LLMClient()
+        fake = _fake_completion("ok")
+        mock_create = MagicMock(return_value=fake)
+        client._get_client().chat.completions.create = mock_create
+
+        client.complete(prompt="test", model="some-future-model")
+
+        assert mock_create.call_args.kwargs["model"] == "some-future-model"
 
 
 # ---------------------------------------------------------------------------
@@ -349,11 +346,7 @@ class TestRetryDecisions:
         from openai import RateLimitError
         from src.llm.client import _is_retryable
 
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         exc = RateLimitError("too many", response=MagicMock(), body=None)
@@ -619,11 +612,7 @@ class TestEstimateCost:
 class TestGetClient:
     @patch("src.llm.client.get_config")
     def test_returns_singleton(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         import src.llm.client as client_module
@@ -641,11 +630,7 @@ class TestGetClient:
 class TestThinkingToggle:
     @patch("src.llm.client.get_config")
     def test_thinking_only_sent_for_deepseek_v4_pro(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
@@ -660,9 +645,7 @@ class TestThinkingToggle:
         for model, should_have_thinking in models_and_expectation:
             fake = _fake_completion("ok")
             mock_create = MagicMock(return_value=fake)
-            client._get_client(
-                "deepseek" if model.startswith("deepseek") else "kimi"
-            ).chat.completions.create = mock_create
+            client._get_client().chat.completions.create = mock_create
 
             client.complete(prompt="test", model=model, thinking=True)
 
@@ -671,17 +654,13 @@ class TestThinkingToggle:
 
     @patch("src.llm.client.get_config")
     def test_thinking_off_no_extra_body(self, mock_get_config):
-        mock_cfg = MagicMock()
-        mock_cfg.deepseek.api_key = "sk-test"
-        mock_cfg.deepseek.base_url = "https://api.deepseek.com/v1"
-        mock_cfg.kimi.api_key = "sk-test"
-        mock_cfg.kimi.base_url = "https://api.moonshot.ai/v1"
+        mock_cfg = _mock_openrouter_config()
         mock_get_config.return_value = mock_cfg
 
         client = LLMClient()
         fake = _fake_completion("ok")
         mock_create = MagicMock(return_value=fake)
-        client._get_client("deepseek").chat.completions.create = mock_create
+        client._get_client().chat.completions.create = mock_create
 
         client.complete(prompt="test", model="deepseek-v4-pro", thinking=False)
 

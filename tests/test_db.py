@@ -33,7 +33,10 @@ class TestConnectionPool:
         assert p1 is mock_pool
 
     def test_get_pool_passes_config(self, mocker):
-        mock_constructor = mocker.patch("src.db.connection.ConnectionPool")
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mock_constructor = mocker.patch(
+            "src.db.connection.ConnectionPool", return_value=mock_pool
+        )
 
         get_pool()
 
@@ -41,7 +44,42 @@ class TestConnectionPool:
         _, kwargs = mock_constructor.call_args
         assert kwargs["min_size"] == 2
         assert kwargs["max_size"] == 10
-        assert kwargs["open"] is True
+        assert kwargs["timeout"] == 8.0
+
+    def test_get_pool_construction_never_blocks(self, mocker):
+        """Regression: `open=True` makes the ConnectionPool constructor itself
+        call open(wait=True) and block up to `timeout` — and if that raises,
+        `_pool` is never assigned, so the *next* call reconstructs from
+        scratch and blocks again. Every request against an unreachable store
+        paid that wait independently, forever. Construction must be
+        non-blocking (`open=False` + an explicit `open(wait=False)`), so the
+        pool object is memoized on the first call regardless of whether
+        Postgres is reachable yet."""
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mock_constructor = mocker.patch(
+            "src.db.connection.ConnectionPool", return_value=mock_pool
+        )
+
+        get_pool()
+
+        _, kwargs = mock_constructor.call_args
+        assert kwargs["open"] is False
+        mock_pool.open.assert_called_once_with(wait=False)
+
+    def test_get_pool_reused_even_after_a_failed_open(self, mocker):
+        """The pool object must stay memoized so its background reconnect
+        workers keep retrying across requests, instead of every request
+        constructing (and blocking on) a brand-new pool."""
+        mock_pool = mocker.MagicMock(spec=ConnectionPool)
+        mocker.patch("src.db.connection.ConnectionPool", return_value=mock_pool)
+
+        p1 = get_pool()
+        mock_pool.getconn.side_effect = TimeoutError("store unreachable")
+        with pytest.raises(TimeoutError):
+            get_connection()
+
+        p2 = get_pool()
+        assert p1 is p2
 
     def test_get_connection_delegates_to_pool(self, mocker):
         mock_pool = mocker.MagicMock(spec=ConnectionPool)
