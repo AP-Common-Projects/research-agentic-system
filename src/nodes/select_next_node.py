@@ -57,10 +57,11 @@ def select_next_node(state: dict) -> dict:
                 if cfg.max_branches > 0 and len(tree) >= cfg.max_branches:
                     continue
                 if proposed_id not in tree:
+                    child_depth = node.get("depth", 0) + 1
                     new_node = {
                         "id": proposed_id,
                         "label": p.get("label", ""),
-                        "depth": node.get("depth", 0) + 1,
+                        "depth": child_depth,
                         "parent_id": node_id,
                         "children_ids": [],
                         "keywords": [],
@@ -70,6 +71,17 @@ def select_next_node(state: dict) -> dict:
                         "compaction_summary": None,
                         "proposed_new_nodes": [],
                         "schema_version": node.get("schema_version", 1),
+                        # v2: a child created from a graph-confirmed split
+                        # inherits the parent's split quality (feeds the
+                        # priority sort). Depth-1 children root their own
+                        # budget lineage; deeper ones inherit the parent's.
+                        "split_method": node.get("split_method", "llm_seed"),
+                        "cluster_distinctness_score": node.get("cluster_distinctness_score"),
+                        "lineage_root_id": (
+                            proposed_id
+                            if child_depth == 1
+                            else (node.get("lineage_root_id") or node_id)
+                        ),
                     }
                     orig_parent = dict(tree.get(node_id, {}))
                     orig_parent.setdefault("children_ids", [])
@@ -87,7 +99,11 @@ def select_next_node(state: dict) -> dict:
         for node_id, node in tree.items()
         if node.get("status") == "pending"
     ]
-    pending.sort(key=lambda item: (item[1].get("depth", 0), item[0]))
+    # Priority, not pure BFS (v2): under a real budget ceiling, exhausting
+    # every shallow branch before any rich branch can go deep spends the run
+    # on mediocre siblings. Richer, more distinctly-split lineages get
+    # explored first. Fully deterministic, no LLM, testable.
+    pending.sort(key=lambda item: _priority_key(item[1]))
 
     if pending:
         next_id = pending[0][0]
@@ -100,6 +116,28 @@ def select_next_node(state: dict) -> dict:
         }
 
     return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}
+
+
+def _priority_key(node: dict) -> tuple:
+    """Sort key: richer, more distinctly-split lineages first.
+
+    -cluster_distinctness_score: a node created from a graph-confirmed split
+    carries the parent's split quality — higher sorts earlier. Depth-1
+    LLM-seeded nodes carry None → 0.0, so real structure outranks taxonomy
+    guesses.
+    -evidence richness: more resolved refs sorts earlier.
+    depth: shallower first among equals (stability).
+    id: stable tiebreak so the sort is fully deterministic.
+    """
+    distinctness = node.get("cluster_distinctness_score")
+    distinctness = 0.0 if distinctness is None else float(distinctness)
+    lineage_richness = len(node.get("_kw_refs") or {}) + len(node.get("_gw_refs") or {})
+    return (
+        -float(distinctness),
+        -int(lineage_richness),
+        int(node.get("depth", 0)),
+        str(node.get("id", "")),
+    )
 
 
 def proposed_id_hint(proposed: dict) -> str:

@@ -63,3 +63,33 @@ This is the honest result — real bugs were found and fixed, not rubber-stamped
 No remaining known architecture bugs. The two bug classes the plan named (§0.2) —
 missing reducers and cumulative re-scan — both have regression tests that fail on the
 old behavior and pass on the fixed code.
+
+## v2 adaptive-depth follow-up (14 Aug 2026)
+
+gentic-architecture-review six-point check applied to the cluster_branch
+change (ADR-0007), against actual code rather than the design:
+
+1. State & reducers — PASS. The three new TreeNode fields live inside the
+   tree dict and go through the existing deep-merge reducer _merge_tree_dict.
+   cluster_branch is a single sequential writer (not a fan-out participant).
+   ranch_lineage_spend uses a new additive-per-key reducer — keyword_search
+   and graph_walk both report deltas against the same lineage root in the same
+   superstep, so they must SUM, not max.
+2. Idempotency — PASS, CONDITIONAL ON THE SEED. cluster_branch recomputes
+   deterministically on every call, but only because detect_communities
+   passes seed=cfg.cluster_seed (42). Unseeded, a resumed run recomputes
+   different clusters than the original. Verified by test
+   	est_seed_reproducibility.
+3. Frontier discipline — NOT APPLICABLE. Operates once after saturation on a
+   fixed resolved set; does not expand a frontier.
+4. Fan-out/fan-in — NOT APPLICABLE. Single predecessor (check_saturation),
+   single successor (compact_branch).
+5. Checkpointing — PASS. Returns through the standard node-return-dict path,
+   picked up by PostgresSaver with no special-casing.
+6. Schema evolution — FIXED. v5 -> v6 migrate_state backfills
+   split_method="llm_seed", cluster_member_channel_ids=[],
+   cluster_distinctness_score=None, and derives lineage_root_id from
+   depth-1 ancestors. Verified by 	est_migrates_v5_tree_nodes_to_v6.
+
+Two clean passes, two not-applicable, one conditional pass with a specific
+named risk (the seed), one required-and-applied migration fix.

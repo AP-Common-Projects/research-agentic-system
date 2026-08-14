@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.state import NodeLog
+from src.tools.budget import lineage_share
 
 
 def check_saturation(state: dict) -> dict:
@@ -67,6 +68,27 @@ def check_saturation(state: dict) -> dict:
             "next_action": "saturated",
             "node_logs": _log(state, start, {"decision": "saturated", "reason": "no active node"}),
         }
+
+    # --- branch-lineage budget -------------------------------------------
+    # ADR-0006 rejected a global-only record ceiling because one runaway
+    # branch would consume the whole run before other branches were touched.
+    # Unbounded depth reintroduces that risk one level up: a deep chain of
+    # splits under one root branch could starve its siblings. Each depth-1
+    # lineage gets budget_limit_usd / num_depth1_branches; when a lineage's
+    # cumulative spend crosses its share, only that subtree force-saturates.
+    if cfg.branch_lineage_budget_enabled and cfg.budget_limit_usd > 0:
+        lineage_id = node.get("lineage_root_id")
+        if lineage_id:
+            num_depth1 = sum(
+                1 for n in tree.values() if n.get("depth") == 1
+            )
+            share = lineage_share(cfg.budget_limit_usd, num_depth1)
+            if share is not None:
+                spent = state.get("branch_lineage_spend", {}).get(lineage_id, 0.0)
+                if spent >= share:
+                    return _mark_lineage_exhausted(
+                        state, start, lineage_id, spent, share
+                    )
 
     # --- node-level round cap ---------------------------------------------
     # This node owns the round counter, deliberately. The discovery tracks
@@ -191,6 +213,52 @@ def _mark_saturated(
                 "node_id": active_node_id,
                 "reason": reason,
                 **(detail or {}),
+            },
+        ),
+    }
+
+
+def _mark_lineage_exhausted(
+    state: dict, start: float, lineage_id: str, spent: float, share: float
+) -> dict:
+    """One depth-1 lineage crossed its share — force-saturate that subtree only.
+
+    Distinct from _budget_exhausted (run-level) and _mark_saturated
+    (novelty/rounds): other lineages keep their remaining budget. The
+    governor name is logged so "stopped because this branch burned its share"
+    is never mistaken for "ran out of records".
+    """
+    tree = state.get("tree", {})
+    active_node_id = state.get("active_node_id")
+    now = datetime.now(timezone.utc).isoformat()
+    tree_update: dict[str, dict] = {}
+
+    for node_id, node in tree.items():
+        if node.get("lineage_root_id") == lineage_id and node.get("status") in (
+            "active",
+            "pending",
+        ):
+            tree_update[node_id] = {
+                "status": "saturated",
+                "saturated_at": now,
+                "saturation_reason": "governor:branch_lineage_budget",
+            }
+
+    already = set(state.get("saturated_branches", []))
+    return {
+        "next_action": "saturated",
+        "tree": tree_update,
+        "saturated_branches": [nid for nid in tree_update if nid not in already],
+        "node_logs": _log(
+            state, start,
+            {
+                "decision": "saturated",
+                "node_id": active_node_id,
+                "reason": "governor:branch_lineage_budget",
+                "lineage_id": lineage_id,
+                "spent": round(spent, 4),
+                "share": round(share, 4),
+                "nodes_force_saturated": len(tree_update),
             },
         ),
     }

@@ -229,6 +229,7 @@ def test_graph_compiles_and_has_expected_nodes():
         "hydrate_metadata",
         "score_signals",
         "check_saturation",
+        "cluster_branch",
         "compact_branch",
         "synthesize",
     }

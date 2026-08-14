@@ -23,6 +23,7 @@ from src.state import (
     _merge_set_union,
     _merge_tree_dict,
     _accumulate_float,
+    _merge_lineage_spend,
     create_initial_state,
     migrate_state,
 )
@@ -117,6 +118,26 @@ class TestAccumulateFloat:
         assert _accumulate_float(3.14, 0.0) == pytest.approx(3.14)
 
 
+class TestMergeLineageSpend:
+    def test_adds_new_lineage(self):
+        result = _merge_lineage_spend({}, {"b1": 1.5})
+        assert result == {"b1": 1.5}
+
+    def test_sums_same_lineage(self):
+        # keyword_search and graph_walk report deltas for the SAME lineage in
+        # the same superstep — they must sum, not max.
+        result = _merge_lineage_spend({"b1": 1.5}, {"b1": 0.7})
+        assert result == {"b1": pytest.approx(2.2)}
+
+    def test_keeps_other_lineages(self):
+        result = _merge_lineage_spend({"b1": 1.5}, {"b2": 0.3})
+        assert result == {"b1": 1.5, "b2": pytest.approx(0.3)}
+
+    def test_empty_delta(self):
+        result = _merge_lineage_spend({"b1": 1.5}, {})
+        assert result == {"b1": 1.5}
+
+
 # ---------------------------------------------------------------------------
 # Initial state
 # ---------------------------------------------------------------------------
@@ -147,10 +168,11 @@ class TestCreateInitialState:
         assert state["messages"] == []
         assert state["errors"] == []
         assert state["node_logs"] == []
-        assert state["schema_version"] == 5
+        assert state["schema_version"] == 6
         assert state["final_report"] is None
         assert state["keyword_search_done"] is False
         assert state["graph_walk_done"] is False
+        assert state["branch_lineage_spend"] == {}
 
     def test_create_is_idempotent(self):
         s1 = create_initial_state("r1", "t1", ["n1"])
@@ -166,7 +188,7 @@ class TestMigrateState:
     def test_migrates_v0_to_current(self):
         state = {"schema_version": 0}
         result = migrate_state(state)
-        assert result["schema_version"] == 5
+        assert result["schema_version"] == 6
         assert result["run_id"] == ""
         assert result["thread_id"] == ""
         assert result["errors"] == []
@@ -182,7 +204,7 @@ class TestMigrateState:
     def test_migrates_v1_to_current(self):
         state = {"schema_version": 1, "run_id": "r1", "thread_id": "t1"}
         result = migrate_state(state)
-        assert result["schema_version"] == 5
+        assert result["schema_version"] == 6
         assert result["run_id"] == "r1"
         assert result["saturated_branches"] == []
         assert result["niche_scanner_evidence"] == {}
@@ -191,14 +213,14 @@ class TestMigrateState:
     def test_migrates_v2_to_current(self):
         state = {"schema_version": 2, "saturated_branches": ["n1"]}
         result = migrate_state(state)
-        assert result["schema_version"] == 5
+        assert result["schema_version"] == 6
         assert result["saturated_branches"] == ["n1"]
         assert result["hydrated_channel_ids"] == set()
 
     def test_migrates_v3_adds_discovery_attribution(self):
         state = {"schema_version": 3, "hydrated_channel_ids": {"UC1"}}
         result = migrate_state(state)
-        assert result["schema_version"] == 5
+        assert result["schema_version"] == 6
         assert result["hydrated_channel_ids"] == {"UC1"}
         # Pre-v4 checkpoints cannot be retro-attributed — they must come back
         # empty rather than guessing which track found a channel.
@@ -223,7 +245,7 @@ class TestMigrateState:
             "niche_scanner_evidence": {"x": 1},
         }
         result = migrate_state(state)
-        assert result["schema_version"] == 5
+        assert result["schema_version"] == 6
         assert result["saturated_branches"] == ["n1"]
         assert result["niche_scanner_evidence"] == {"x": 1}
 
@@ -232,3 +254,38 @@ class TestMigrateState:
         result = migrate_state(state)
         assert result["run_id"] == "my-run"
         assert result["thread_id"] == "my-thread"
+
+    def test_migrates_v5_tree_nodes_to_v6(self):
+        # A v5 checkpoint's tree nodes lack the v2 adaptive-depth fields. They
+        # must come back with split_method="llm_seed" (the honest label — every
+        # pre-v2 split really was LLM-seeded) and the cluster fields defaulted.
+        state = {
+            "schema_version": 5,
+            "tree": {
+                "root": {"id": "root", "depth": 0, "status": "pending"},
+                "b1": {
+                    "id": "b1", "depth": 1, "parent_id": "root",
+                    "status": "saturated",
+                },
+                "b2": {
+                    "id": "b2", "depth": 2, "parent_id": "b1",
+                    "status": "pending",
+                },
+            },
+        }
+        result = migrate_state(state)
+        assert result["schema_version"] == 6
+        assert result["branch_lineage_spend"] == {}
+        assert result["tree"]["root"]["split_method"] == "llm_seed"
+        assert result["tree"]["root"]["cluster_distinctness_score"] is None
+        assert result["tree"]["root"]["cluster_member_channel_ids"] == []
+        # Depth-1 node roots its own lineage.
+        assert result["tree"]["b1"]["lineage_root_id"] == "b1"
+        # Depth-2 node inherits its depth-1 ancestor's lineage.
+        assert result["tree"]["b2"]["lineage_root_id"] == "b1"
+
+    def test_migrates_v5_no_tree(self):
+        state = {"schema_version": 5, "tree": {}}
+        result = migrate_state(state)
+        assert result["schema_version"] == 6
+        assert result["branch_lineage_spend"] == {}

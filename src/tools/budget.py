@@ -85,3 +85,28 @@ def tier_b_affordable(
     per_channel = max(1, videos_per_channel * (1 + comments_per_video))
     affordable = remaining // per_channel
     return barren[:affordable] if affordable > 0 else []
+
+
+def lineage_share(budget_limit_usd: float, num_depth1_branches: int) -> float | None:
+    """Per-depth-1-lineage USD share of the run budget. None means uncapped.
+
+    Generalized from ADR-0006's own rejection of a global-only ceiling: an
+    unbounded-depth tree reintroduces the "one runaway branch starves the run"
+    failure one level up — a deep chain of splits under one root branch could
+    consume the whole allowance before a sibling root branch gets a fair look.
+    """
+    if budget_limit_usd <= 0 or num_depth1_branches <= 0:
+        return None
+    return budget_limit_usd / num_depth1_branches
+
+
+def lineage_spend_delta(state: dict, lineage_root_id: str | None, cost_usd: float) -> dict[str, float]:
+    """The spend delta a node reports against its depth-1 lineage root.
+
+    Returns an empty dict when the node has no lineage (root, pre-taxonomy
+    failures) or spent nothing — so callers can always merge it into their
+    return dict unconditionally.
+    """
+    if not lineage_root_id or not cost_usd or cost_usd <= 0:
+        return {}
+    return {lineage_root_id: round(float(cost_usd), 8)}

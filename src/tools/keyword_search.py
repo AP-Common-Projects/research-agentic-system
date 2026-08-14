@@ -24,8 +24,8 @@ import time
 from datetime import datetime, timezone
 
 from src.config import get_config
-from src.tools.bright_data import BrightDataClient
-from src.tools.budget import clamp_keyword_plan, records_remaining
+from src.tools.bright_data import BrightDataClient, normalize_channel_ref
+from src.tools.budget import clamp_keyword_plan, records_remaining, lineage_spend_delta
 from src.state import ErrorRecord, NodeLog
 
 
@@ -156,6 +156,10 @@ async def keyword_search(state: dict) -> dict:
         return {
             "brightdata_records_used": worst_case,
             "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "branch_lineage_spend": lineage_spend_delta(
+                state, node.get("lineage_root_id"),
+                worst_case * cfg.brightdata_cost_per_record_usd,
+            ),
             "tree": {
                 active_node_id: {
                     "queries_run": list(queries_run) + new_queries,
@@ -213,8 +217,18 @@ async def keyword_search(state: dict) -> dict:
     return {
         "discovered_channel_ids": new_channels,
         "keyword_channel_ids": set(all_channels),
+        # id -> canonical ref, so cluster_branch can map an edge's
+        # source_channel_id onto a graph keyed by refs.
+        "channel_refs_by_id": {
+            cid: normalize_channel_ref(ch.get("channel_ref") or "")
+            for cid, ch in all_channels.items()
+            if ch.get("channel_ref")
+        },
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
+        "branch_lineage_spend": lineage_spend_delta(
+            state, node.get("lineage_root_id"), cost
+        ),
         "tree": {
             active_node_id: {
                 "queries_run": list(queries_run) + new_queries,

@@ -99,3 +99,18 @@ No remaining high-severity production issues. The three high-severity items foun
 were fixed. Of the originally-listed Phase 2 items, quota-check wiring, pricing
 duplication, and the missing-NodeLog observability gap are now closed. Remaining
 open: LangSmith tracing, GitHub push-protection (org setting).
+## v2 adaptive-depth delta (14 Aug 2026)
+
+Only the categories that change under ADR-0007:
+
+- Cost guardrails — new governor governor:branch_lineage_budget halts only
+  the offending depth-1 lineage's subtree, not the run; logged distinctly from
+  the three run-level governors. Verified by
+  	est_lineage_budget_force_saturates_only_its_subtree.
+- Schema evolution — migrate_state v6 is a new required entry point;
+  	est_migrates_v5_tree_nodes_to_v6 and 	est_migrates_v5_no_tree cover the
+  resume path.
+- Observability — cluster_branch emits a NodeLog on every return path,
+  matching the Phase 2 convention applied to the other nodes.
+
+Everything else in the nine-category checklist is unaffected.
