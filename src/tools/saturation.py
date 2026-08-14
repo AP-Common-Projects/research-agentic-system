@@ -99,9 +99,29 @@ def check_saturation(state: dict) -> dict:
             state, start, reason="both_tracks_exhausted", round_update=round_update
         )
 
+    # A round whose discovery calls failed records None, not a number: no
+    # measurement was taken. If BOTH tracks have gone unmeasured for the whole
+    # window, the vendor is down and continuing just burns rounds against a
+    # dead API — stop, and say so, rather than letting it read as saturation.
+    kw_recent = kw_history[-window:]
+    gw_recent = gw_history[-window:]
     if len(kw_history) >= window and len(gw_history) >= window:
-        kw_low = all(r < threshold for r in kw_history[-window:])
-        gw_low = all(r < threshold for r in gw_history[-window:])
+        if all(r is None for r in kw_recent) and all(r is None for r in gw_recent):
+            return _mark_saturated(
+                state, start,
+                reason="discovery_unavailable",
+                detail={"unmeasured_rounds": window},
+                round_update=round_update,
+            )
+
+        # `r is not None` is the load-bearing half. Scoring a failed round as
+        # 0.0 satisfied this check, so an outage produced
+        # `novelty_below_threshold` — precisely the confusion this module's
+        # docstring says must never happen. Observed live: two branches
+        # reported saturation while every Bright Data call was returning
+        # "Customer is not active".
+        kw_low = all(r is not None and r < threshold for r in kw_recent)
+        gw_low = all(r is not None and r < threshold for r in gw_recent)
         if kw_low and gw_low:
             return _mark_saturated(
                 state, start, reason="novelty_below_threshold", round_update=round_update

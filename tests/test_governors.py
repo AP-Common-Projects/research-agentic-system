@@ -1081,3 +1081,104 @@ class TestSignalsActuallyGetComputed:
         summary = result["node_logs"][0]["input_summary"]
         assert summary["channels_scored"] == 1, "must count successes, not attempts"
         assert summary["scoring_errors"] == 1
+
+
+class TestOutageIsNotSaturation:
+    """Observed live: the Bright Data account was deactivated mid-run
+    ("Customer is not active"), every call failed, and two branches reported
+    `novelty_below_threshold` — because a failed round was scored 0.0, which
+    satisfies the window. A dead vendor must never read as an exhausted niche.
+    """
+
+    @staticmethod
+    def _state(kw, gw, **kw2):
+        state = {
+            "tree": {"n1": {"id": "n1", "status": "active",
+                            "_kw_novelty_history": kw, "_gw_novelty_history": gw}},
+            "active_node_id": "n1",
+            "budget_spent_usd": 0.0,
+            "brightdata_records_used": 0,
+            "youtube_quota_used": 0,
+            "rounds_by_node": {},
+            "saturated_branches": [],
+        }
+        state.update(kw2)
+        return state
+
+    def _run(self, state, **cfg):
+        with patch("src.tools.saturation.get_config") as c:
+            c.return_value.harness = make_harness_config(**cfg)
+            return check_saturation(state)
+
+    def test_unmeasured_rounds_do_not_satisfy_the_threshold(self):
+        result = self._run(self._state([None, None, None], [None, None, None]))
+        assert result["node_logs"][0]["input_summary"]["reason"] != "novelty_below_threshold"
+
+    def test_total_outage_is_named_explicitly(self):
+        result = self._run(self._state([None, None, None], [None, None, None]))
+        assert result["next_action"] == "saturated"
+        assert result["node_logs"][0]["input_summary"]["reason"] == "discovery_unavailable"
+
+    def test_genuine_low_novelty_still_saturates(self):
+        """The fix must not disable the real stop condition."""
+        result = self._run(self._state([0.0, 0.01, 0.0], [0.0, 0.0, 0.02]))
+        assert result["node_logs"][0]["input_summary"]["reason"] == "novelty_below_threshold"
+
+    def test_one_failed_round_blocks_saturation(self):
+        """Two genuine zeros and one unmeasured round is not three rounds of
+        evidence — it is two."""
+        result = self._run(self._state([0.0, None, 0.0], [0.0, 0.0, 0.0]))
+        assert result["next_action"] == "expand_deeper"
+
+    def test_partial_outage_does_not_trip_the_outage_stop(self):
+        """One track down, the other still measuring, is not an outage — the
+        run can continue on the working track."""
+        result = self._run(self._state([None, None, None], [0.5, 0.6, 0.7]))
+        assert result["next_action"] == "expand_deeper"
+
+    @pytest.mark.asyncio
+    async def test_keyword_failure_records_no_measurement(self):
+        state = {
+            "tree": {"n1": {"id": "n1", "keywords": ["finance"], "queries_run": [],
+                            "_kw_novelty_history": [0.4]}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "brightdata_records_used": 0,
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.keyword_search.BrightDataClient") as mock_bd, \
+             patch("src.tools.keyword_search.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config()
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.discover_channels_by_keyword = AsyncMock(
+                side_effect=RuntimeError("Customer is not active")
+            )
+            result = await keyword_search(state)
+
+        assert result["tree"]["n1"]["_kw_novelty_history"] == [0.4, None]
+        assert "novelty_rates" not in result, "a failed round contributes no rate"
+
+    @pytest.mark.asyncio
+    async def test_tier_a_failure_records_no_measurement(self, no_edge_store):
+        state = {
+            "run_id": "r",
+            "tree": {"n1": {"id": "n1", "seed_channel_ids": [f"{YT}@a"],
+                            "_gw_refs": {}, "_gw_novelty_history": [0.3]}},
+            "active_node_id": "n1",
+            "discovered_channel_ids": [],
+            "expanded_channel_refs": set(),
+            "brightdata_records_used": 0,
+            "novelty_rates": [],
+            "rounds_by_node": {},
+        }
+        with patch("src.tools.graph_walk.BrightDataClient") as mock_bd, \
+             patch("src.tools.graph_walk.get_config") as cfg:
+            cfg.return_value.harness = make_harness_config()
+            client = MagicMock()
+            mock_bd.return_value = client
+            client.get_channels = AsyncMock(side_effect=RuntimeError("Customer is not active"))
+            result = await graph_walk(state)
+
+        assert result["tree"]["n1"]["_gw_novelty_history"] == [0.3, None]

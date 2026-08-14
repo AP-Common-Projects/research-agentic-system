@@ -185,7 +185,11 @@ async def graph_walk(state: dict) -> dict:
             "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
             "expanded_channel_refs": set(frontier),
             "tree": {
-                active_node_id: {"_gw_novelty_history": gw_history + [0.0]}
+                # None, not 0.0 — no measurement was taken. See the same
+                # note in keyword_search: a failure scored as zero novelty
+                # trips novelty_below_threshold and reports a broken run
+                # as a saturated one.
+                active_node_id: {"_gw_novelty_history": gw_history + [None]}
             },
             "errors": [
                 ErrorRecord(

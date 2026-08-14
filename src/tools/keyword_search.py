@@ -159,7 +159,12 @@ async def keyword_search(state: dict) -> dict:
             "tree": {
                 active_node_id: {
                     "queries_run": list(queries_run) + new_queries,
-                    "_kw_novelty_history": kw_history + [0.0],
+                    # None, not 0.0 — this round produced no MEASUREMENT,
+                    # which is a different fact from "measured, found
+                    # nothing new". A failed call recorded as 0.0 satisfies
+                    # the saturation window, so a dead vendor becomes
+                    # indistinguishable from an exhausted niche.
+                    "_kw_novelty_history": kw_history + [None],
                 }
             },
             "errors": [
