@@ -6,7 +6,8 @@ hydrated data from Postgres, computes signals, and persists results.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
 
 def compute_engagement_rate(video: dict) -> float:
@@ -22,20 +23,18 @@ def compute_cadence(videos: list[dict]) -> float:
     if len(videos) < 2:
         return 0.0
 
-    sorted_videos = sorted(
-        videos, key=lambda v: _parse_timestamp(v.get("published_at", "")), reverse=True
-    )
+    # Parse once, drop unparseable rows, then sort. Sorting by a key that can
+    # return None raises TypeError the moment one row lacks a usable date.
     timestamps = [
-        _parse_timestamp(v.get("published_at", ""))
-        for v in sorted_videos
-        if _parse_timestamp(v.get("published_at", ""))
+        ts for ts in (_parse_timestamp(v.get("published_at")) for v in videos)
+        if ts is not None
     ]
 
     if len(timestamps) < 2:
         return 0.0
 
-    newest = max(ts for ts in timestamps if ts is not None)
-    oldest = min(ts for ts in timestamps if ts is not None)
+    newest = max(timestamps)
+    oldest = min(timestamps)
     span_days = (newest - oldest).total_seconds() / 86400.0
     if span_days <= 0:
         return 0.0
@@ -47,9 +46,11 @@ def compute_velocity(videos: list[dict]) -> float:
     if len(videos) < 6:
         return 1.0
 
-    sorted_videos = sorted(
-        videos, key=lambda v: _parse_timestamp(v.get("published_at", "")), reverse=True
-    )
+    dated = [(ts, v) for v in videos
+             if (ts := _parse_timestamp(v.get("published_at"))) is not None]
+    if len(dated) < 6:
+        return 1.0
+    sorted_videos = [v for _, v in sorted(dated, key=lambda p: p[0], reverse=True)]
 
     recent = sorted_videos[:5]
     older = sorted_videos[5:15]
@@ -69,8 +70,25 @@ def compute_velocity(videos: list[dict]) -> float:
     return round(recent_mean / older_mean, 4)
 
 
-def _parse_timestamp(ts: str) -> datetime | None:
-    if not ts:
+def _parse_timestamp(ts: Any) -> datetime | None:
+    """Accept what the store actually hands back, not just what the API does.
+
+    `published_at` arrives as an ISO *string* from the YouTube API but as a
+    `datetime` from Postgres, because the column is TIMESTAMPTZ and psycopg
+    adapts it. `strptime` raises TypeError on a datetime — and the loop below
+    only caught ValueError, so it escaped, and score_signals wrapped its whole
+    channel loop in one try/except, so the first row killed every signal for
+    the round.
+
+    Net effect before this fix: engagement_rate, cadence and velocity were
+    never computed or stored in any run — 425 channels, zero signals — while
+    the node still logged a channels_scored count and reported success.
+    """
+    if ts is None or ts == "":
+        return None
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if not isinstance(ts, str):
         return None
     for fmt in (
         "%Y-%m-%dT%H:%M:%S%z",
@@ -80,8 +98,6 @@ def _parse_timestamp(ts: str) -> datetime | None:
         "%Y-%m-%d",
     ):
         try:
-            from datetime import timezone
-
             dt = datetime.strptime(ts, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
@@ -101,6 +117,7 @@ def score_signals(state: dict) -> dict:
     channel_ids = state.get("discovered_channel_ids", [])
     thread_id = state.get("thread_id", "")
     errors: list[dict] = []
+    scored = 0
 
     if not channel_ids:
         return {"next_action": "continue"}
@@ -114,15 +131,30 @@ def score_signals(state: dict) -> dict:
                 by_channel[v.get("channel_id", "")].append(v)
 
             for ch_id, vids in by_channel.items():
-                engagement = round(
-                    sum(compute_engagement_rate(v) for v in vids) / len(vids), 6
-                ) if vids else 0.0
-                signals = {
-                    "engagement_rate": engagement,
-                    "cadence": compute_cadence(vids),
-                    "velocity": compute_velocity(vids),
-                }
-                persist_channel_signals(conn, ch_id, signals)
+                # Per channel. This loop used to sit inside the single outer
+                # try/except, so the first row that raised discarded every
+                # signal for the round — which is precisely what happened, on
+                # every run, for the whole life of the project.
+                try:
+                    engagement = round(
+                        sum(compute_engagement_rate(v) for v in vids) / len(vids), 6
+                    ) if vids else 0.0
+                    signals = {
+                        "engagement_rate": engagement,
+                        "cadence": compute_cadence(vids),
+                        "velocity": compute_velocity(vids),
+                    }
+                    persist_channel_signals(conn, ch_id, signals)
+                    scored += 1
+                except Exception as exc:
+                    errors.append(
+                        ErrorRecord(
+                            node_name="score_signals",
+                            error_type=type(exc).__name__,
+                            message=f"signal scoring failed for {ch_id}: {exc}",
+                            recoverable=True,
+                        ).model_dump()
+                    )
         finally:
             put_connection(conn)
     except Exception as exc:
@@ -142,7 +174,14 @@ def score_signals(state: dict) -> dict:
             NodeLog(
                 node_name="score_signals",
                 thread_id=thread_id,
-                input_summary={"channels_scored": len(channel_ids)},
+                input_summary={
+                    # What actually succeeded. This previously reported
+                    # len(channel_ids) — so it read "50 scored" on rounds
+                    # where zero signals were computed or stored.
+                    "channels_scored": scored,
+                    "channels_attempted": len(channel_ids),
+                    "scoring_errors": len(errors),
+                },
                 cost_usd=0.0,
             ).model_dump()
         ],
