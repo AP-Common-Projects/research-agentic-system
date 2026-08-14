@@ -46,11 +46,34 @@ def check_saturation(state: dict) -> dict:
         )
 
     records_used = state.get("brightdata_records_used", 0)
-    if cfg.brightdata_record_budget > 0 and records_used >= cfg.brightdata_record_budget:
-        return _budget_exhausted(
-            state, start, "brightdata_record_budget",
-            spent=records_used, ceiling=cfg.brightdata_record_budget,
+    if cfg.brightdata_record_budget > 0:
+        # The pre-spend gate in budget.py clamps every discovery node to 90%
+        # of this ceiling (records_remaining targets CEILING_TARGET_RATIO),
+        # so nothing can spend past that point. But this check only fired at
+        # 100% — records_used >= brightdata_record_budget outright. Between
+        # 90% and 100% both discovery nodes correctly return zero records
+        # every round, hydrate_metadata finds nothing new, and the run sits in
+        # an expand_deeper / continue_active loop burning rounds forever: no
+        # node can spend, and nothing recognises that as "done".
+        #
+        # Observed live: a Finance run reached 3,610 of a 4,000 ceiling (90%
+        # gate at 3,600), then looped at that exact number for the rest of its
+        # allotted rounds and handed off to Legal with no report — 238 steps,
+        # $5.42 spent, no synthesis. The two ceilings have to agree: if the
+        # pre-spend gate says no more can be bought, the governor must say the
+        # run is over, not wait for a total that spending is no longer able
+        # to reach.
+        from src.tools.budget import CEILING_TARGET_RATIO
+
+        effective_ceiling = min(
+            cfg.brightdata_record_budget,
+            int(cfg.brightdata_record_budget * CEILING_TARGET_RATIO) + 1,
         )
+        if records_used >= effective_ceiling:
+            return _budget_exhausted(
+                state, start, "brightdata_record_budget",
+                spent=records_used, ceiling=cfg.brightdata_record_budget,
+            )
 
     quota_used = state.get("youtube_quota_used", 0)
     if cfg.youtube_quota_budget_per_run > 0 and quota_used >= cfg.youtube_quota_budget_per_run:
