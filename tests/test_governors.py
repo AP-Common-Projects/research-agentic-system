@@ -11,6 +11,7 @@ be mistakable for a run that stopped because the niche was exhausted.
 
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1182,3 +1183,54 @@ class TestOutageIsNotSaturation:
             result = await graph_walk(state)
 
         assert result["tree"]["n1"]["_gw_novelty_history"] == [0.3, None]
+
+
+class TestAccountLevelBudget:
+    """brightdata_record_budget stops ONE run. Nothing stopped the Nth run
+    from spending it again — which is how a 5,000-record allowance went with
+    no individual run misbehaving. This is the wallet-level ceiling."""
+
+    @staticmethod
+    def _ledger(tmp_path, events):
+        spend = tmp_path / "spend"
+        spend.mkdir(parents=True, exist_ok=True)
+        for i, evs in enumerate(events):
+            with (spend / f"run-{i}.jsonl").open("w") as fh:
+                for phase, n in evs:
+                    fh.write(json.dumps({"phase": phase, "worst_case_records": n}) + "\n")
+        return tmp_path
+
+    def test_totals_collected_events_across_runs(self, tmp_path):
+        from src.observability.logging_config import total_records_spent
+
+        base = self._ledger(tmp_path, [[("collected", 100)], [("collected", 250)]])
+        assert total_records_spent(base) == 350
+
+    def test_trigger_intent_is_not_counted_as_spend(self, tmp_path):
+        """Trigger lines are written before the POST as intent. Counting them
+        alongside `collected` would double-bill every successful job."""
+        from src.observability.logging_config import total_records_spent
+
+        base = self._ledger(tmp_path, [[
+            ("trigger", 100), ("triggered", 100), ("collected", 80),
+        ]])
+        assert total_records_spent(base) == 80
+
+    def test_empty_ledger_is_zero_not_an_error(self, tmp_path):
+        from src.observability.logging_config import total_records_spent
+
+        assert total_records_spent(tmp_path) == 0
+
+    def test_malformed_line_does_not_break_the_total(self, tmp_path):
+        from src.observability.logging_config import total_records_spent
+
+        spend = tmp_path / "spend"
+        spend.mkdir(parents=True)
+        (spend / "r.jsonl").write_text(
+            json.dumps({"phase": "collected", "worst_case_records": 40})
+            + "\nnot json at all\n"
+            + json.dumps({"phase": "collected", "worst_case_records": 10}) + "\n"
+        )
+        # A corrupt line must not zero the wallet check — that would silently
+        # remove the ceiling.
+        assert total_records_spent(tmp_path) == 40

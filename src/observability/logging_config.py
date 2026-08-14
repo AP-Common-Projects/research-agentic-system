@@ -104,6 +104,35 @@ def record_spend_intent(
         pass
 
 
+def total_records_spent(log_dir: Path | None = None) -> int:
+    """Records billed across EVERY run the ledger has seen.
+
+    The per-run `brightdata_record_budget` stops one run. It knows nothing
+    about the account, so N runs each dutifully inside budget still add up to
+    N x budget — which is how a 5,000-record allowance was spent without any
+    single run misbehaving. This is the wallet-level number.
+
+    Counts only `collected` events, whose `worst_case_records` holds the real
+    returned count. Trigger-phase lines are intent, not spend, and counting
+    them would double-bill every successful job.
+    """
+    base = log_dir or Path(get_config().harness.log_dir)
+    total = 0
+    for path in list((base / "spend").glob("*.jsonl")) + list(base.glob("*.spend.jsonl")):
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    entry = json.loads(line)
+                    if entry.get("phase") == "collected":
+                        total += int(entry.get("worst_case_records") or 0)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return total
+
+
 def read_spend_ledger(run_id: str) -> list[dict]:
     """Every spend event recorded for a run, for billing reconciliation."""
     path = _ledger_path(run_id)

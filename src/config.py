@@ -211,6 +211,13 @@ class HarnessConfig(BaseSettings):
     # $1.50 per 1,000 records, Bright Data pay-as-you-go list rate.
     brightdata_cost_per_record_usd: float = 0.0015
 
+    # Account-level ceiling, across ALL runs. brightdata_record_budget stops a
+    # single run; nothing stopped the Nth run from spending the same budget
+    # again, which is how a 5,000-record allowance went with no individual run
+    # misbehaving. 0 disables the check. Set this to what the wallet actually
+    # holds, not to what one run should cost.
+    brightdata_account_record_budget: int = 0
+
     # Prompt-size caps. compact_branch and synthesize serialise store rows
     # straight into the prompt; without a cap a large branch produces a
     # six-figure-token request.

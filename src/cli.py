@@ -54,8 +54,43 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
     return final
 
 
+def _preflight_account_budget() -> bool:
+    """Refuse to start if this run could breach the account-level ceiling.
+
+    Checked before the run, not during: the per-run governors cannot see the
+    wallet, so without this the Nth run happily spends the same budget the
+    first one did. Returns True if the run may proceed.
+    """
+    from src.config import get_config
+    from src.observability.logging_config import total_records_spent
+
+    cfg = get_config().harness
+    ceiling = cfg.brightdata_account_record_budget
+    if ceiling <= 0:
+        return True
+
+    spent = total_records_spent()
+    projected = spent + cfg.brightdata_record_budget
+    print(
+        f"Account budget: {spent} records already spent across all runs "
+        f"(${spent * cfg.brightdata_cost_per_record_usd:.2f}); "
+        f"this run may add up to {cfg.brightdata_record_budget}, "
+        f"against a ceiling of {ceiling}."
+    )
+    if projected > ceiling:
+        print(
+            f"\nAborting: this run could reach {projected} records, over the "
+            f"{ceiling} account ceiling. Raise BRIGHTDATA_ACCOUNT_RECORD_BUDGET "
+            f"or lower BRIGHTDATA_RECORD_BUDGET."
+        )
+        return False
+    return True
+
+
 def main() -> None:
     configure_logging()
+    if not _preflight_account_budget():
+        raise SystemExit(1)
     parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
