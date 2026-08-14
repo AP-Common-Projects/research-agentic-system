@@ -19,9 +19,28 @@ read documentation.
 | 01 Client rewrite | mocked tests on recorded fixtures | **CHECKED** — `production-auditor` ran; both HIGH findings fixed |
 | 02 Governors | caps proven + six-point review passes | **CHECKED** — review returned PASS on all six; its one config blocker fixed |
 | 03 Replay | full run → graded report, stops on a reason | **CHECKED** — exceeded: stops on `novelty_below_threshold` |
-| 04 Live smoke | ≤150 records, report, a graph-walk-exclusive channel | **PASSED** — 95 records, $0.14, 7 exclusive channels |
-| 05 Finance bounded | — | not started |
+| 04 Live smoke | ≤150 records, report, a graph-walk-exclusive channel | **CHECKED** — 95 records, $0.14, machinery proven live |
+| 05 Finance bounded | report reviewed, spend logged | **re-running** — first attempt's signals were dead |
 | 06 Legal bounded | — | not started |
+
+### Rung 04: what it proved, and what it did not
+
+Its gate was met — the run completed under budget and produced a graded
+report, which was its actual job: demonstrating that the pipeline works end to
+end against live APIs. That stands.
+
+**Its headline claim does not.** Rung 04 was reported as finding 7 channels
+reachable only by the graph walk, averaging 12.7x the subscribers of the
+keyword-found set. Two of the four named — @GrahamStephan and @AndreiJikh —
+were taxonomy seeds the LLM guessed, credited to the walk because round one's
+frontier *is* the seed list. The remaining two cannot now be checked: `NodeLog`
+truncates `llm_output` at 500 characters, so the branch seeds are not in the
+log, and the store was cleared before rung 05.
+
+So rung 04's discovery claim is **unverifiable, not disproven**. The seed
+attribution bug is fixed and rung 05 gives the first clean measurement. The
+lesson worth keeping is that the number was quoted repeatedly as evidence for
+the project's central thesis before anyone checked what fed it.
 
 Rung 03 now clears its gate by more than it was written to require. The plan
 asked only that a run terminate on *a* stop reason rather than an exception;
