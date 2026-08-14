@@ -133,6 +133,45 @@ def fetch_run_tree_counts(run_id: str) -> dict[str, dict[str, int]]:
     return counts
 
 
+def fetch_run_top_videos_per_node(run_id: str, per_node_limit: int) -> dict[str, list[dict[str, Any]]]:
+    """The top-N videos by outlier score, per taxonomy node.
+
+    A node's real video count runs to the thousands (crypto_digital_assets:
+    6,625 tagged under it) — this is the same "actionable slice, not the
+    dump" filter fetch_run_videos already applies run-wide, but computed
+    PER node so a large branch doesn't crowd a small one out of its own
+    top-N the way one global LIMIT would.
+    """
+    if per_node_limit <= 0:
+        return {}
+    rows = _fetch(
+        """
+        SELECT tree_node_id, video_id, title, channel_id, channel_title,
+               view_count, outlier_score, published_at
+        FROM (
+            SELECT t.tree_node_id, v.video_id, v.title, v.channel_id,
+                   c.title AS channel_title, v.view_count, v.outlier_score,
+                   v.published_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY t.tree_node_id
+                       ORDER BY v.outlier_score DESC NULLS LAST
+                   ) AS rn
+            FROM category_tags t
+            JOIN videos v ON v.video_id = t.entity_id
+            LEFT JOIN channels c ON c.channel_id = v.channel_id
+            WHERE t.run_id = %s AND t.entity_type = 'video'
+        ) ranked
+        WHERE rn <= %s
+        ORDER BY tree_node_id, rn
+        """,
+        (run_id, per_node_limit),
+    )
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_node.setdefault(row["tree_node_id"], []).append(row)
+    return by_node
+
+
 _STATUS_LABELS = {
     "pending": "Pending",
     "active": "Active",
@@ -145,6 +184,7 @@ def build_taxonomy_payload(
     tree: dict[str, dict[str, Any]],
     counts: dict[str, dict[str, int]] | None = None,
     exclude_empty_leaves: bool = False,
+    videos_by_node: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Every tree node, structured for a top-down decision-tree diagram.
 
@@ -165,6 +205,11 @@ def build_taxonomy_payload(
     leaf can turn its own parent into one, so the pass repeats until
     nothing more qualifies, rather than leaving a stray empty leaf one
     level up.
+
+    videos_by_node, if given, adds each node's top videos (see
+    fetch_run_top_videos_per_node) as a further depth layer beneath it,
+    labelled with the video's own title — real leaves, not more taxonomy,
+    so they carry status "video" rather than the usual lifecycle states.
     """
     counts = counts or {}
     nodes: list[dict[str, Any]] = []
@@ -194,6 +239,7 @@ def build_taxonomy_payload(
             "channel_count": cov.get("channels", 0) if has_data else len(n.get("seed_channel_ids", [])),
             "video_count": cov.get("videos", 0),
             "compaction_summary": n.get("compaction_summary") or "",
+            "is_video": False,
         })
 
     # A node whose parent_id doesn't resolve within this tree (missing/None)
@@ -221,13 +267,43 @@ def build_taxonomy_payload(
                 removed = True
         nodes = list(by_id.values())
 
-    children: dict[str | None, list[str]] = {}
-    for n in nodes:
-        children.setdefault(n["parent_id"], []).append(n["id"])
-
     status_counts: dict[str, int] = {}
     for n in nodes:
         status_counts[n["status"]] = status_counts.get(n["status"], 0) + 1
+
+    if videos_by_node:
+        present = {n["id"] for n in nodes}
+        for node_id, vids in videos_by_node.items():
+            parent = next((n for n in nodes if n["id"] == node_id), None)
+            if parent is None or node_id not in present:
+                continue
+            for v in vids:
+                nodes.append({
+                    "id": f"{node_id}::video::{v['video_id']}",
+                    "label": v.get("title") or v["video_id"],
+                    "depth": parent["depth"] + 1,
+                    "parent_id": node_id,
+                    "status": "video",
+                    "split_method": parent["split_method"],
+                    "distinctness_score": None,
+                    "saturation_reason": None,
+                    "keywords": [],
+                    "seed_count": 0,
+                    "has_data": True,
+                    "channel_count": 0,
+                    "video_count": 0,
+                    "compaction_summary": "",
+                    "is_video": True,
+                    "video_id": v["video_id"],
+                    "channel_title": v.get("channel_title") or "",
+                    "view_count": v.get("view_count") or 0,
+                    "outlier_score": v.get("outlier_score"),
+                    "published_at": str(v.get("published_at") or ""),
+                })
+
+    children: dict[str | None, list[str]] = {}
+    for n in nodes:
+        children.setdefault(n["parent_id"], []).append(n["id"])
 
     return {
         "nodes": nodes,
@@ -1287,6 +1363,8 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   .node-g[data-status="saturated"] .card { stroke: var(--st-saturated); stroke-width: 2px; }
   .node-g[data-status="compacted"] .card { stroke: var(--st-compacted); stroke-width: 2px; }
   .node-g[data-status="pending"] .card { stroke: var(--st-pending); stroke-width: 1.5px; stroke-dasharray: 3 3; }
+  .node-g[data-status="video"] .card { fill: var(--surface-2); stroke: var(--rule); stroke-width: 1px; }
+  .node-g[data-status="video"] .node-label { font-weight: 500; }
   .node-g.focused .card, .node-g.matched .card { stroke-width: 3px; stroke: var(--ink); }
   .node-g.dimmed { opacity: .28; }
   .node-label { fill: var(--ink); font-size: 12.5px; font-weight: 600; }
@@ -1407,9 +1485,11 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   var byId = new Map(payload.nodes.map(function (n) { return [n.id, n]; }));
   var STATUS_LABEL = {
     pending: "Pending", active: "Active",
-    saturated: "Saturated (awaiting compaction)", compacted: "Compacted"
+    saturated: "Saturated (awaiting compaction)", compacted: "Compacted",
+    video: "Video"
   };
   var STATUSES = ["compacted", "saturated", "active", "pending"];
+  var videoCount = payload.nodes.filter(function (n) { return n.is_video; }).length;
 
   // ---- theme ---------------------------------------------------------------
   var root = document.documentElement;
@@ -1441,6 +1521,16 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
     item.appendChild(document.createTextNode(STATUS_LABEL[st] + " (" + count + ")"));
     legend.appendChild(item);
   });
+  if (videoCount) {
+    var vItem = document.createElement("span");
+    vItem.className = "legend-item";
+    var vDot = document.createElement("span");
+    vDot.className = "dot";
+    vDot.style.background = "var(--ink-3)";
+    vItem.appendChild(vDot);
+    vItem.appendChild(document.createTextNode("Video (" + videoCount + ")"));
+    legend.appendChild(vItem);
+  }
 
   // ---- collapse state + layout ----------------------------------------------
   var collapsed = new Set();
@@ -1536,15 +1626,17 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
       var label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("class", "node-label");
       label.setAttribute("x", 12); label.setAttribute("y", 22);
-      label.textContent = truncate(n.label, 22);
+      label.textContent = (n.is_video ? "▶ " : "") + truncate(n.label, n.is_video ? 20 : 22);
       g.appendChild(label);
 
       var sub = document.createElementNS("http://www.w3.org/2000/svg", "text");
       sub.setAttribute("class", "node-sub" + (n.has_data ? "" : " no-data"));
       sub.setAttribute("x", 12); sub.setAttribute("y", 40);
-      sub.textContent = n.has_data
-        ? (n.channel_count.toLocaleString() + " ch · " + n.video_count.toLocaleString() + " vid")
-        : "no data collected";
+      sub.textContent = n.is_video
+        ? (formatCount(n.view_count) + " views" + (n.outlier_score != null ? " · outlier " + n.outlier_score.toFixed(1) : ""))
+        : (n.has_data
+          ? (n.channel_count.toLocaleString() + " ch · " + n.video_count.toLocaleString() + " vid")
+          : "no data collected");
       g.appendChild(sub);
 
       if (e.hasChildren) {
@@ -1591,6 +1683,12 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   }
 
   function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+  function formatCount(n) {
+    n = n || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+  }
 
   // ---- drag / pan / zoom ---------------------------------------------------
   var dragging = null, dragMoved = false, panStart = null, panning = false;
@@ -1648,6 +1746,17 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   // ---- tooltip ---------------------------------------------------------
   var tooltip = document.getElementById("tooltip");
   function showTooltip(n, cx, cy) {
+    if (n.is_video) {
+      tooltip.innerHTML =
+        "<strong>" + escapeHtml(n.label) + "</strong>" +
+        "<div class=\"tt-row\"><span>Channel</span><span>" + escapeHtml(n.channel_title || "—") + "</span></div>" +
+        "<div class=\"tt-row\"><span>Views</span><span>" + n.view_count.toLocaleString() + "</span></div>" +
+        (n.outlier_score != null ? "<div class=\"tt-row\"><span>Outlier score</span><span>" + n.outlier_score.toFixed(2) + "</span></div>" : "") +
+        (n.published_at ? "<div class=\"tt-row\"><span>Published</span><span>" + escapeHtml(n.published_at.slice(0, 10)) + "</span></div>" : "");
+      tooltip.style.opacity = 1;
+      positionTooltip(cx, cy);
+      return;
+    }
     tooltip.innerHTML =
       "<strong>" + escapeHtml(n.label) + "</strong>" +
       "<div class=\"tt-row\"><span>Status</span><span>" + STATUS_LABEL[n.status] + "</span></div>" +
@@ -1679,6 +1788,21 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   });
   function openPanel(n) {
     focusedId = n.id;
+    if (n.is_video) {
+      var watchUrl = "https://www.youtube.com/watch?v=" + encodeURIComponent(n.video_id);
+      panelBody.innerHTML =
+        "<h2>" + escapeHtml(n.label) + "</h2>" +
+        "<span class=\"pill\">" + escapeHtml(n.channel_title || "unknown channel") + "</span>" +
+        (n.published_at ? "<span class=\"pill\">" + escapeHtml(n.published_at.slice(0, 10)) + "</span>" : "") +
+        "<div class=\"stat-row\">" +
+        "<div class=\"stat\">" + n.view_count.toLocaleString() + "<span>views</span></div>" +
+        (n.outlier_score != null ? "<div class=\"stat\">" + n.outlier_score.toFixed(2) + "<span>outlier score</span></div>" : "") +
+        "</div>" +
+        "<p><a class=\"pill\" href=\"" + watchUrl + "\" target=\"_blank\" rel=\"noopener noreferrer\">Watch on YouTube ↗</a></p>";
+      panel.classList.add("open");
+      render();
+      return;
+    }
     var kw = (n.keywords || []).map(function (k) { return "<span>" + escapeHtml(k) + "</span>"; }).join("");
     panelBody.innerHTML =
       "<h2>" + escapeHtml(n.label) + "</h2>" +
@@ -1791,7 +1915,10 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   var tableBody = document.getElementById("table-body");
   var tableSort = { key: "depth", dir: 1 };
   function renderTable() {
-    var rows = payload.nodes.slice().sort(function (a, b) {
+    // Videos are leaves with their own tooltip/panel content, not taxonomy —
+    // this table's columns (status, split method, saturation) don't apply
+    // to them, so the table view stays taxonomy-only.
+    var rows = payload.nodes.filter(function (n) { return !n.is_video; }).sort(function (a, b) {
       var k = tableSort.key, dir = tableSort.dir;
       var av = a[k], bv = b[k];
       if (typeof av === "string") { av = av.toLowerCase(); bv = (bv || "").toLowerCase(); }
@@ -1923,8 +2050,11 @@ def export_run(
 
     graph_payload = build_graph_payload(channels, edges, max_nodes=cfg.export_max_graph_nodes)
     tree_counts = fetch_run_tree_counts(run_id)
+    tree_videos = fetch_run_top_videos_per_node(run_id, cfg.export_taxonomy_videos_per_node)
     taxonomy_payload = build_taxonomy_payload(
-        tree, tree_counts, exclude_empty_leaves=exclude_empty_taxonomy_branches
+        tree, tree_counts,
+        exclude_empty_leaves=exclude_empty_taxonomy_branches,
+        videos_by_node=tree_videos,
     )
 
     _write_csv(out / "channels.csv", channels)
