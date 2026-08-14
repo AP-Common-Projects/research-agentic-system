@@ -36,6 +36,9 @@ Thumbs.db
 *.log
 logs/
 
+# Run deliverables — generated output, not source
+/exports/
+
 # Database
 *.db
 *.duckdb

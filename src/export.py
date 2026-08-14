@@ -110,6 +110,139 @@ def fetch_run_edges(run_id: str) -> list[dict[str, Any]]:
     )
 
 
+_CATEGORY_LABELS = {
+    "keyword": "Keyword only",
+    "graph_walk": "Graph walk only",
+    "both": "Both tracks",
+    "unresolved": "Unresolved (frontier)",
+}
+
+
+def _ref_label(ref: str) -> str:
+    """A human-readable label for a channel we only know by ref.
+
+    ".../@handle" -> "@handle" (what a person actually recognises); the
+    UC-id form has no readable content, so it's shown short-and-truncated
+    rather than as a 24-character opaque string.
+    """
+    ref = (ref or "").rstrip("/")
+    tail = ref.rsplit("/", 1)[-1] if ref else ""
+    if tail.startswith("@"):
+        return tail
+    if tail.startswith("UC") and len(tail) > 14:
+        return tail[:10] + "…"
+    return tail or "(unknown)"
+
+
+def _category(discovery_method: str | None) -> str:
+    """Bucket a channel's attribution into one of the graph's four series.
+
+    Only three are ever assigned a categorical hue (keyword / graph_walk /
+    both) — a node-link layout is an all-pairs context (any two categories
+    can end up adjacent anywhere on screen), and the reference palette's
+    all-pairs floor only clears for its first three slots. Everything else
+    — genuinely unattributed channels, and frontier refs never fetched at
+    all — folds into one neutral "unresolved" bucket rather than claiming a
+    fourth hue the palette doesn't clear for this chart form.
+    """
+    return discovery_method if discovery_method in ("keyword", "graph_walk", "both") else "unresolved"
+
+
+def build_graph_payload(
+    channels: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    max_nodes: int = 0,
+) -> dict[str, Any]:
+    """Nodes + edges for the interactive graph, keyed consistently.
+
+    Every hydrated channel becomes a node. Every edge's target that never
+    resolved to a fetched channel — a frontier ref the walk saw but did not
+    expand — ALSO becomes a node, keyed by its ref rather than an id it
+    doesn't have. Without this the graph would only show the ~28% of the
+    discovered network that got hydrated and silently drop the rest, when
+    the unhydrated majority is itself the finding: it's the frontier the
+    record budget ran out before reaching.
+    """
+    nodes: dict[str, dict[str, Any]] = {}
+    for ch in channels:
+        cid = ch.get("channel_id", "")
+        if not cid:
+            continue
+        nodes[cid] = {
+            "id": cid,
+            "label": ch.get("title") or cid,
+            "subscribers": ch.get("subscriber_count") or 0,
+            "category": _category(ch.get("discovery_method")),
+            "resolved": True,
+        }
+
+    norm_edges: list[dict[str, Any]] = []
+    degree: dict[str, int] = {}
+    for e in edges:
+        source = e.get("source_channel_id", "")
+        if not source:
+            continue
+        if source not in nodes:
+            # An edge's source should have been hydrated (it was expanded to
+            # produce the edge), but a partial/interrupted run can leave one
+            # dangling — represent it rather than dropping the edge.
+            nodes[source] = {
+                "id": source, "label": source, "subscribers": 0,
+                "category": "unresolved", "resolved": False,
+            }
+
+        target_id = e.get("target_channel_id")
+        target_ref = e.get("target_channel_ref", "")
+        if target_id and target_id in nodes:
+            target = target_id
+        elif target_ref:
+            target = target_ref
+            if target not in nodes:
+                nodes[target] = {
+                    "id": target, "label": _ref_label(target_ref),
+                    "subscribers": 0, "category": "unresolved", "resolved": False,
+                }
+        else:
+            continue
+
+        norm_edges.append({
+            "source": source, "target": target,
+            "edge_type": e.get("edge_type", ""),
+        })
+        degree[source] = degree.get(source, 0) + 1
+        degree[target] = degree.get(target, 0) + 1
+
+    node_list = list(nodes.values())
+    if max_nodes > 0 and len(node_list) > max_nodes:
+        # Trim unresolved nodes first, lowest-degree first — a frontier node
+        # with a single edge and no metadata adds the least to the picture.
+        # A hydrated channel is never dropped by this cap.
+        resolved = [n for n in node_list if n["resolved"]]
+        unresolved = sorted(
+            (n for n in node_list if not n["resolved"]),
+            key=lambda n: degree.get(n["id"], 0),
+            reverse=True,
+        )
+        keep = set(n["id"] for n in resolved) | {
+            n["id"] for n in unresolved[: max(0, max_nodes - len(resolved))]
+        }
+        node_list = [n for n in node_list if n["id"] in keep]
+        norm_edges = [
+            e for e in norm_edges if e["source"] in keep and e["target"] in keep
+        ]
+
+    counts: dict[str, int] = {}
+    for n in node_list:
+        counts[n["category"]] = counts.get(n["category"], 0) + 1
+
+    return {
+        "nodes": node_list,
+        "edges": norm_edges,
+        "category_counts": counts,
+        "truncated": len(nodes) > len(node_list),
+    }
+
+
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
@@ -199,6 +332,745 @@ def _report_markdown(
     return "\n".join(lines)
 
 
+_GRAPH_HTML_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ — discovery graph</title>
+<style>
+  :root {
+    --surface:      #fcfcfb;
+    --surface-2:    #f2f1ee;
+    --ink:          #0b0b0b;
+    --ink-2:        #52514e;
+    --ink-3:        #8a887f;
+    --rule:         #e3e1da;
+    --edge-rgb:     11,11,11;
+    --cat-keyword:    #2a78d6;
+    --cat-graph_walk: #eb6834;
+    --cat-both:       #1baf7a;
+    --cat-unresolved: #9a9890;
+    --shadow: 0 1px 2px rgba(11,11,11,.06), 0 8px 24px -12px rgba(11,11,11,.18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --surface:      #1a1a19;
+      --surface-2:    #232320;
+      --ink:          #ffffff;
+      --ink-2:        #c3c2b7;
+      --ink-3:        #82817a;
+      --rule:         #333230;
+      --edge-rgb:     255,255,255;
+      --cat-keyword:    #3987e5;
+      --cat-graph_walk: #d95926;
+      --cat-both:       #199e70;
+      --cat-unresolved: #6f6e68;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface:      #1a1a19;
+    --surface-2:    #232320;
+    --ink:          #ffffff;
+    --ink-2:        #c3c2b7;
+    --ink-3:        #82817a;
+    --rule:         #333230;
+    --edge-rgb:     255,255,255;
+    --cat-keyword:    #3987e5;
+    --cat-graph_walk: #d95926;
+    --cat-both:       #199e70;
+    --cat-unresolved: #6f6e68;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: .875rem 1.25rem;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem 1.5rem;
+    background: var(--surface);
+    z-index: 5;
+  }
+  .title-block { flex: 1 1 auto; min-width: 12rem; }
+  h1 {
+    margin: 0;
+    font-size: 1.0625rem;
+    font-weight: 650;
+    letter-spacing: -.01em;
+  }
+  .byline {
+    margin: .125rem 0 0;
+    font-size: .75rem;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .75rem 1.25rem;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: .625rem 1rem; }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+    font-size: .75rem;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .dot {
+    width: .625rem; height: .625rem; border-radius: 50%;
+    flex: none;
+    box-shadow: 0 0 0 1px rgba(var(--edge-rgb), .12) inset;
+  }
+  .dot.hollow { background: transparent; border: 1.5px dashed var(--cat-unresolved); }
+  .field {
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+    font-size: .75rem;
+    color: var(--ink-2);
+  }
+  input[type="search"] {
+    font: inherit;
+    font-size: .8125rem;
+    padding: .3rem .55rem;
+    border-radius: 5px;
+    border: 1px solid var(--rule);
+    background: var(--surface-2);
+    color: var(--ink);
+    width: 11rem;
+  }
+  input[type="search"]:focus-visible, button:focus-visible {
+    outline: 2px solid var(--cat-keyword);
+    outline-offset: 1px;
+  }
+  button {
+    font: inherit;
+    font-size: .75rem;
+    padding: .35rem .65rem;
+    border-radius: 5px;
+    border: 1px solid var(--rule);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  button[aria-pressed="true"] { color: var(--ink); border-color: var(--cat-keyword); }
+  main { position: relative; flex: 1 1 auto; min-height: 0; }
+  #canvas-wrap { position: absolute; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #tooltip {
+    position: absolute;
+    pointer-events: none;
+    max-width: 15rem;
+    padding: .5rem .625rem;
+    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    box-shadow: var(--shadow);
+    font-size: .75rem;
+    color: var(--ink-2);
+    opacity: 0;
+    transform: translate(-9999px, -9999px);
+  }
+  #tooltip strong { display: block; color: var(--ink); font-size: .8125rem; margin-bottom: .125rem; }
+  #tooltip .tt-row { display: flex; justify-content: space-between; gap: .75rem; }
+  #empty-state {
+    position: absolute; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    color: var(--ink-3); font-size: .875rem;
+  }
+  #table-view {
+    position: absolute; inset: 0;
+    overflow: auto;
+    background: var(--surface);
+    display: none;
+  }
+  #table-view table { width: 100%; border-collapse: collapse; font-size: .8125rem; }
+  #table-view th {
+    position: sticky; top: 0;
+    text-align: left;
+    font-size: .6875rem; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 500;
+    padding: .5rem .75rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #table-view td {
+    padding: .4rem .75rem;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink-2);
+  }
+  #table-view td:first-child { color: var(--ink); }
+  .n { text-align: right; font-variant-numeric: tabular-nums; }
+  #hint {
+    position: absolute; left: 1rem; bottom: 1rem;
+    font-size: .6875rem; color: var(--ink-3);
+    background: var(--surface); padding: .25rem .5rem; border-radius: 4px;
+    border: 1px solid var(--rule);
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="title-block">
+      <h1>__TITLE__ — discovery graph</h1>
+      <p class="byline">__BYLINE__</p>
+    </div>
+    <div class="controls">
+      <div class="legend" id="legend"></div>
+      <label class="field"><input type="checkbox" id="toggle-unresolved" checked> Show frontier nodes</label>
+      <input type="search" id="search" placeholder="Find a channel…" aria-label="Find a channel">
+      <button id="btn-reset" type="button">Reset view</button>
+      <button id="btn-table" type="button" aria-pressed="false">View as table</button>
+      <button id="btn-theme" type="button" aria-pressed="false">Dark</button>
+    </div>
+  </header>
+  <main>
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="empty-state">No nodes match the current filter.</div>
+    </div>
+    <div id="table-view">
+      <table>
+        <thead><tr>
+          <th data-key="label">Channel</th>
+          <th data-key="category">Found by</th>
+          <th data-key="subscribers" class="n">Subscribers</th>
+          <th data-key="resolved">Fetched</th>
+        </tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+    <div id="tooltip"></div>
+    <div id="hint">Drag to move · scroll to zoom · click a node to focus its neighbours</div>
+  </main>
+
+<script type="application/json" id="graph-data">__GRAPH_JSON__</script>
+<script>
+(function () {
+  "use strict";
+  var payload = JSON.parse(document.getElementById("graph-data").textContent);
+  var CATS = ["keyword", "graph_walk", "both", "unresolved"];
+  var CAT_LABEL = {
+    keyword: "Keyword only", graph_walk: "Graph walk only",
+    both: "Both tracks", unresolved: "Unresolved (frontier)"
+  };
+
+  // ---- theme -------------------------------------------------------------
+  var root = document.documentElement;
+  var themeBtn = document.getElementById("btn-theme");
+  function applyThemeButtonLabel() {
+    var explicit = root.getAttribute("data-theme");
+    themeBtn.textContent = explicit === "dark" ? "Light" : "Dark";
+    themeBtn.setAttribute("aria-pressed", explicit === "dark" ? "true" : "false");
+  }
+  themeBtn.addEventListener("click", function () {
+    var current = root.getAttribute("data-theme");
+    if (current === "dark") { root.setAttribute("data-theme", "light"); }
+    else if (current === "light") { root.removeAttribute("data-theme"); }
+    else { root.setAttribute("data-theme", "dark"); }
+    applyThemeButtonLabel();
+    readTokens();
+    render();
+  });
+  applyThemeButtonLabel();
+
+  // ---- read CSS tokens (so canvas colors always match the live theme) ---
+  var tok = {};
+  function readTokens() {
+    var s = getComputedStyle(document.body);
+    ["--surface", "--ink", "--ink-2", "--ink-3", "--rule", "--edge-rgb",
+     "--cat-keyword", "--cat-graph_walk", "--cat-both", "--cat-unresolved"
+    ].forEach(function (k) { tok[k] = s.getPropertyValue(k).trim(); });
+  }
+  readTokens();
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      readTokens(); render();
+    });
+  }
+
+  // ---- legend + filters ---------------------------------------------------
+  var legend = document.getElementById("legend");
+  CATS.forEach(function (cat) {
+    var count = payload.category_counts[cat] || 0;
+    var item = document.createElement("span");
+    item.className = "legend-item";
+    var dot = document.createElement("span");
+    dot.className = "dot" + (cat === "unresolved" ? " hollow" : "");
+    if (cat !== "unresolved") { dot.style.background = "var(--cat-" + cat + ")"; }
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(CAT_LABEL[cat] + " (" + count.toLocaleString() + ")"));
+    legend.appendChild(item);
+  });
+  if (payload.truncated) {
+    var note = document.createElement("span");
+    note.className = "legend-item";
+    note.style.color = "var(--ink-3)";
+    note.textContent = "· lowest-connected frontier nodes trimmed for display";
+    legend.appendChild(note);
+  }
+
+  // ---- graph data ----------------------------------------------------------
+  var spread = 40 * Math.sqrt(Math.max(1, payload.nodes.length));
+  var nodes = payload.nodes.map(function (n, i) {
+    var a = (i * 2.399963) % (Math.PI * 2); // golden-angle spiral: no initial overlap
+    var r = spread * Math.sqrt((i + 1) / payload.nodes.length);
+    return {
+      id: n.id, label: n.label, subscribers: n.subscribers || 0,
+      category: n.category, resolved: n.resolved,
+      x: Math.cos(a) * r, y: Math.sin(a) * r,
+      vx: 0, vy: 0, fx: null, fy: null, hidden: false
+    };
+  });
+  var byId = new Map(nodes.map(function (n) { return [n.id, n]; }));
+  var edges = payload.edges.map(function (e) {
+    return { source: byId.get(e.source), target: byId.get(e.target), edge_type: e.edge_type };
+  }).filter(function (e) { return e.source && e.target; });
+
+  var subMax = nodes.reduce(function (m, n) { return Math.max(m, n.subscribers); }, 1);
+  function radius(n) {
+    var v = Math.sqrt(n.subscribers / subMax);
+    return 3 + v * 15;
+  }
+
+  var EDGE_LEN = {
+    featured_channel: 42, recommendation: 68, playlist: 68,
+    comment_author: 95, collaboration: 95, comment_mention: 95
+  };
+  var EDGE_STR = {
+    featured_channel: 0.95, recommendation: 0.65, playlist: 0.65,
+    comment_author: 0.35, collaboration: 0.35, comment_mention: 0.35
+  };
+
+  // ---- spatial-grid force simulation ---------------------------------------
+  // O(n) repulsion via a uniform grid rather than O(n^2) all-pairs — this
+  // graph runs to ~2,000 nodes, and all-pairs is not viable at that count.
+  var CELL = 90, REPEL = 480, CENTER_K = 0.018, DAMPING = 0.82;
+  var alpha = 1, alphaTarget = 0;
+  var alphaDecay = 1 - Math.pow(0.001, 1 / 260);
+  var draggedNode = null;
+
+  function key(x, y) { return (Math.floor(x / CELL)) + "," + (Math.floor(y / CELL)); }
+
+  function tick() {
+    var active = nodes.filter(function (n) { return !n.hidden; });
+    var grid = new Map();
+    for (var i = 0; i < active.length; i++) {
+      var n = active[i], k = key(n.x, n.y);
+      var arr = grid.get(k);
+      if (!arr) { arr = []; grid.set(k, arr); }
+      arr.push(n);
+    }
+    var cutoff2 = (CELL * 1.6) * (CELL * 1.6);
+    for (var j = 0; j < active.length; j++) {
+      var node = active[j];
+      if (node === draggedNode || node.fx !== null) continue;
+      var fx = 0, fy = 0;
+      var cx = Math.floor(node.x / CELL), cy = Math.floor(node.y / CELL);
+      for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+          var bucket = grid.get((cx + dx) + "," + (cy + dy));
+          if (!bucket) continue;
+          for (var b = 0; b < bucket.length; b++) {
+            var o = bucket[b];
+            if (o === node) continue;
+            var ddx = node.x - o.x, ddy = node.y - o.y;
+            var d2 = ddx * ddx + ddy * ddy;
+            if (d2 > cutoff2) continue;
+            if (d2 < 4) { ddx = (Math.random() - 0.5); ddy = (Math.random() - 0.5); d2 = 4; }
+            var d = Math.sqrt(d2);
+            var f = REPEL / d2;
+            fx += (ddx / d) * f; fy += (ddy / d) * f;
+          }
+        }
+      }
+      fx += -node.x * CENTER_K;
+      fy += -node.y * CENTER_K;
+      node.vx = (node.vx + fx * alpha) * DAMPING;
+      node.vy = (node.vy + fy * alpha) * DAMPING;
+    }
+    for (var e = 0; e < edges.length; e++) {
+      var edge = edges[e];
+      if (edge.source.hidden || edge.target.hidden) continue;
+      var strength = EDGE_STR[edge.edge_type] || 0.5;
+      var targetLen = EDGE_LEN[edge.edge_type] || 85;
+      var a = edge.source, bN = edge.target;
+      var edx = bN.x - a.x, edy = bN.y - a.y;
+      var ed = Math.sqrt(edx * edx + edy * edy) || 0.01;
+      var diff = ((ed - targetLen) / ed) * strength * alpha;
+      var mx = edx * diff * 0.5, my = edy * diff * 0.5;
+      if (a !== draggedNode && a.fx === null) { a.vx += mx; a.vy += my; }
+      if (bN !== draggedNode && bN.fx === null) { bN.vx -= mx; bN.vy -= my; }
+    }
+    for (var m = 0; m < active.length; m++) {
+      var nn = active[m];
+      if (nn === draggedNode || nn.fx !== null) continue;
+      nn.x += nn.vx; nn.y += nn.vy;
+    }
+    alpha += (alphaTarget - alpha) * alphaDecay;
+  }
+  function wake(strength) { alpha = Math.max(alpha, strength == null ? 0.35 : strength); loop(); }
+
+  // ---- canvas + transform ---------------------------------------------------
+  var wrap = document.getElementById("canvas-wrap");
+  var canvas = document.getElementById("canvas");
+  var ctx = canvas.getContext("2d");
+  var transform = { x: 0, y: 0, k: 1 };
+  var dpr = Math.max(1, window.devicePixelRatio || 1);
+
+  function resize() {
+    var rect = wrap.getBoundingClientRect();
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+    if (!transform.initialised) {
+      transform.x = rect.width / 2; transform.y = rect.height / 2;
+      transform.initialised = true;
+    }
+    render();
+  }
+  window.addEventListener("resize", resize);
+
+  function toScreen(n) { return [n.x * transform.k + transform.x, n.y * transform.k + transform.y]; }
+  function toWorld(sx, sy) { return [(sx - transform.x) / transform.k, (sy - transform.y) / transform.k]; }
+
+  // ---- selection / hover state ------------------------------------------
+  var hovered = null, focused = null, matched = new Set();
+
+  function neighbourSet(n) {
+    var s = new Set([n.id]);
+    edges.forEach(function (e) {
+      if (e.source === n) s.add(e.target.id);
+      if (e.target === n) s.add(e.source.id);
+    });
+    return s;
+  }
+
+  function render() {
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    ctx.fillStyle = tok["--surface"];
+    ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
+    var dim = focused ? neighbourSet(focused) : (matched.size ? matched : null);
+
+    ctx.lineWidth = 1;
+    edges.forEach(function (e) {
+      if (e.source.hidden || e.target.hidden) return;
+      var a = toScreen(e.source), b = toScreen(e.target);
+      var faded = dim && !(dim.has(e.source.id) && dim.has(e.target.id));
+      ctx.strokeStyle = "rgba(" + tok["--edge-rgb"] + "," + (faded ? 0.05 : 0.16) + ")";
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    });
+
+    nodes.forEach(function (n) {
+      if (n.hidden) return;
+      var p = toScreen(n);
+      var r = radius(n) * transform.k;
+      if (p[0] < -r - 20 || p[0] > canvas.width / dpr + r + 20) return;
+      if (p[1] < -r - 20 || p[1] > canvas.height / dpr + r + 20) return;
+      var faded = dim && !dim.has(n.id);
+      var color = n.category === "unresolved" ? tok["--cat-unresolved"] : tok["--cat-" + n.category];
+      ctx.globalAlpha = faded ? 0.22 : 1;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], Math.max(1.5, r), 0, Math.PI * 2);
+      if (n.category === "unresolved") {
+        ctx.fillStyle = tok["--surface"];
+        ctx.fill();
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([2, 2]);
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = tok["--surface"];
+        ctx.stroke();
+      }
+      if (n === hovered || n === focused || matched.has(n.id)) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = tok["--ink"];
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], Math.max(1.5, r) + 2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    });
+
+    // direct label for hovered/focused/matched — selective, not every node
+    var labelTargets = [];
+    if (hovered) labelTargets.push(hovered);
+    if (focused) labelTargets.push(focused);
+    if (matched.size && matched.size <= 40) {
+      nodes.forEach(function (n) { if (matched.has(n.id)) labelTargets.push(n); });
+    }
+    ctx.font = "600 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    labelTargets.forEach(function (n) {
+      var p = toScreen(n);
+      var r = radius(n) * transform.k;
+      var text = n.label;
+      var tw = ctx.measureText(text).width;
+      ctx.fillStyle = "rgba(" + (tok["--surface"] === "#1a1a19" ? "26,26,25" : "252,252,251") + ",.92)";
+      ctx.fillRect(p[0] + r + 5, p[1] - 9, tw + 8, 18);
+      ctx.fillStyle = tok["--ink"];
+      ctx.fillText(text, p[0] + r + 9, p[1] + 1);
+    });
+
+    ctx.restore();
+  }
+
+  var rafRunning = false;
+  function loop() {
+    if (rafRunning) return;
+    rafRunning = true;
+    function frame() {
+      tick(); render();
+      if (alpha > 0.001 || draggedNode) {
+        requestAnimationFrame(frame);
+      } else {
+        rafRunning = false;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---- interaction: drag / pan / zoom -------------------------------------
+  var panning = false, panStart = null, dragMoved = false;
+  var DRAG_THRESHOLD = 4;
+
+  function nodeAt(sx, sy) {
+    var w = toWorld(sx, sy);
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.hidden) continue;
+      var dx = w[0] - n.x, dy = w[1] - n.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      var hit = radius(n) + 4 / transform.k;
+      if (d < hit && d < bestD) { best = n; bestD = d; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener("mousedown", function (ev) {
+    var rect = canvas.getBoundingClientRect();
+    var sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    var n = nodeAt(sx, sy);
+    dragMoved = false;
+    if (n) {
+      draggedNode = n; canvas.classList.add("dragging");
+      panStart = { sx: sx, sy: sy };
+    } else {
+      panning = true; canvas.classList.add("dragging");
+      panStart = { sx: sx, sy: sy, tx: transform.x, ty: transform.y };
+    }
+  });
+  window.addEventListener("mousemove", function (ev) {
+    var rect = canvas.getBoundingClientRect();
+    var sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    if (draggedNode) {
+      if (Math.abs(sx - panStart.sx) > DRAG_THRESHOLD || Math.abs(sy - panStart.sy) > DRAG_THRESHOLD) dragMoved = true;
+      var w = toWorld(sx, sy);
+      draggedNode.fx = w[0]; draggedNode.fy = w[1];
+      draggedNode.x = w[0]; draggedNode.y = w[1];
+      wake(0.4);
+    } else if (panning) {
+      transform.x = panStart.tx + (sx - panStart.sx);
+      transform.y = panStart.ty + (sy - panStart.sy);
+      render();
+    } else if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
+      var hit = nodeAt(sx, sy);
+      if (hit !== hovered) {
+        hovered = hit;
+        showTooltip(hit, ev.clientX, ev.clientY);
+        render();
+      } else if (hit) {
+        positionTooltip(ev.clientX, ev.clientY);
+      }
+    }
+  });
+  window.addEventListener("mouseup", function () {
+    if (draggedNode) {
+      var n = draggedNode;
+      if (!dragMoved) {
+        // a click, not a drag: toggle focus on this node's ego-network
+        focused = focused === n ? null : n;
+        matched.clear(); searchInput.value = "";
+        n.fx = null; n.fy = null;
+      } else {
+        n.fx = null; n.fy = null;
+      }
+      draggedNode = null;
+      wake(0.3);
+      render();
+    } else if (panning && !dragMoved) {
+      focused = null;
+      render();
+    }
+    panning = false;
+    canvas.classList.remove("dragging");
+  });
+  canvas.addEventListener("mouseleave", function () { hovered = null; hideTooltip(); render(); });
+
+  canvas.addEventListener("wheel", function (ev) {
+    ev.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    var mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    var w = toWorld(mx, my);
+    var delta = -ev.deltaY * 0.0016;
+    var newK = Math.min(9, Math.max(0.06, transform.k * (1 + delta)));
+    transform.x = mx - w[0] * newK;
+    transform.y = my - w[1] * newK;
+    transform.k = newK;
+    render();
+  }, { passive: false });
+
+  // ---- tooltip --------------------------------------------------------------
+  var tooltip = document.getElementById("tooltip");
+  function showTooltip(n, cx, cy) {
+    if (!n) { hideTooltip(); return; }
+    tooltip.innerHTML =
+      "<strong>" + escapeHtml(n.label) + "</strong>" +
+      "<div class=\"tt-row\"><span>Subscribers</span><span>" + n.subscribers.toLocaleString() + "</span></div>" +
+      "<div class=\"tt-row\"><span>Found by</span><span>" + CAT_LABEL[n.category] + "</span></div>" +
+      "<div class=\"tt-row\"><span>Fetched</span><span>" + (n.resolved ? "yes" : "no — frontier only") + "</span></div>";
+    tooltip.style.opacity = 1;
+    positionTooltip(cx, cy);
+  }
+  function positionTooltip(cx, cy) {
+    var wrapRect = wrap.getBoundingClientRect();
+    tooltip.style.transform = "translate(" + (cx - wrapRect.left + 14) + "px," + (cy - wrapRect.top + 14) + "px)";
+  }
+  function hideTooltip() { tooltip.style.opacity = 0; tooltip.style.transform = "translate(-9999px,-9999px)"; }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // ---- filters: hide frontier nodes ---------------------------------------
+  var toggleUnresolved = document.getElementById("toggle-unresolved");
+  var emptyState = document.getElementById("empty-state");
+  function applyVisibility() {
+    var showUnresolved = toggleUnresolved.checked;
+    var visibleCount = 0;
+    nodes.forEach(function (n) {
+      n.hidden = (!showUnresolved && n.category === "unresolved");
+      if (!n.hidden) visibleCount++;
+    });
+    emptyState.style.display = visibleCount === 0 ? "flex" : "none";
+    wake(0.5);
+    render();
+  }
+  toggleUnresolved.addEventListener("change", applyVisibility);
+
+  // ---- search -----------------------------------------------------------
+  var searchInput = document.getElementById("search");
+  searchInput.addEventListener("input", function () {
+    var q = searchInput.value.trim().toLowerCase();
+    matched.clear();
+    focused = null;
+    if (q.length >= 2) {
+      nodes.forEach(function (n) {
+        if (!n.hidden && n.label.toLowerCase().indexOf(q) !== -1) matched.add(n.id);
+      });
+    }
+    render();
+  });
+
+  // ---- reset view ---------------------------------------------------------
+  document.getElementById("btn-reset").addEventListener("click", function () {
+    var rect = wrap.getBoundingClientRect();
+    transform.x = rect.width / 2; transform.y = rect.height / 2; transform.k = 1;
+    focused = null; matched.clear(); searchInput.value = "";
+    render();
+  });
+
+  // ---- table view ---------------------------------------------------------
+  var tableBtn = document.getElementById("btn-table");
+  var tableView = document.getElementById("table-view");
+  var tableBody = document.getElementById("table-body");
+  var tableSort = { key: "subscribers", dir: -1 };
+  function renderTable() {
+    var rows = payload.nodes.slice().sort(function (a, b) {
+      var k = tableSort.key, dir = tableSort.dir;
+      var av = a[k], bv = b[k];
+      if (typeof av === "string") { av = av.toLowerCase(); bv = (bv || "").toLowerCase(); }
+      return av < bv ? -1 * dir : av > bv ? 1 * dir : 0;
+    });
+    tableBody.innerHTML = rows.map(function (n) {
+      return "<tr><td>" + escapeHtml(n.label) + "</td><td>" + CAT_LABEL[n.category] +
+        "</td><td class=\"n\">" + n.subscribers.toLocaleString() + "</td><td>" +
+        (n.resolved ? "yes" : "no") + "</td></tr>";
+    }).join("");
+  }
+  document.querySelectorAll("#table-view th").forEach(function (th) {
+    th.addEventListener("click", function () {
+      var k = th.getAttribute("data-key");
+      tableSort.dir = tableSort.key === k ? -tableSort.dir : -1;
+      tableSort.key = k;
+      renderTable();
+    });
+  });
+  tableBtn.addEventListener("click", function () {
+    var showing = tableBtn.getAttribute("aria-pressed") === "true";
+    tableBtn.setAttribute("aria-pressed", showing ? "false" : "true");
+    tableBtn.textContent = showing ? "View as table" : "View as graph";
+    if (!showing) { renderTable(); tableView.style.display = "block"; }
+    else { tableView.style.display = "none"; }
+  });
+
+  resize();
+  applyVisibility();
+  wake(1);
+})();
+</script>
+</body>
+</html>
+"""
+
+
+def _interactive_graph_html(payload: dict[str, Any], manifest: dict[str, Any]) -> str:
+    niche = manifest.get("niche") or "Untitled"
+    n_nodes = len(payload.get("nodes", []))
+    n_edges = len(payload.get("edges", []))
+    byline = (
+        f"{n_nodes:,} nodes · {n_edges:,} edges · run {manifest.get('run_id', '')} · "
+        f"generated {manifest.get('exported_at', '')[:10]}"
+    )
+    graph_json = json.dumps(payload, default=str).replace("</", "<\\/")
+    html = _GRAPH_HTML_TEMPLATE
+    html = html.replace("__TITLE__", niche)
+    html = html.replace("__BYLINE__", byline)
+    html = html.replace("__GRAPH_JSON__", graph_json)
+    return html
+
+
 def export_run(run_id: str, thread_id: str | None = None) -> Path:
     """Write one run's deliverable. Returns the directory."""
     from src.api import runs as runs_mod
@@ -267,10 +1139,15 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
         "saturated_branches": state.get("saturated_branches", []),
     }
 
+    graph_payload = build_graph_payload(channels, edges, max_nodes=cfg.export_max_graph_nodes)
+
     _write_csv(out / "channels.csv", channels)
     _write_csv(out / "outlier_videos.csv", videos)
     (out / "discovery_graph.json").write_text(
-        json.dumps({"edges": edges}, indent=2, default=str), encoding="utf-8"
+        json.dumps(graph_payload, indent=2, default=str), encoding="utf-8"
+    )
+    (out / "discovery_graph.html").write_text(
+        _interactive_graph_html(graph_payload, manifest), encoding="utf-8"
     )
     (out / "manifest.json").write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"

@@ -211,6 +211,12 @@ class HarnessConfig(BaseSettings):
     # Top-N by outlier score. The full video table runs to five figures;
     # a Content Creation Team wants the actionable slice, not the dump.
     export_max_videos: int = 500
+    # Measured on the Finance export: 706 hydrated channels + 1,824 distinct
+    # unresolved frontier refs (seen via an edge, never fetched) = 2,530
+    # nodes. When over this cap, unresolved nodes are trimmed first —
+    # lowest-degree ones, since a frontier node with no other connection adds
+    # the least to the picture — before any hydrated channel is dropped.
+    export_max_graph_nodes: int = 2000
 
     # --- cost governors (0 means uncapped, for the `full` profile) ---
     max_rounds_per_branch: int = 3
