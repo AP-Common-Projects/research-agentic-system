@@ -17,7 +17,7 @@ This is a deterministic node. No LLM call. Cost = $0 per invocation.
 
 from __future__ import annotations
 
-import difflib
+import math
 import re
 import time
 from typing import Any
@@ -188,7 +188,7 @@ def score_distinctness(
     """
     rest = set(G.nodes()) - community
     if not rest:
-        return float("inf")  # entire graph is one community
+        return math.inf  # entire graph is one community
 
     intra_weights: list[float] = []
     inter_weights: list[float] = []
@@ -205,8 +205,27 @@ def score_distinctness(
             if d:
                 inter_weights.append(d.get("weight", 0.0))
 
-    avg_intra = sum(intra_weights) / len(intra_weights) if intra_weights else 0.0
-    avg_inter = sum(inter_weights) / len(inter_weights) if inter_weights else 0.01
+    # No internal cohesion at all: this is a bag of unconnected nodes, not a
+    # community, however isolated it looks from the outside.
+    if not intra_weights:
+        return 0.0
+
+    avg_intra = sum(intra_weights) / len(intra_weights)
+
+    # Genuinely disconnected from the rest of the graph. That IS maximal
+    # distinctness and should be said so — the previous code divided by an
+    # 0.01 sentinel and returned ~110, an arbitrary number that looks like a
+    # measurement and passes any threshold. Measured live, EVERY retained
+    # candidate scored exactly 110.0, which meant min_cluster_distinctness was
+    # filtering nothing and ADR-0007's "evidence-gated" depth was ungated.
+    #
+    # Returning infinity keeps the gate honest: a disconnected component of
+    # sufficient size genuinely earns a split, and the real filter for
+    # everything else is the ratio below.
+    if not inter_weights:
+        return math.inf
+
+    avg_inter = sum(inter_weights) / len(inter_weights)
     return avg_intra / avg_inter if avg_inter > 0 else 0.0
 
 
@@ -308,13 +327,19 @@ async def cluster_branch(state: dict) -> dict:
                 ch_id = ch.get("channel_id", "")
                 if ch_id:
                     member_ids.append(ch_id)
+        # math.inf does not survive JSON or JSONB. A disconnected community
+        # is recorded as such rather than as a fabricated large number.
+        disconnected = math.isinf(distinctness)
         candidates.append({
             "member_refs": sorted(member_refs),
             "member_channel_ids": member_ids,
             "size": len(comm),
-            "distinctness_score": round(distinctness, 4),
+            "distinctness_score": None if disconnected else round(distinctness, 4),
+            "disconnected": disconnected,
         })
-        if best_distinctness is None or distinctness > best_distinctness:
+        if not disconnected and (
+            best_distinctness is None or distinctness > best_distinctness
+        ):
             best_distinctness = round(distinctness, 4)
 
     tree_update: dict[str, Any] = {

@@ -1,0 +1,53 @@
+{
+  "edges": [
+    {
+      "source_channel_id": "UCSPYNpQ2fHv9HJ-q6MIMaPw",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@thefinancialconfessionshig8724",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:54:34.773069+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@financialeducation2",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:58:35.894653+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@jeremylefebvre-clips",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:58:35.898750+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@jeremylefebvremakesmoney7934",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:58:35.899872+03:00"
+    },
+    {
+      "source_channel_id": "UChObmEJP3bgGUXJGc2ePP3Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@ourrichjourneyjunior",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 19:10:50.622384+03:00"
+    },
+    {
+      "source_channel_id": "UChObmEJP3bgGUXJGc2ePP3Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@ourrichjourneydailyinvesting",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 19:10:50.626692+03:00"
+    },
+    {
+      "source_channel_id": "UCMw07uiVxGULqePlrOZnx9A",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@livinglikeleila",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 19:12:38.046024+03:00"
+    }
+  ]
+}

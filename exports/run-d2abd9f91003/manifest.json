@@ -1,0 +1,28 @@
+{
+  "run_id": "run-d2abd9f91003",
+  "thread_id": "thread-1296354167bf",
+  "niche": "Finance",
+  "exported_at": "2026-08-14T16:20:44.474064+00:00",
+  "profile": "smoke",
+  "channels": 115,
+  "videos": 500,
+  "discovery_edges": 7,
+  "attribution": {
+    "keyword": 108,
+    "unattributed": 7
+  },
+  "spend": {
+    "brightdata_records": 142,
+    "brightdata_usd": 0.213,
+    "total_usd": 0.2878,
+    "youtube_quota": 351
+  },
+  "stop_reasons": [
+    "max_rounds_per_branch"
+  ],
+  "saturated_branches": [
+    "root",
+    "investing-market-analysis",
+    "personal-finance-wealth-building"
+  ]
+}

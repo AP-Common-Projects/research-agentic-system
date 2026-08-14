@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import networkx as nx
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.tools.graph_clustering import (
     build_similarity_graph,
@@ -365,3 +366,99 @@ class TestRefIdentityMismatch:
 
         G = build_similarity_graph([a, b], channels, edges)
         assert G[a][b]["weight"] == 3.0
+
+
+class TestDistinctnessIsAMeasurementNotASentinel:
+    """score_distinctness divided by an 0.01 fallback when a community had no
+    external edges, returning ~110 — an arbitrary number that looks like a
+    measurement and passes any threshold. Measured live, EVERY retained
+    candidate scored exactly 110.0, so min_cluster_distinctness filtered
+    nothing and ADR-0007's evidence-gated depth was ungated."""
+
+    @staticmethod
+    def _two_triangles(bridge_weight=1.0, bridged=True):
+        import networkx as nx
+        G = nx.Graph()
+        for a, b in [("a", "b"), ("b", "c"), ("a", "c")]:
+            G.add_edge(a, b, weight=3.0)
+        for a, b in [("x", "y"), ("y", "z"), ("x", "z")]:
+            G.add_edge(a, b, weight=3.0)
+        if bridged:
+            G.add_edge("c", "x", weight=bridge_weight)
+        return G
+
+    def test_connected_community_returns_a_real_ratio(self):
+        from src.tools.graph_clustering import score_distinctness
+
+        score = score_distinctness(self._two_triangles(), {"a", "b", "c"})
+        assert score == 3.0, "3.0 intra over 1.0 inter"
+
+    def test_weakly_bridged_scores_higher_than_strongly_bridged(self):
+        """The ratio must respond to how separate the community actually is."""
+        from src.tools.graph_clustering import score_distinctness
+
+        weak = score_distinctness(self._two_triangles(bridge_weight=0.5), {"a", "b", "c"})
+        strong = score_distinctness(self._two_triangles(bridge_weight=3.0), {"a", "b", "c"})
+        assert weak > strong
+
+    def test_disconnected_is_infinite_not_a_fabricated_number(self):
+        import math
+        from src.tools.graph_clustering import score_distinctness
+
+        score = score_distinctness(self._two_triangles(bridged=False), {"a", "b", "c"})
+        assert math.isinf(score), "a genuinely separate component is maximally distinct"
+
+    def test_no_internal_edges_is_not_a_community(self):
+        """Isolated nodes look maximally separate from outside, but there is
+        no internal cohesion to justify calling them a cluster."""
+        import networkx as nx
+        from src.tools.graph_clustering import score_distinctness
+
+        G = nx.Graph()
+        G.add_nodes_from(["p", "q"])
+        G.add_edge("m", "n", weight=1.0)
+        assert score_distinctness(G, {"p", "q"}) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_infinity_never_reaches_storage(self):
+        """math.inf does not survive JSON or JSONB — a disconnected candidate
+        is flagged rather than carrying a fabricated score."""
+        import json
+        from src.tools.graph_clustering import cluster_branch
+
+        state = {
+            "tree": {"n1": {
+                "id": "n1",
+                "_gw_refs": {f"https://www.youtube.com/channel/C{i}": 5000 for i in range(6)},
+                "_gw_channel_ids": [f"C{i}" for i in range(6)],
+            }},
+            "active_node_id": "n1",
+            "channel_refs_by_id": {
+                f"C{i}": f"https://www.youtube.com/channel/C{i}" for i in range(6)
+            },
+        }
+        channels = [{"channel_id": f"C{i}", "title": f"ch{i}", "description": ""}
+                    for i in range(6)]
+        # Two disconnected triangles -> both communities are disconnected.
+        edges = [
+            {"source_channel_id": "C0", "target_channel_ref": "https://www.youtube.com/channel/C1", "edge_type": "featured_channel"},
+            {"source_channel_id": "C1", "target_channel_ref": "https://www.youtube.com/channel/C2", "edge_type": "featured_channel"},
+            {"source_channel_id": "C3", "target_channel_ref": "https://www.youtube.com/channel/C4", "edge_type": "featured_channel"},
+            {"source_channel_id": "C4", "target_channel_ref": "https://www.youtube.com/channel/C5", "edge_type": "featured_channel"},
+        ]
+        store = MagicMock()
+        store.get_channels_for_node = AsyncMock(return_value=channels)
+        store.get_discovery_edges_for_channels = AsyncMock(return_value=edges)
+
+        with patch("src.tools.graph_clustering.get_store", return_value=store), \
+             patch("src.tools.graph_clustering.get_config") as cfg:
+            cfg.return_value.harness = MagicMock(
+                min_channels_for_split=2, min_cluster_distinctness=0.3, cluster_seed=42
+            )
+            result = await cluster_branch(state)
+
+        payload = result.get("tree", {}).get("n1", {})
+        json.dumps(payload)  # must not raise on Infinity
+        for cand in payload.get("cluster_candidates", []):
+            assert cand["distinctness_score"] is None or cand["distinctness_score"] < 1e6
+            assert "disconnected" in cand
