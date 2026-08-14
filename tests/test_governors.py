@@ -402,9 +402,17 @@ class TestTreeGovernors:
         assert result["active_node_id"] == "child"
 
     def test_branch_cap_blocks_new_nodes(self):
+        """One existing branch against a cap of ONE is at the limit.
+
+        This previously used max_branches=2 with a single branch and still
+        expected a block — which passed only because select_next_node compared
+        len(tree) (root included) against a cap that counts branches. The test
+        encoded the off-by-root bug that made adaptive depth unable to create
+        any node at all.
+        """
         tree = self._tree_with_proposal(depth=0)
         tree["filler"] = {"id": "filler", "label": "f", "depth": 1, "status": "saturated"}
-        result = self._run(tree, max_branches=2, max_tree_depth=0)
+        result = self._run(tree, max_branches=1, max_tree_depth=0)
         assert "child" not in result.get("tree", {})
 
     def test_uncapped_when_zero(self):
@@ -1277,3 +1285,47 @@ class TestAccountLevelBudget:
         # A corrupt line must not zero the wallet check — that would silently
         # remove the ceiling.
         assert total_records_spent(tmp_path) == 40
+
+
+class TestBranchCapCountsBranchesNotNodes:
+    """`_enforce_branch_cap` trims the taxonomy to max_branches BRANCHES,
+    which is 1 + max_branches nodes with the root. select_next_node compared
+    len(tree) against max_branches, so the block was already true the moment
+    the taxonomy was built — every proposed split was rejected at every
+    setting, and v2's adaptive depth could not create a single node."""
+
+    @staticmethod
+    def _tree(branches):
+        tree = {"root": {"id": "root", "depth": 0, "status": "compacted",
+                         "children_ids": [],
+                         "proposed_new_nodes": [
+                             {"label": "child", "rationale": "r",
+                              "seed_channel_ids": ["@x"]}
+                         ]}}
+        for i in range(branches):
+            tree[f"b{i}"] = {"id": f"b{i}", "depth": 1, "parent_id": "root",
+                             "status": "saturated"}
+        return tree
+
+    def _run(self, tree, **cfg):
+        with patch("src.nodes.select_next_node.get_config") as c:
+            c.return_value.harness = make_harness_config(**cfg)
+            return select_next_node(
+                {"tree": tree, "active_node_id": None, "next_action": ""}
+            )
+
+    def test_a_split_is_allowed_with_branch_headroom(self):
+        """Root + 2 branches under a 4-branch cap must still permit a split."""
+        result = self._run(self._tree(2), max_branches=4, max_tree_depth=2)
+        assert result.get("active_node_id") == "child", (
+            "adaptive depth must be able to create a node when under the cap"
+        )
+
+    def test_the_cap_still_binds_at_the_limit(self):
+        result = self._run(self._tree(4), max_branches=4, max_tree_depth=2)
+        assert "child" not in result.get("tree", {})
+
+    def test_root_alone_does_not_consume_the_budget(self):
+        """A 1-branch cap with only the root present has room for one branch."""
+        result = self._run(self._tree(0), max_branches=1, max_tree_depth=2)
+        assert result.get("active_node_id") == "child"

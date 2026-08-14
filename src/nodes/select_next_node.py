@@ -54,7 +54,16 @@ def select_next_node(state: dict) -> dict:
                 child_depth = node.get("depth", 0) + 1
                 if cfg.max_tree_depth > 0 and child_depth > cfg.max_tree_depth:
                     continue
-                if cfg.max_branches > 0 and len(tree) >= cfg.max_branches:
+                # Count BRANCHES, not tree size. `_enforce_branch_cap` trims
+                # the taxonomy to max_branches branches, which is 1 +
+                # max_branches nodes once the root is included — so comparing
+                # len(tree) against max_branches was always already true, and
+                # every proposed split was rejected at every setting. v2's
+                # adaptive depth could not create a single node.
+                branch_count = sum(
+                    1 for n in tree.values() if n.get("depth", 0) != 0
+                )
+                if cfg.max_branches > 0 and branch_count >= cfg.max_branches:
                     continue
                 if proposed_id not in tree:
                     child_depth = node.get("depth", 0) + 1
