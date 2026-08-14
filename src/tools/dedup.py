@@ -203,3 +203,48 @@ def persist_channel_signals(conn: Any, channel_id: str, signals: dict) -> None:
         raise
     finally:
         cur.close()
+
+def persist_category_tags(
+    conn: Any,
+    run_id: str,
+    tree_node_id: str,
+    channel_ids: list[str],
+    video_ids: list[str],
+) -> int:
+    """Record which entities belong to which branch of which run.
+
+    This is what makes a per-run export possible without run_id columns on
+    `channels` and `videos` — those are shared entities, and a channel can
+    legitimately belong to a Finance run and a Legal one at once. The table
+    existed in the schema from the start and nothing ever wrote to it, so the
+    store could not answer "which channels came from this run".
+
+    Idempotent: re-running a branch re-tags the same rows to no effect.
+    """
+    if not run_id or not tree_node_id:
+        return 0
+
+    sql = """
+        INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id)
+        VALUES (%(etype)s, %(eid)s, %(node)s, %(run)s)
+        ON CONFLICT (entity_type, entity_id, tree_node_id, run_id) DO NOTHING
+    """
+    written = 0
+    cur = conn.cursor()
+    try:
+        for etype, ids in (("channel", channel_ids), ("video", video_ids)):
+            for eid in ids:
+                if not eid:
+                    continue
+                cur.execute(
+                    sql,
+                    {"etype": etype, "eid": eid, "node": tree_node_id, "run": run_id},
+                )
+                written += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+    return written

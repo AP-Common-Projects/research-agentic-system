@@ -49,6 +49,17 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         checkpointer=checkpointer,
         resume=resume_thread_id is not None,
     )
+    # Export before tearing down the pools. A run that completes and is
+    # never exported leaves its deliverable only in a checkpoint, and the
+    # store gets cleared between runs.
+    try:
+        from src.export import export_run
+
+        path = export_run(run_id, thread_id)
+        print(f"\nExported to {path}")
+    except Exception as exc:
+        print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")
+
     await close_async_pool()
     close_pools()
     return final

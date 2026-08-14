@@ -107,6 +107,20 @@ def hydrate_metadata(state: dict) -> dict:
                 persist_channel(conn, ch)
                 for vid in ch.get("_videos", []):
                     persist_video(conn, vid)
+
+            # Membership, so this run's slice can be exported later without
+            # run_id columns on the shared entity tables. This node is the only
+            # place that knows the run, the active branch and the entities at
+            # the same moment.
+            from src.tools.dedup import persist_category_tags
+
+            persist_category_tags(
+                conn,
+                run_id=state.get("run_id", ""),
+                tree_node_id=state.get("active_node_id") or "",
+                channel_ids=[ch["channel_id"] for ch in channels],
+                video_ids=all_video_ids,
+            )
         finally:
             put_connection(conn)
     except Exception as exc:
