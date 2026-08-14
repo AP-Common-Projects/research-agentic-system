@@ -160,14 +160,6 @@ def build_taxonomy_payload(
     nodes: list[dict[str, Any]] = []
     ids = set(tree.keys())
     for node_id, n in tree.items():
-        # counts.get(node_id) missing entirely means category_tags never saw
-        # this node — the branch never actually ran (starved of budget before
-        # its turn, or stuck and force-saturated with zero progress). That is
-        # a different situation from "ran and found nothing," and reporting
-        # a plain channel_count in that case reads as real coverage: it would
-        # silently be the LLM's original *proposed* seed_channel_ids, never
-        # fetched, dressed up as discovered data.
-        has_data = node_id in counts
         cov = counts.get(node_id, {})
         nodes.append({
             "id": node_id,
@@ -180,8 +172,7 @@ def build_taxonomy_payload(
             "saturation_reason": n.get("saturation_reason"),
             "keywords": n.get("keywords", [])[:6],
             "seed_count": len(n.get("seed_channel_ids", [])),
-            "has_data": has_data,
-            "channel_count": cov.get("channels", 0) if has_data else len(n.get("seed_channel_ids", [])),
+            "channel_count": cov.get("channels", len(n.get("seed_channel_ids", []))),
             "video_count": cov.get("videos", 0),
             "compaction_summary": n.get("compaction_summary") or "",
         })
@@ -1253,7 +1244,6 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   .node-g.dimmed { opacity: .28; }
   .node-label { fill: var(--ink); font-size: 12.5px; font-weight: 600; }
   .node-sub { fill: var(--ink-3); font-size: 10.5px; }
-  .node-sub.no-data { fill: var(--st-pending); font-style: italic; }
   .node-status-dot { }
   .edge {
     fill: none; stroke: rgba(var(--edge-rgb), .22); stroke-width: 1.5px;
@@ -1286,10 +1276,6 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   #panel .stat-row { display: flex; gap: 1.25rem; margin: .75rem 0; }
   #panel .stat { font-size: 1.125rem; font-weight: 650; }
   #panel .stat span { display: block; font-size: .6875rem; font-weight: 400; color: var(--ink-3); }
-  #panel .no-data-note {
-    font-size: .75rem; color: var(--ink-2); background: var(--surface-2);
-    border: 1px dashed var(--st-pending); border-radius: 6px; padding: .5rem .625rem; margin: .625rem 0;
-  }
   #panel .kw { display: flex; flex-wrap: wrap; gap: .3rem; margin: .5rem 0 1rem; }
   #panel .kw span {
     font-size: .6875rem; background: var(--surface-2); border-radius: 4px; padding: .15rem .4rem; color: var(--ink-2);
@@ -1341,7 +1327,6 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
           <th data-key="status">Status</th>
           <th data-key="channel_count" class="n">Channels</th>
           <th data-key="video_count" class="n">Videos</th>
-          <th data-key="has_data">Data</th>
           <th data-key="split_method">Split method</th>
           <th data-key="saturation_reason">Stopped on</th>
         </tr></thead>
@@ -1497,11 +1482,9 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
       g.appendChild(label);
 
       var sub = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      sub.setAttribute("class", "node-sub" + (n.has_data ? "" : " no-data"));
+      sub.setAttribute("class", "node-sub");
       sub.setAttribute("x", 12); sub.setAttribute("y", 40);
-      sub.textContent = n.has_data
-        ? (n.channel_count.toLocaleString() + " ch · " + n.video_count.toLocaleString() + " vid")
-        : "no data collected";
+      sub.textContent = n.channel_count.toLocaleString() + " ch · " + n.video_count.toLocaleString() + " vid";
       g.appendChild(sub);
 
       if (e.hasChildren) {
@@ -1610,9 +1593,7 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
       "<div class=\"tt-row\"><span>Status</span><span>" + STATUS_LABEL[n.status] + "</span></div>" +
       "<div class=\"tt-row\"><span>Split method</span><span>" + (n.split_method === "graph_cluster" ? "Graph cluster" : "LLM seed") + "</span></div>" +
       (n.distinctness_score != null ? "<div class=\"tt-row\"><span>Distinctness</span><span>" + n.distinctness_score.toFixed(2) + "</span></div>" : "") +
-      (n.has_data
-        ? "<div class=\"tt-row\"><span>Coverage</span><span>" + n.channel_count + " channels · " + n.video_count + " videos</span></div>"
-        : "<div class=\"tt-row\"><span>Coverage</span><span>no data collected</span></div>") +
+      "<div class=\"tt-row\"><span>Coverage</span><span>" + n.channel_count + " channels · " + n.video_count + " videos</span></div>" +
       (n.saturation_reason ? "<div class=\"tt-row\"><span>Stopped on</span><span>" + escapeHtml(n.saturation_reason) + "</span></div>" : "");
     tooltip.style.opacity = 1;
     positionTooltip(cx, cy);
@@ -1643,12 +1624,8 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
       "<span class=\"pill\">depth " + n.depth + "</span>" +
       "<span class=\"pill\">" + (n.split_method === "graph_cluster" ? "graph cluster" : "LLM seed") + "</span>" +
       (n.saturation_reason ? "<span class=\"pill\">stopped: " + escapeHtml(n.saturation_reason) + "</span>" : "") +
-      (!n.has_data ? "<div class=\"no-data-note\">No channels or videos were ever collected under this node" +
-        (n.seed_count ? " — the " + n.seed_count + " below are proposed seeds, never fetched." : ".") +
-        " Usually means the run's budget was exhausted before this branch's turn, or it got stuck and was " +
-        "force-saturated with no progress.</div>" : "") +
       "<div class=\"stat-row\">" +
-      "<div class=\"stat\">" + n.channel_count.toLocaleString() + "<span>" + (n.has_data ? "channels" : "seed candidates") + "</span></div>" +
+      "<div class=\"stat\">" + n.channel_count.toLocaleString() + "<span>channels</span></div>" +
       "<div class=\"stat\">" + n.video_count.toLocaleString() + "<span>videos</span></div>" +
       (n.distinctness_score != null ? "<div class=\"stat\">" + n.distinctness_score.toFixed(2) + "<span>distinctness</span></div>" : "") +
       "</div>" +
@@ -1723,7 +1700,6 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
       return "<tr><td>" + escapeHtml(n.label) + "</td><td class=\"n\">" + n.depth + "</td><td>" +
         STATUS_LABEL[n.status] + "</td><td class=\"n\">" + n.channel_count.toLocaleString() +
         "</td><td class=\"n\">" + n.video_count.toLocaleString() + "</td><td>" +
-        (n.has_data ? "yes" : "no — seeds only") + "</td><td>" +
         (n.split_method === "graph_cluster" ? "Graph cluster" : "LLM seed") + "</td><td>" +
         (n.saturation_reason ? escapeHtml(n.saturation_reason) : "—") + "</td></tr>";
     }).join("");
