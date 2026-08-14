@@ -144,6 +144,7 @@ _STATUS_LABELS = {
 def build_taxonomy_payload(
     tree: dict[str, dict[str, Any]],
     counts: dict[str, dict[str, int]] | None = None,
+    exclude_empty_leaves: bool = False,
 ) -> dict[str, Any]:
     """Every tree node, structured for a top-down decision-tree diagram.
 
@@ -153,8 +154,17 @@ def build_taxonomy_payload(
     despite having a populated parent_id pointing at them), so parent_id is
     the only field that's reliably correct to derive structure from.
 
-    Every node is included — a taxonomy tree runs to tens of nodes, not the
-    thousands a discovery graph can reach, so there is no trim policy here.
+    Every node is included by default — a taxonomy tree runs to tens of
+    nodes, not the thousands a discovery graph can reach, so there is no
+    trim policy here. exclude_empty_leaves is an explicit opt-out for a
+    branch that never ran at all (has_data=False) and has no children —
+    for a deliverable where the run's budget was exhausted before some
+    branches got a turn, and the operator has decided those branches are
+    dead ends rather than worth a follow-up run. A node is only ever
+    dropped if it is BOTH empty AND childless; removing a childless empty
+    leaf can turn its own parent into one, so the pass repeats until
+    nothing more qualifies, rather than leaving a stray empty leaf one
+    level up.
     """
     counts = counts or {}
     nodes: list[dict[str, Any]] = []
@@ -192,6 +202,24 @@ def build_taxonomy_payload(
     for n in nodes:
         if n["parent_id"] not in ids:
             n["parent_id"] = None
+
+    if exclude_empty_leaves:
+        by_id = {n["id"]: n for n in nodes}
+        child_count: dict[str, int] = {}
+        for n in nodes:
+            if n["parent_id"] is not None:
+                child_count[n["parent_id"]] = child_count.get(n["parent_id"], 0) + 1
+        removed = True
+        while removed:
+            removed = False
+            for node_id, n in list(by_id.items()):
+                if n["has_data"] or child_count.get(node_id, 0) > 0:
+                    continue
+                del by_id[node_id]
+                if n["parent_id"] is not None:
+                    child_count[n["parent_id"]] = child_count.get(n["parent_id"], 0) - 1
+                removed = True
+        nodes = list(by_id.values())
 
     children: dict[str | None, list[str]] = {}
     for n in nodes:
@@ -1226,6 +1254,16 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   .dot { width: .625rem; height: .625rem; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px rgba(var(--edge-rgb), .12) inset; }
   .dot.hollow { background: transparent; border: 1.5px dashed var(--st-pending); }
   .field { display: inline-flex; align-items: center; gap: .375rem; font-size: .75rem; color: var(--ink-2); }
+  .depth-stepper {
+    display: inline-flex; align-items: center; gap: .375rem; font-size: .75rem; color: var(--ink-2);
+    border: 1px solid var(--rule); border-radius: 5px; padding: .15rem .35rem; background: var(--surface-2);
+  }
+  .depth-stepper button {
+    border: none; background: transparent; width: 1.25rem; height: 1.25rem; padding: 0;
+    line-height: 1; font-size: .875rem; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .depth-stepper button:disabled { opacity: .35; cursor: default; }
+  .depth-stepper .depth-label { min-width: 5.5rem; text-align: center; font-variant-numeric: tabular-nums; }
   input[type="search"] {
     font: inherit; font-size: .8125rem; padding: .3rem .55rem; border-radius: 5px;
     border: 1px solid var(--rule); background: var(--surface-2); color: var(--ink); width: 11rem;
@@ -1319,6 +1357,11 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
     <div class="controls">
       <div class="legend" id="legend"></div>
       <input type="search" id="search" placeholder="Find a node…" aria-label="Find a node">
+      <div class="depth-stepper">
+        <button id="btn-depth-minus" type="button" aria-label="Collapse one layer" title="Collapse one layer">−</button>
+        <span class="depth-label" id="depth-label">layer 0 / 0</span>
+        <button id="btn-depth-plus" type="button" aria-label="Expand one layer" title="Expand one layer">+</button>
+      </div>
       <button id="btn-expand" type="button">Expand all</button>
       <button id="btn-collapse" type="button">Collapse all</button>
       <button id="btn-reset" type="button">Fit to view</button>
@@ -1676,13 +1719,50 @@ _TAXONOMY_HTML_TEMPLATE = r"""<!doctype html>
   });
 
   // ---- expand/collapse/reset -------------------------------------------
-  document.getElementById("btn-expand").addEventListener("click", function () { collapsed.clear(); render(); });
+  document.getElementById("btn-expand").addEventListener("click", function () {
+    collapsed.clear(); currentDepth = maxDepthAvailable; updateDepthStepper(); render();
+  });
   document.getElementById("btn-collapse").addEventListener("click", function () {
     payload.nodes.forEach(function (n) { if ((payload.children[n.id] || []).length) collapsed.add(n.id); });
     payload.roots.forEach(function (rid) { collapsed.delete(rid); });
-    render();
+    currentDepth = 0; updateDepthStepper(); render();
   });
   document.getElementById("btn-reset").addEventListener("click", fitToView);
+
+  // ---- layer-by-layer depth stepper --------------------------------------
+  // Explore the tree one whole depth level at a time, across every branch
+  // at once — distinct from the per-node +/- toggle, which only opens one
+  // subtree. currentDepth tracks the deepest depth level currently fully
+  // visible; the two mechanisms share the same `collapsed` set, so a
+  // manual per-node toggle and the stepper never fight each other.
+  var maxDepthAvailable = payload.nodes.reduce(function (m, n) { return Math.max(m, n.depth); }, 0);
+  var currentDepth = maxDepthAvailable; // default: everything visible, matching prior behaviour
+  var depthLabel = document.getElementById("depth-label");
+  var depthMinusBtn = document.getElementById("btn-depth-minus");
+  var depthPlusBtn = document.getElementById("btn-depth-plus");
+  function updateDepthStepper() {
+    depthLabel.textContent = "layer " + currentDepth + " / " + maxDepthAvailable;
+    depthMinusBtn.disabled = currentDepth <= 0;
+    depthPlusBtn.disabled = currentDepth >= maxDepthAvailable;
+  }
+  depthPlusBtn.addEventListener("click", function () {
+    if (currentDepth >= maxDepthAvailable) return;
+    // Reveal the next layer by opening every node currently AT this depth —
+    // their children (depth + 1) become visible.
+    payload.nodes.forEach(function (n) { if (n.depth === currentDepth) collapsed.delete(n.id); });
+    currentDepth++;
+    updateDepthStepper();
+    render();
+  });
+  depthMinusBtn.addEventListener("click", function () {
+    if (currentDepth <= 0) return;
+    currentDepth--;
+    // Hide the layer we just stepped back from by re-collapsing its parents.
+    payload.nodes.forEach(function (n) { if (n.depth === currentDepth) collapsed.add(n.id); });
+    updateDepthStepper();
+    render();
+  });
+  updateDepthStepper();
 
   function fitToView() {
     var flat = layout();
@@ -1769,7 +1849,11 @@ def _taxonomy_html(payload: dict[str, Any], manifest: dict[str, Any]) -> str:
     return html
 
 
-def export_run(run_id: str, thread_id: str | None = None) -> Path:
+def export_run(
+    run_id: str,
+    thread_id: str | None = None,
+    exclude_empty_taxonomy_branches: bool = False,
+) -> Path:
     """Write one run's deliverable. Returns the directory."""
     from src.api import runs as runs_mod
 
@@ -1839,7 +1923,9 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
 
     graph_payload = build_graph_payload(channels, edges, max_nodes=cfg.export_max_graph_nodes)
     tree_counts = fetch_run_tree_counts(run_id)
-    taxonomy_payload = build_taxonomy_payload(tree, tree_counts)
+    taxonomy_payload = build_taxonomy_payload(
+        tree, tree_counts, exclude_empty_leaves=exclude_empty_taxonomy_branches
+    )
 
     _write_csv(out / "channels.csv", channels)
     _write_csv(out / "outlier_videos.csv", videos)
@@ -1895,9 +1981,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export a run's research output")
     parser.add_argument("run_id")
     parser.add_argument("--thread-id", default=None)
+    parser.add_argument(
+        "--exclude-empty-branches",
+        action="store_true",
+        help=(
+            "Drop taxonomy nodes that never collected any data and have no "
+            "children (a branch the run's budget never reached, or that got "
+            "stuck and was force-saturated with zero progress) from "
+            "taxonomy_tree.html/json, instead of showing them as empty."
+        ),
+    )
     args = parser.parse_args()
 
-    path = export_run(args.run_id, args.thread_id)
+    path = export_run(args.run_id, args.thread_id, args.exclude_empty_branches)
     print(f"Exported to {path}")
     for f in sorted(path.iterdir()):
         print(f"  {f.name}  ({f.stat().st_size:,} bytes)")
