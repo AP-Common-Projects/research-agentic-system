@@ -57,6 +57,38 @@ def _fetch_videos(channel_ids: list[str] | None = None) -> list[dict[str, Any]]:
         put_connection(conn)
 
 
+def _fetch_discovery_edges(channel_refs: list[str]) -> list[dict[str, Any]]:
+    """Discovery edges whose source lies inside the given ref set.
+
+    The ref set for a node is what `_kw_refs`/`_gw_refs` track (handles/URLs).
+    `target_channel_ref` is the always-present edge identity (ADR-0006);
+    source_channel_id is the UC id, which is only present once the channel
+    record has been fetched. Filtering on the *ref* column (both endpoints)
+    is what makes the edge set for a node actually resolvable before and
+    after hydration.
+    """
+    if not channel_refs:
+        return []
+    from src.db.connection import get_connection, put_connection
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # Match either endpoint against the ref set. Edges are deduplicated
+        # by the UNIQUE(source, target_ref, type) constraint, so one pass
+        # suffices.
+        placeholders = ", ".join(["%s"] * len(channel_refs))
+        cur.execute(
+            f"SELECT source_channel_id, target_channel_id, target_channel_ref, edge_type FROM discovery_edges WHERE target_channel_ref IN ({placeholders})",
+            channel_refs,
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in rows]
+    finally:
+        put_connection(conn)
+
+
 class StoreAccess:
 
     async def get_channels_for_node(
@@ -87,6 +119,14 @@ class StoreAccess:
         self, channel_ids: list[str]
     ) -> list[dict[str, Any]]:
         return await self.get_channels_for_node("", channel_ids)
+
+    async def get_discovery_edges_for_channels(
+        self, channel_refs: list[str]
+    ) -> list[dict[str, Any]]:
+        try:
+            return await asyncio.to_thread(_fetch_discovery_edges, list(channel_refs))
+        except Exception:
+            return []
 
 
 _store: StoreAccess | None = None

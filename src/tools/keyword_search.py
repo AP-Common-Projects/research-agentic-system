@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.tools.bright_data import BrightDataClient
-from src.tools.budget import clamp_keyword_plan, records_remaining
+from src.tools.budget import clamp_keyword_plan, records_remaining, lineage_spend_delta
 from src.state import ErrorRecord, NodeLog
 
 
@@ -156,6 +156,10 @@ async def keyword_search(state: dict) -> dict:
         return {
             "brightdata_records_used": worst_case,
             "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "branch_lineage_spend": lineage_spend_delta(
+                state, node.get("lineage_root_id"),
+                worst_case * cfg.brightdata_cost_per_record_usd,
+            ),
             "tree": {
                 active_node_id: {
                     "queries_run": list(queries_run) + new_queries,
@@ -210,6 +214,9 @@ async def keyword_search(state: dict) -> dict:
         "keyword_channel_ids": set(all_channels),
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
+        "branch_lineage_spend": lineage_spend_delta(
+            state, node.get("lineage_root_id"), cost
+        ),
         "tree": {
             active_node_id: {
                 "queries_run": list(queries_run) + new_queries,

@@ -21,6 +21,7 @@ from src.tools.graph_walk import graph_walk
 from src.tools.hydrate_metadata import hydrate_metadata
 from src.tools.signal_scoring import score_signals
 from src.tools.saturation import check_saturation
+from src.tools.graph_clustering import cluster_branch
 from src.nodes.taxonomy import build_taxonomy
 from src.nodes.compact_branch import compact_branch
 from src.nodes.synthesize import synthesize
@@ -128,7 +129,14 @@ def route_after_saturation(state: dict) -> list[str]:
     action = state.get("next_action", "expand_deeper")
     if action == "expand_deeper":
         return ["select_next_node"]
-    return ["compact_branch"]
+    if action == "budget_exhausted":
+        # Circuit breakers skip community detection: the run is over, paying
+        # for a deterministic (but store-reading) node on the way out is
+        # pointless. Route straight to compaction for whatever's in flight.
+        return ["compact_branch"]
+    # "saturated" — run community detection first; its candidates decide
+    # whether compaction is judging a split or writing a leaf summary.
+    return ["cluster_branch"]
 
 
 def route_after_compaction(state: dict) -> list[str]:
@@ -155,6 +163,7 @@ def build_graph() -> StateGraph:
     graph.add_node("hydrate_metadata", _logged(hydrate_metadata, "hydrate_metadata"))
     graph.add_node("score_signals", _logged(score_signals, "score_signals"))
     graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
+    graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
     graph.add_node("synthesize", _logged(synthesize, "synthesize"))
 
@@ -175,8 +184,11 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "check_saturation",
         route_after_saturation,
-        ["select_next_node", "compact_branch"],
+        ["select_next_node", "cluster_branch", "compact_branch"],
     )
+    # cluster_branch always hands off to compact_branch — a single
+    # deterministic predecessor, single successor, no fan-out.
+    graph.add_edge("cluster_branch", "compact_branch")
     graph.add_conditional_edges(
         "compact_branch",
         route_after_compaction,

@@ -104,6 +104,20 @@ def _merge_round_counts(existing: dict[str, int], new: dict[str, int]) -> dict[s
     return merged
 
 
+def _merge_lineage_spend(existing: dict[str, float], new: dict[str, float]) -> dict[str, float]:
+    """Per-depth-1-lineage spend, additive per key.
+
+    keyword_search and graph_walk run in the SAME superstep for the same
+    active node — both report spend deltas against the same lineage root, so
+    their deltas must SUM, not max. Writers must return fresh deltas, never
+    the accumulated dict (the same delta-vs-accumulated discipline every
+    appending reducer in this file depends on)."""
+    merged = dict(existing or {})
+    for lineage_id, spent in (new or {}).items():
+        merged[lineage_id] = merged.get(lineage_id, 0.0) + float(spent or 0.0)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models for structured sub-state
 # ---------------------------------------------------------------------------
@@ -132,6 +146,23 @@ class TreeNode(BaseModel):
     schema_version: int = 1
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     saturated_at: Optional[str] = None
+
+    # --- v2 adaptive-depth fields ---
+    # The depth-1 ancestor this node's spend rolls up into, for the
+    # per-branch-lineage budget governor. Depth-1 nodes carry their own id;
+    # deeper nodes inherit their parent's. None for the root.
+    lineage_root_id: Optional[str] = None
+    # How distinct the parent's split was (intra/inter edge-weight ratio of
+    # the cluster this node grew from). Feeds select_next_node's priority
+    # sort. None for LLM-seeded depth-1 branches.
+    cluster_distinctness_score: Optional[float] = None
+    # How this node was created. "llm_seed" covers build_taxonomy's depth-0/1
+    # nodes — the honest label for every pre-v2 split. "graph_cluster" covers
+    # nodes whose split was decided by cluster_branch and confirmed by
+    # compact_branch.
+    split_method: Literal["llm_seed", "graph_cluster"] = "llm_seed"
+    # Channel refs the cluster was detected from, recorded at split time.
+    cluster_member_channel_ids: list[str] = Field(default_factory=list)
 
 
 class BranchCompaction(BaseModel):
@@ -252,6 +283,10 @@ class HarnessState(TypedDict, total=False):
     # terminates. See check_saturation's max_rounds_per_branch governor.
     rounds_by_node: Annotated[dict[str, int], _merge_round_counts]
 
+    # Cumulative spend per depth-1 lineage, for the branch-lineage budget
+    # governor. Keyed by lineage_root_id.
+    branch_lineage_spend: Annotated[dict[str, float], _merge_lineage_spend]
+
     next_action: str
 
     messages: Annotated[list, add_messages]
@@ -298,11 +333,12 @@ def create_initial_state(
         "brightdata_records_used": 0,
         "youtube_quota_used": 0,
         "rounds_by_node": {},
+        "branch_lineage_spend": {},
         "next_action": "start",
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 5,
+        "schema_version": 6,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -372,6 +408,32 @@ def migrate_state(state: dict) -> dict:
                 if cid
             }
         version = 5
+
+    if version < 6:
+        # v2 adaptive depth. Existing tree nodes get split_method="llm_seed"
+        # — the honest label, every pre-v2 split really was LLM-seeded — and
+        # the cluster fields defaulted. lineage_root_id is derivable from the
+        # tree (depth-1 nodes root their own lineage), so backfill it rather
+        # than leaving the lineage governor blind on resumed runs.
+        state.setdefault("branch_lineage_spend", {})
+        for node in state.get("tree", {}).values():
+            node.setdefault("split_method", "llm_seed")
+            node.setdefault("cluster_distinctness_score", None)
+            node.setdefault("cluster_member_channel_ids", [])
+            if node.get("depth") == 1 and not node.get("lineage_root_id"):
+                node["lineage_root_id"] = node.get("id")
+            elif node.get("depth", 0) > 1 and not node.get("lineage_root_id"):
+                # Deep pre-v6 nodes: walk parents until a depth-1 ancestor.
+                parent_id = node.get("parent_id")
+                while parent_id:
+                    parent = state["tree"].get(parent_id)
+                    if not parent:
+                        break
+                    if parent.get("depth") == 1:
+                        node["lineage_root_id"] = parent.get("id")
+                        break
+                    parent_id = parent.get("parent_id")
+        version = 6
 
     state["schema_version"] = version
     return state
