@@ -217,12 +217,6 @@ class HarnessConfig(BaseSettings):
     # lowest-degree ones, since a frontier node with no other connection adds
     # the least to the picture — before any hydrated channel is dropped.
     export_max_graph_nodes: int = 2000
-    # Top-N by outlier score, PER taxonomy node, shown as a video layer under
-    # each branch in taxonomy_tree.html. A node's real video count runs to
-    # the thousands (crypto_digital_assets: 6,625) — the tree stays a tree,
-    # not a dump, by showing only the videos actually worth a look. 0 turns
-    # the layer off.
-    export_taxonomy_videos_per_node: int = 12
 
     # --- cost governors (0 means uncapped, for the `full` profile) ---
     max_rounds_per_branch: int = 3
