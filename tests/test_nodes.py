@@ -451,6 +451,72 @@ class TestCompactBranch:
         assert "50000" in prompt
         assert "2.5" in prompt
 
+    def test_cluster_candidates_section_in_prompt(self):
+        node = {"id": "n", "label": "N", "depth": 2, "keywords": [], "schema_version": 6}
+        channels = [
+            {"channel_id": "ch1", "title": "retro handheld", "subscriber_count": 5000,
+             "first_seen_at": "2026-01-01", "discovery_method": "keyword"},
+            {"channel_id": "ch2", "title": "retro handheld", "subscriber_count": 4000,
+             "first_seen_at": "2026-01-01", "discovery_method": "keyword"},
+        ]
+        videos = []
+        candidates = [
+            {
+                "member_refs": ["https://www.youtube.com/channel/ch1", "https://www.youtube.com/channel/ch2"],
+                "member_channel_ids": ["ch1", "ch2"],
+                "size": 2,
+                "distinctness_score": 2.4,
+            }
+        ]
+        from src.nodes.compact_branch import _build_prompt
+        prompt = _build_prompt(node, channels, videos, cluster_candidates=candidates)
+        assert "graph-detected channel clusters" in prompt
+        assert "distinctness=2.4" in prompt
+        assert "ch1" in prompt
+
+    def test_leaf_prompt_forbids_split(self):
+        node = {"id": "n", "label": "N", "depth": 2, "keywords": [], "schema_version": 6}
+        channels = [{"channel_id": "ch1", "title": "C1", "subscriber_count": 1,
+                     "first_seen_at": "2026-01-01", "discovery_method": "keyword"}]
+        from src.nodes.compact_branch import _build_prompt
+        prompt = _build_prompt(node, channels, [], cluster_candidates=None)
+        assert "graph-detected channel clusters" not in prompt
+        assert "Do NOT propose any new nodes" in prompt
+
+    @pytest.mark.asyncio
+    async def test_split_method_graph_cluster_when_confirmed(self, state_with_tree, mock_channels, mock_videos):
+        state_with_tree["tree"]["copilot_ecosystem"]["cluster_candidates"] = [
+            {
+                "member_refs": ["r1", "r2"],
+                "member_channel_ids": ["ch_github", "ch_msdev"],
+                "size": 2,
+                "distinctness_score": 2.4,
+            }
+        ]
+        with patch("src.nodes.compact_branch.complete_tier") as mock_complete, \
+             patch("src.nodes.store.StoreAccess.get_channels_for_node", new_callable=AsyncMock) as mock_get_ch, \
+             patch("src.nodes.store.StoreAccess.get_videos_for_channels", new_callable=AsyncMock) as mock_get_vid:
+            mock_complete.return_value = _fake_llm_response(COMPACTION_VALID_JSON)
+            mock_get_ch.return_value = mock_channels
+            mock_get_vid.return_value = mock_videos
+            result = await compact_branch(state_with_tree)
+
+        updated = result["tree"]["copilot_ecosystem"]
+        assert updated["split_method"] == "graph_cluster"
+
+    @pytest.mark.asyncio
+    async def test_split_method_llm_seed_when_no_candidates(self, state_with_tree, mock_channels, mock_videos):
+        with patch("src.nodes.compact_branch.complete_tier") as mock_complete, \
+             patch("src.nodes.store.StoreAccess.get_channels_for_node", new_callable=AsyncMock) as mock_get_ch, \
+             patch("src.nodes.store.StoreAccess.get_videos_for_channels", new_callable=AsyncMock) as mock_get_vid:
+            mock_complete.return_value = _fake_llm_response(COMPACTION_VALID_JSON)
+            mock_get_ch.return_value = mock_channels
+            mock_get_vid.return_value = mock_videos
+            result = await compact_branch(state_with_tree)
+
+        updated = result["tree"]["copilot_ecosystem"]
+        assert updated["split_method"] == "llm_seed"
+
 
 # ---------------------------------------------------------------------------
 # select_next_node
@@ -582,6 +648,44 @@ class TestSelectNextNode:
     def test_no_llm_called(self):
         result = select_next_node({"tree": TWO_PENDING_TREE})
         assert result is not None
+
+    def test_priority_sorts_rich_cluster_node_first(self):
+        # A depth-2 node created from a distinctly-split cluster must be
+        # explored before a shallow depth-1 sibling whose lineage showed no
+        # structure — under a real budget, the rich branch deserves the depth
+        # before the run spends budget completing mediocre siblings.
+        tree = {
+            "root": {
+                "id": "root", "label": "R", "depth": 0, "parent_id": None,
+                "children_ids": ["rich", "shallow"], "keywords": [],
+                "seed_channel_ids": [], "unexpanded_channel_ids": [],
+                "status": "saturated", "compaction_summary": None,
+                "proposed_new_nodes": [], "schema_version": 6,
+            },
+            "rich": {
+                "id": "rich", "label": "Rich", "depth": 1, "parent_id": "root",
+                "children_ids": ["rich_child"], "keywords": [], "seed_channel_ids": [],
+                "unexpanded_channel_ids": [], "status": "saturated",
+                "compaction_summary": None, "proposed_new_nodes": [],
+                "schema_version": 6, "cluster_distinctness_score": 3.5,
+            },
+            "rich_child": {
+                "id": "rich_child", "label": "RichChild", "depth": 2, "parent_id": "rich",
+                "children_ids": [], "keywords": [], "seed_channel_ids": [],
+                "unexpanded_channel_ids": [], "status": "pending",
+                "compaction_summary": None, "proposed_new_nodes": [],
+                "schema_version": 6, "cluster_distinctness_score": 3.5,
+            },
+            "shallow": {
+                "id": "shallow", "label": "Shallow", "depth": 1, "parent_id": "root",
+                "children_ids": [], "keywords": [], "seed_channel_ids": [],
+                "unexpanded_channel_ids": [], "status": "pending",
+                "compaction_summary": None, "proposed_new_nodes": [],
+                "schema_version": 6,
+            },
+        }
+        result = select_next_node({"tree": tree})
+        assert result["active_node_id"] == "rich_child"
 
 
 # ---------------------------------------------------------------------------

@@ -391,5 +391,5 @@ def test_graph_build_still_valid():
     # Regression guard: the graph wiring still contains the fan-out nodes the chaos
     # tests exercise, and no stale analyze_deep node.
     nodes = set(build_graph().nodes)
-    assert {"keyword_search", "graph_walk", "hydrate_metadata", "check_saturation"} <= nodes
+    assert {"keyword_search", "graph_walk", "hydrate_metadata", "check_saturation", "cluster_branch"} <= nodes
     assert "analyze_deep" not in nodes

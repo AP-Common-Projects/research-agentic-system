@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.tools.bright_data import BrightDataClient, normalize_channel_ref
-from src.tools.budget import clamp_frontier, records_remaining, tier_b_affordable
+from src.tools.budget import clamp_frontier, records_remaining, tier_b_affordable, lineage_spend_delta
 from src.state import ErrorRecord, NodeLog
 
 
@@ -183,6 +183,10 @@ async def graph_walk(state: dict) -> dict:
         return {
             "brightdata_records_used": worst_case,
             "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "branch_lineage_spend": lineage_spend_delta(
+                state, node.get("lineage_root_id"),
+                worst_case * cfg.brightdata_cost_per_record_usd,
+            ),
             "expanded_channel_refs": set(frontier),
             "tree": {
                 active_node_id: {"_gw_novelty_history": gw_history + [0.0]}
@@ -428,6 +432,9 @@ async def graph_walk(state: dict) -> dict:
         },
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
+        "branch_lineage_spend": lineage_spend_delta(
+            state, node.get("lineage_root_id"), cost
+        ),
         "novelty_rates": [round(novelty, 4)],
         "tree": {
             active_node_id: {

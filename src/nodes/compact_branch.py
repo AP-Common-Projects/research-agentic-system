@@ -1,7 +1,10 @@
-"""compact_branch — branch compaction + new-node proposal.
+"""compact_branch — branch compaction + cluster confirmation.
 
 Mid-tier LLM call that produces a narrative summary for one branch's
-discovered channels and computed signals. May propose new off-taxonomy nodes.
+discovered channels and computed signals. In v2, cluster_branch runs first
+and hands structured candidates to this node; the LLM's role is to judge
+whether the graph-detected clusters represent genuinely distinct sub-niches
+a report reader would care about, and to label them — not to discover them.
 Numbers in the prompt come from the structured store, never invented.
 """
 
@@ -16,15 +19,45 @@ from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.nodes.store import get_store
 from src.state import BranchCompaction, NodeLog, ErrorRecord, ProposedNode
+from src.tools.budget import lineage_spend_delta
 
-SYSTEM_PROMPT = """You are a YouTube niche research analyst. Given a branch's channel and video data with computed signals, produce a structured compaction.
+# -- prompt parts ------------------------------------------------------------
+
+CLUSTER_JUDGE_HEADER = """
+Below are graph-detected channel clusters that the data suggests may be distinct
+sub-niches under this branch. For each cluster, state whether it IS a genuinely
+distinct, actionable sub-niche or is algorithmic noise:
+
+1. If CONFIRMED: give it a short label (5-12 characters, lowercase/underscore),
+   3-5 keywords, and a one-line rationale for what makes it distinct from the
+   parent branch. Keep the member channel IDs exactly as provided.
+2. If REJECTED: give a one-line reason (e.g. "not meaningfully distinct from
+   parent", "too few channels to corroborate", "members span unrelated content").
+
+Only confirm clusters that would produce a distinct report section a researcher
+would actually read. Over-splitting dilutes the synthesis. When in doubt, reject.
+"""
+
+
+LEAF_FOOTER = (
+    "No graph clusters were detected for this branch — the channels are a "
+    "coherent population. Do NOT propose any new nodes."
+)
+
+CLUSTER_FOOTER = (
+    "For each confirmed cluster above, include a proposed_node entry. For "
+    "rejected clusters, omit them entirely from proposed_nodes. If you rejected "
+    "all clusters, set proposed_nodes to an empty list — do not invent new nodes."
+)
+
+SYSTEM_PROMPT = """You are a YouTube niche research analyst. Given a branch's channel and video data with computed signals, and optionally graph-detected cluster candidates, produce a structured compaction.
 
 Rules:
 1. Write a 2-4 paragraph narrative summary identifying patterns, content formats, engagement levels, and outlier patterns you observe in the data.
 2. Extract 2-5 key patterns as structured items, each with: pattern_name, description, evidence_summary.
 3. NEVER invent numbers not present in the provided data. If a number is not in the data, do not state it.
-4. If you identify a coherent cluster of channels that does NOT fit under the current taxonomy node label, propose a new tree node with: label, rationale, and the specific channel_ids that belong to it.
-5. If no off-taxonomy cluster exists, set proposed_nodes to empty list.
+4. If cluster candidates are provided, judge each one per the instructions in the prompt. Only confirmed clusters become proposed_nodes; rejected clusters are omitted.
+5. If no cluster candidates are provided, or you reject all candidates, set proposed_nodes to empty list. NEVER invent a split the graph did not already find.
 
 Respond with ONLY a JSON object with these exact keys:
 {
@@ -34,10 +67,13 @@ Respond with ONLY a JSON object with these exact keys:
   ],
   "proposed_nodes": [
     {
-      "label": "<new node label>",
-      "rationale": "<why this cluster doesn't fit current node>",
+      "label": "<short_node_label>",
+      "rationale": "<one-line rationale>",
       "seed_channel_ids": ["<channel_id>", ...]
     }
+  ],
+  "cluster_judgements": [
+    {"member_channel_ids": [...], "verdict": "confirmed|rejected", "label": "...", "keywords": [...], "reason": "..."}
   ]
 }"""
 
@@ -46,6 +82,7 @@ def _build_prompt(
     node: dict,
     channels: list[dict],
     videos: list[dict],
+    cluster_candidates: list[dict[str, Any]] | None = None,
     max_channels: int = 0,
     max_videos: int = 0,
 ) -> str:
@@ -57,6 +94,10 @@ def _build_prompt(
     first (channels by subscribers, videos by outlier score) so the truncation
     keeps what the analysis is actually about, and the true totals are still
     stated at the end so the model is never misled about the sample size.
+
+    When cluster_candidates is non-empty, the prompt includes a cluster-judging
+    section between the branch data and the output instruction. When empty
+    (true leaf), the prompt explicitly forbids split proposals.
     """
     total_channels, total_videos = len(channels), len(videos)
     if max_channels > 0 and len(channels) > max_channels:
@@ -96,6 +137,32 @@ def _build_prompt(
             f"(highest subscribers / outlier scores first)."
         )
     lines.append(f"Total channels: {total_channels}, Total videos: {total_videos}")
+
+    # -- cluster candidates -------------------------------------------------
+    if cluster_candidates:
+        lines.append("")
+        lines.append(CLUSTER_JUDGE_HEADER.strip())
+        for i, cc in enumerate(cluster_candidates):
+            member_ids = cc.get("member_channel_ids", [])
+            # Show each candidate's member channels with their video outliers.
+            member_lines: list[str] = []
+            for mid in member_ids:
+                ch_data = next((c for c in channels if c.get("channel_id") == mid), {})
+                ch_title = ch_data.get("title", mid)
+                vid_os = sorted(
+                    [v.get("outlier_score", 0) or 0 for v in videos if v.get("channel_id") == mid],
+                    reverse=True,
+                )[:3]
+                os_str = f", top_outlier_scores=[{', '.join(f'{s:.1f}' for s in vid_os)}]" if vid_os else ""
+                member_lines.append(f"    {mid}: {ch_title}{os_str}")
+            lines.append(f"\nCluster {i+1}: {len(member_ids)} channels, distinctness={cc.get('distinctness_score', '?')}")
+            lines.extend(member_lines)
+        lines.append("")
+        lines.append(CLUSTER_FOOTER.strip())
+    else:
+        lines.append("")
+        lines.append(LEAF_FOOTER)
+
     return "\n".join(lines)
 
 
@@ -128,11 +195,6 @@ async def compact_branch(state: dict) -> dict:
     node_id = node["id"]
     node_label = node.get("label", "")
 
-    # The channels this branch actually resolved, recorded by each discovery
-    # track as it ran. `seed_channel_ids` cannot be used for this: taxonomy
-    # seeds are `@handle` strings, not UC ids, so looking the store up by them
-    # matches nothing — which is how a run could hydrate 22 channels and 646
-    # videos and still compact an empty branch.
     channel_ids = sorted(
         set(node.get("_kw_channel_ids") or []) | set(node.get("_gw_channel_ids") or [])
     )
@@ -142,9 +204,14 @@ async def compact_branch(state: dict) -> dict:
     channel_ids_found = [ch["channel_id"] for ch in channels]
     videos = await store.get_videos_for_channels(channel_ids_found)
 
+    # v2: cluster_branch may have populated this. When non-empty, the LLM
+    # judges candidates rather than discovering them from raw data.
+    cluster_candidates = node.get("cluster_candidates") or None
+
     cfg = get_config().harness
     prompt = _build_prompt(
         node, channels, videos,
+        cluster_candidates=cluster_candidates,
         max_channels=cfg.max_prompt_channels,
         max_videos=cfg.max_prompt_videos,
     )
@@ -178,6 +245,16 @@ async def compact_branch(state: dict) -> dict:
                 if proposed.label and proposed.seed_channel_ids:
                     proposed_nodes.append(proposed)
 
+            # Determine split method for the updated node record.
+            split_method = "llm_seed"
+            cluster_member_ids: list[str] = []
+            if cluster_candidates and proposed_nodes:
+                # Graph found structure and the LLM confirmed at least one
+                # cluster — this is a graph-driven split.
+                split_method = "graph_cluster"
+                for cc in cluster_candidates:
+                    cluster_member_ids.extend(cc.get("member_channel_ids", []))
+
             compaction = BranchCompaction(
                 node_id=node_id,
                 node_label=node_label,
@@ -202,6 +279,9 @@ async def compact_branch(state: dict) -> dict:
                     "node_id": node_id,
                     "channel_count": len(channels),
                     "video_count": len(videos),
+                    "candidates_presented": len(cluster_candidates) if cluster_candidates else 0,
+                    "candidates_confirmed": len(proposed_nodes),
+                    "split_method": split_method,
                     "attempt": attempt,
                 },
                 llm_output=content[:500],
@@ -213,6 +293,10 @@ async def compact_branch(state: dict) -> dict:
             updated_node["status"] = "compacted"
             updated_node["compaction_summary"] = narrative_summary
             updated_node["proposed_new_nodes"] = [p.model_dump() for p in proposed_nodes]
+            updated_node["split_method"] = split_method
+            updated_node["cluster_member_channel_ids"] = list(set(cluster_member_ids))
+            # Clear cluster_candidates — they're consumed.
+            updated_node.pop("cluster_candidates", None)
 
             return {
                 "tree": {node_id: updated_node},
@@ -220,6 +304,9 @@ async def compact_branch(state: dict) -> dict:
                 "node_logs": [node_log.model_dump()],
                 "errors": errors,
                 "budget_spent_usd": cost,
+                "branch_lineage_spend": lineage_spend_delta(
+                    state, node.get("lineage_root_id"), cost
+                ),
             }
 
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
