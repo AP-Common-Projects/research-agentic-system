@@ -299,3 +299,75 @@ class TestBuildTaxonomyPayload:
         counts = {"root": {"channels": 5, "videos": 5}}
         payload = build_taxonomy_payload(tree, counts, exclude_empty_leaves=True)
         assert {n["id"] for n in payload["nodes"]} == {"root"}
+
+
+def _video(video_id, title, **overrides):
+    v = {
+        "video_id": video_id, "title": title, "channel_id": "c1",
+        "channel_title": "Some Channel", "view_count": 1000,
+        "outlier_score": 2.5, "published_at": "2026-01-01T00:00:00+00:00",
+    }
+    v.update(overrides)
+    return v
+
+
+class TestBuildTaxonomyPayloadVideos:
+    def test_videos_become_a_further_depth_layer_labelled_by_title(self):
+        tree = {"root": _tree_node("root", "Finance", 0, None)}
+        counts = {"root": {"channels": 5, "videos": 5}}
+        videos_by_node = {"root": [_video("vid1", "How I Budget My Money")]}
+        payload = build_taxonomy_payload(tree, counts, videos_by_node=videos_by_node)
+        video_nodes = [n for n in payload["nodes"] if n["is_video"]]
+        assert len(video_nodes) == 1
+        assert video_nodes[0]["label"] == "How I Budget My Money"
+        assert video_nodes[0]["depth"] == 1
+        assert video_nodes[0]["parent_id"] == "root"
+        assert video_nodes[0]["status"] == "video"
+        assert "root" in payload["children"]
+        assert video_nodes[0]["id"] in payload["children"]["root"]
+
+    def test_no_videos_by_node_means_no_video_nodes(self):
+        tree = {"root": _tree_node("root", "Finance", 0, None)}
+        payload = build_taxonomy_payload(tree, counts={"root": {"channels": 1, "videos": 1}})
+        assert all(not n["is_video"] for n in payload["nodes"])
+
+    def test_taxonomy_nodes_carry_is_video_false(self):
+        tree = {"root": _tree_node("root", "Finance", 0, None)}
+        payload = build_taxonomy_payload(tree)
+        assert payload["nodes"][0]["is_video"] is False
+
+    def test_video_status_is_excluded_from_status_counts(self):
+        tree = {"root": _tree_node("root", "Finance", 0, None, status="compacted")}
+        counts = {"root": {"channels": 5, "videos": 5}}
+        videos_by_node = {"root": [_video("vid1", "Title")]}
+        payload = build_taxonomy_payload(tree, counts, videos_by_node=videos_by_node)
+        assert payload["status_counts"] == {"compacted": 1}
+        assert "video" not in payload["status_counts"]
+
+    def test_videos_for_a_node_pruned_by_exclude_empty_leaves_are_dropped_too(self):
+        """videos_by_node is keyed by the ORIGINAL tree's node ids — if that
+        node itself got excluded (shouldn't happen in practice, since a node
+        with videos always has has_data=True and survives, but defend
+        against a stale/mismatched videos_by_node key anyway)."""
+        tree = {"root": _tree_node("root", "Finance", 0, None)}
+        counts = {"root": {"channels": 5, "videos": 5}}
+        videos_by_node = {"nonexistent_node": [_video("vid1", "Title")]}
+        payload = build_taxonomy_payload(tree, counts, videos_by_node=videos_by_node)
+        assert all(not n["is_video"] for n in payload["nodes"])
+
+    def test_multiple_nodes_each_get_their_own_videos(self):
+        tree = {
+            "root": _tree_node("root", "Finance", 0, None),
+            "a": _tree_node("a", "Branch A", 1, "root"),
+        }
+        counts = {"root": {"channels": 5, "videos": 5}, "a": {"channels": 3, "videos": 3}}
+        videos_by_node = {
+            "root": [_video("v1", "Root Video")],
+            "a": [_video("v2", "Branch A Video")],
+        }
+        payload = build_taxonomy_payload(tree, counts, videos_by_node=videos_by_node)
+        by_parent = {}
+        for n in payload["nodes"]:
+            if n["is_video"]:
+                by_parent[n["parent_id"]] = n["label"]
+        assert by_parent == {"root": "Root Video", "a": "Branch A Video"}
