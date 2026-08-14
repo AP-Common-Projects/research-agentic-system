@@ -990,3 +990,94 @@ class TestOneBadChannelCannotEndARun:
         assert any("UC_bad" in e["message"] for e in result["errors"]), (
             "the failure must be recorded, not swallowed"
         )
+
+
+class TestSignalsActuallyGetComputed:
+    """engagement_rate, cadence and velocity were never computed or stored in
+    any run — 425 channels, zero signals — while score_signals still logged a
+    channels_scored count and reported success. Three compounding causes:
+    published_at is a str from the API but a datetime from Postgres,
+    _parse_timestamp only caught ValueError (strptime raises TypeError on a
+    datetime), and the channel loop sat inside one outer try/except."""
+
+    def test_parse_accepts_the_shape_postgres_returns(self):
+        from datetime import datetime, timezone
+        from src.tools.signal_scoring import _parse_timestamp
+
+        aware = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        assert _parse_timestamp(aware) == aware
+        assert _parse_timestamp(datetime(2026, 1, 1)).tzinfo is timezone.utc
+        assert _parse_timestamp("2026-01-01T00:00:00Z") is not None
+        assert _parse_timestamp(None) is None
+        assert _parse_timestamp(12345) is None
+
+    def test_cadence_and_velocity_survive_undated_rows(self):
+        """Sorting by a key that can return None raises TypeError the moment
+        one row lacks a usable date."""
+        from datetime import datetime, timezone
+        from src.tools.signal_scoring import compute_cadence, compute_velocity
+
+        vids = [
+            {"published_at": datetime(2026, 1, i + 1, tzinfo=timezone.utc),
+             "view_count": 100 * (i + 1)}
+            for i in range(10)
+        ]
+        vids.append({"published_at": None, "view_count": 5})
+        assert compute_cadence(vids) > 0
+        assert compute_velocity(vids) > 0
+
+    def test_signals_are_computed_from_datetime_rows(self):
+        """End to end through score_signals with the store's real shape."""
+        from datetime import datetime, timezone
+        from src.tools.signal_scoring import score_signals
+
+        rows = [
+            {"video_id": f"v{i}", "channel_id": "UC_a", "view_count": 1000 * (i + 1),
+             "like_count": 50, "comment_count": 5,
+             "published_at": datetime(2026, 1, i + 1, tzinfo=timezone.utc)}
+            for i in range(8)
+        ]
+        persisted = {}
+
+        def fake_persist(conn, ch_id, signals):
+            persisted[ch_id] = signals
+
+        with patch("src.db.connection.get_connection"), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.tools.dedup.fetch_videos_by_channels", return_value=rows), \
+             patch("src.tools.dedup.persist_channel_signals", side_effect=fake_persist):
+            result = score_signals({"discovered_channel_ids": ["UC_a"], "thread_id": "t"})
+
+        assert persisted, "signals must actually reach the store"
+        assert set(persisted["UC_a"]) == {"engagement_rate", "cadence", "velocity"}
+        assert persisted["UC_a"]["cadence"] > 0
+        assert result["node_logs"][0]["input_summary"]["channels_scored"] == 1
+
+    def test_one_bad_channel_does_not_zero_the_round(self):
+        from src.tools.signal_scoring import score_signals
+
+        rows = [
+            {"video_id": "v1", "channel_id": "UC_ok", "view_count": 100,
+             "like_count": 1, "comment_count": 1, "published_at": "2026-01-01T00:00:00Z"},
+            {"video_id": "v2", "channel_id": "UC_bad", "view_count": 100,
+             "like_count": 1, "comment_count": 1, "published_at": "2026-01-02T00:00:00Z"},
+        ]
+        calls = []
+
+        def flaky(conn, ch_id, signals):
+            calls.append(ch_id)
+            if ch_id == "UC_bad":
+                raise RuntimeError("boom")
+
+        with patch("src.db.connection.get_connection"), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.tools.dedup.fetch_videos_by_channels", return_value=rows), \
+             patch("src.tools.dedup.persist_channel_signals", side_effect=flaky):
+            result = score_signals(
+                {"discovered_channel_ids": ["UC_ok", "UC_bad"], "thread_id": "t"}
+            )
+
+        assert "UC_ok" in calls and "UC_bad" in calls
+        summary = result["node_logs"][0]["input_summary"]
+        assert summary["channels_scored"] == 1, "must count successes, not attempts"
+        assert summary["scoring_errors"] == 1
