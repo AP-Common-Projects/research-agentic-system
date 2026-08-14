@@ -1,0 +1,28 @@
+{
+  "run_id": "run-7d4d2dce2c83",
+  "thread_id": "thread-086a545dd399",
+  "niche": "Finance",
+  "exported_at": "2026-08-14T21:27:12.484095+00:00",
+  "profile": "bounded",
+  "channels": 0,
+  "videos": 0,
+  "discovery_edges": 0,
+  "attribution": {},
+  "spend": {
+    "brightdata_records": 3610,
+    "brightdata_usd": 5.415,
+    "total_usd": 5.5059,
+    "youtube_quota": 2130
+  },
+  "stop_reasons": [
+    "governor:brightdata_record_budget",
+    "max_rounds_per_branch"
+  ],
+  "saturated_branches": [
+    "root",
+    "crypto_digital_assets",
+    "financial_independence_passive_income",
+    "investing_wealth_building",
+    "personal_finance_budgeting"
+  ]
+}

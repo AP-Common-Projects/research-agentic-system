@@ -1,0 +1,228 @@
+{
+  "manifest": {
+    "run_id": "run-7d4d2dce2c83",
+    "thread_id": "thread-086a545dd399",
+    "niche": "Finance",
+    "exported_at": "2026-08-14T21:27:12.484095+00:00",
+    "profile": "bounded",
+    "channels": 0,
+    "videos": 0,
+    "discovery_edges": 0,
+    "attribution": {},
+    "spend": {
+      "brightdata_records": 3610,
+      "brightdata_usd": 5.415,
+      "total_usd": 5.5059,
+      "youtube_quota": 2130
+    },
+    "stop_reasons": [
+      "governor:brightdata_record_budget",
+      "max_rounds_per_branch"
+    ],
+    "saturated_branches": [
+      "root",
+      "crypto_digital_assets",
+      "financial_independence_passive_income",
+      "investing_wealth_building",
+      "personal_finance_budgeting"
+    ]
+  },
+  "report": {
+    "niche": "Finance",
+    "run_id": "run-019f20e21145",
+    "generated_at": "2026-08-14T21:27:12.461226+00:00",
+    "summary": "The Finance niche dataset encompasses a broad and noisy collection of 1,002 channels and 32,485 videos, captured through keyword and graph-walk discovery methods. The data reveals a stark divide between high-production, personality-driven financial entertainment channels and a long tail of small, often inactive or misclassified accounts. Top creators like Mark Tilbury, Caleb Hammer, and Graham Stephan command millions of subscribers by blending education with entertainment, while regional channels targeting India, Canada, and the UK build dedicated audiences through localized advice. However, the dataset is heavily contaminated by off-topic content\u2014particularly legal, educational, and gaming channels\u2014due to keyword overlaps (e.g., 'court', 'law', 'fire'). This noise obscures genuine niche patterns and must be filtered for meaningful analysis.\n\nEngagement is highly concentrated: a few videos from crypto tax and side hustle tutorials achieve outlier view counts, while most content struggles for visibility. Multi-channel strategies are employed by successful creators to segment audiences. The presence of numerous zero-subscriber or inert channels suggests either abandoned projects or data collection artifacts. Overall, the dataset provides rich signals for edutainment finance, regional literacy, and specific high-interest topics like crypto taxes, but requires significant cleaning to isolate true finance content.",
+    "findings": [
+      {
+        "claim": "The dataset contains a substantial number of non-finance channels, primarily from the legal, educational, and gaming niches, indicating significant noise from the discovery methods.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "strong",
+          "consistency": "weak",
+          "recency": "strong",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCKmmERguliWTynG9OIoDhDw",
+            "UCsXVk37bltHxD1rDPwtNM8Q",
+            "UC5w5rFxcZ4UL_IJSOFWo9OQ",
+            "UCS5eXe20W1hq0rHsDoYHGqg",
+            "UCpa-Zb0ZcQjTCPP1Dx_1M8Q",
+            "UCz8K1occVvDTYDfFo7N5EZw"
+          ],
+          "max_outlier_score": 17.0216,
+          "total_outlier_scores": 300
+        },
+        "supporting_channel_ids": [
+          "UCKmmERguliWTynG9OIoDhDw",
+          "UCsXVk37bltHxD1rDPwtNM8Q",
+          "UC5w5rFxcZ4UL_IJSOFWo9OQ",
+          "UCS5eXe20W1hq0rHsDoYHGqg",
+          "UCpa-Zb0ZcQjTCPP1Dx_1M8Q",
+          "UCz8K1occVvDTYDfFo7N5EZw"
+        ],
+        "pattern_type": "other"
+      },
+      {
+        "claim": "Top finance channels with millions of subscribers consistently employ edutainment formats\u2014blending personal drama, challenges, and reactions with financial advice\u2014rather than traditional tutorials.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "strong",
+          "consistency": "weak",
+          "recency": "strong",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCV6KDgJskWaEckne5aPA0aQ",
+            "UCLe_q9axMaeTbjN0hy1Z9xA",
+            "UCQpPo9BNwezg54N9hMFQp6Q",
+            "UCxgAuX3XZROujMmGphN_scA"
+          ],
+          "max_outlier_score": 8.371,
+          "total_outlier_scores": 200
+        },
+        "supporting_channel_ids": [
+          "UCV6KDgJskWaEckne5aPA0aQ",
+          "UCLe_q9axMaeTbjN0hy1Z9xA",
+          "UCQpPo9BNwezg54N9hMFQp6Q",
+          "UCxgAuX3XZROujMmGphN_scA"
+        ],
+        "pattern_type": "content_format"
+      },
+      {
+        "claim": "Region-specific financial advice channels attract substantial audiences by tailoring content to local tax laws, retirement systems, and investment products.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "strong",
+          "consistency": "weak",
+          "recency": "strong",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCmfl6VteCu880D8Txl4vEag",
+            "UC41YopEoe0LdYf_20LfXNiQ",
+            "UCwVEhEzsjLym_u1he4XWFkg"
+          ],
+          "max_outlier_score": 134.2105,
+          "total_outlier_scores": 150
+        },
+        "supporting_channel_ids": [
+          "UCmfl6VteCu880D8Txl4vEag",
+          "UC41YopEoe0LdYf_20LfXNiQ",
+          "UCwVEhEzsjLym_u1he4XWFkg"
+        ],
+        "pattern_type": "audience_segment"
+      },
+      {
+        "claim": "Crypto tax-related content generates disproportionately high view counts and outlier scores, indicating strong audience demand for tax guidance in the digital asset space.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "moderate",
+          "consistency": "weak",
+          "recency": "strong",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCigUBIf-zt_DA6xyOQtq2WA",
+            "UCFSHCk0kap5Y8aWyAQau8YQ"
+          ],
+          "max_outlier_score": 30.7543,
+          "total_outlier_scores": 100
+        },
+        "supporting_channel_ids": [
+          "UCigUBIf-zt_DA6xyOQtq2WA",
+          "UCFSHCk0kap5Y8aWyAQau8YQ"
+        ],
+        "pattern_type": "engagement"
+      },
+      {
+        "claim": "Successful finance creators often operate multiple YouTube channels to segment content (e.g., main channel, clips, economics), leveraging brand recognition across audiences.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "moderate",
+          "consistency": "strong",
+          "recency": "strong",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCNIoLiHvnuKTKoJuLQUS--A",
+            "UCnMn36GT_H0X-w5_ckLtlgQ"
+          ],
+          "max_outlier_score": 3.2932,
+          "total_outlier_scores": 59
+        },
+        "supporting_channel_ids": [
+          "UCNIoLiHvnuKTKoJuLQUS--A",
+          "UCnMn36GT_H0X-w5_ckLtlgQ"
+        ],
+        "pattern_type": "content_format"
+      },
+      {
+        "claim": "Side hustle and passive income tutorials with bold earnings claims in titles can achieve high view counts, even from mid-sized channels, suggesting strong viewer interest in quick-money opportunities.",
+        "grade": "moderate",
+        "evidence": {
+          "corroboration": "moderate",
+          "consistency": "weak",
+          "recency": "moderate",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UC3kVW0gp1De-FK0fQoLRRig",
+            "UC1W5XNwZb7q1lZZot0wN7OQ"
+          ],
+          "max_outlier_score": 104.8818,
+          "total_outlier_scores": 88
+        },
+        "supporting_channel_ids": [
+          "UC3kVW0gp1De-FK0fQoLRRig",
+          "UC1W5XNwZb7q1lZZot0wN7OQ"
+        ],
+        "pattern_type": "content_format"
+      },
+      {
+        "claim": "Personal FIRE (Financial Independence, Retire Early) journey videos that share specific milestones and counterintuitive decisions can generate high engagement relative to channel size.",
+        "grade": "weak",
+        "evidence": {
+          "corroboration": "weak",
+          "consistency": "weak",
+          "recency": "moderate",
+          "effect_size": "strong",
+          "supporting_channel_ids": [
+            "UCrsxP1SzwFfUg6dQQX3ToJQ"
+          ],
+          "max_outlier_score": 120.4874,
+          "total_outlier_scores": 50
+        },
+        "supporting_channel_ids": [
+          "UCrsxP1SzwFfUg6dQQX3ToJQ"
+        ],
+        "pattern_type": "engagement"
+      },
+      {
+        "claim": "A long tail of zero-subscriber or near-zero-activity channels exists in the dataset, likely representing abandoned projects or data collection artifacts, which dilutes aggregate metrics.",
+        "grade": "weak",
+        "evidence": {
+          "corroboration": "weak",
+          "consistency": "weak",
+          "recency": "weak",
+          "effect_size": "weak",
+          "supporting_channel_ids": [],
+          "max_outlier_score": 0,
+          "total_outlier_scores": 0
+        },
+        "supporting_channel_ids": [],
+        "pattern_type": "other"
+      }
+    ],
+    "cannot_determine": [
+      "Whether edutainment formats cause higher subscriber growth compared to traditional tutorials.",
+      "The content quality or production value of videos based solely on view counts and outlier scores.",
+      "If high outlier scores on crypto tax videos translate to sustained channel growth or revenue.",
+      "The exact reason for the presence of off-topic channels (e.g., keyword overlap vs. graph walk errors).",
+      "Whether multi-channel strategies directly increase overall audience reach or merely fragment existing viewers."
+    ],
+    "discovery_stats": {
+      "total_channels": 1002,
+      "total_videos": 32485,
+      "branches_explored": 5,
+      "patterns_found": 8
+    }
+  },
+  "channels": [],
+  "videos": [],
+  "edges": []
+}

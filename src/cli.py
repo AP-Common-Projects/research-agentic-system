@@ -49,13 +49,25 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         checkpointer=checkpointer,
         resume=resume_thread_id is not None,
     )
+    # Export under the run_id the DATA was actually tagged with, not the one
+    # generated above. On a fresh run those are the same id — create_initial_state
+    # stamps state["run_id"] with exactly this value. On --resume they are not:
+    # this function mints a brand-new run_id on every invocation, but the
+    # checkpointed state (and everything hydrate_metadata tagged in
+    # category_tags under it) keeps the ORIGINAL run_id — the resume-delta
+    # logic in run_pipeline deliberately never overwrites an existing key.
+    # Exporting under the freshly-generated id queried category_tags for a run
+    # that tagged nothing, and produced a report with real prose sitting above
+    # "channels: 0, videos: 0, edges: 0" — the underlying data was never
+    # missing, just addressed by the wrong key.
+    export_run_id = final.get("run_id") or run_id
     # Export before tearing down the pools. A run that completes and is
     # never exported leaves its deliverable only in a checkpoint, and the
     # store gets cleared between runs.
     try:
         from src.export import export_run
 
-        path = export_run(run_id, thread_id)
+        path = export_run(export_run_id, thread_id)
         print(f"\nExported to {path}")
     except Exception as exc:
         print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")

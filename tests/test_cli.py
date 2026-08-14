@@ -9,7 +9,7 @@ resume's own past spend, which is already inside the ledger total.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -87,3 +87,76 @@ class TestPreflightIsResumeAware:
             gc.return_value.harness = _cfg(brightdata_record_budget=4000)
             # remaining_this_run clamps to 0, so projected == spent == 1000.
             assert _preflight_account_budget("thread-x") is True
+
+
+class TestExportUsesTheActualRunId:
+    """_run() mints a fresh run_id on every invocation, including --resume.
+    On a fresh run that matches state["run_id"] (create_initial_state stamps
+    it with exactly this value). On resume it does not: the checkpointed
+    state — and everything hydrate_metadata tagged in category_tags under it
+    — keeps the ORIGINAL run_id, since the resume-delta logic in run_pipeline
+    never overwrites an existing key. Exporting under the freshly-generated id
+    queried category_tags for a run that tagged nothing: real report prose
+    sitting above channels: 0, videos: 0, edges: 0."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_run_exports_under_its_own_id(self):
+        from src.cli import _run
+
+        with patch("src.cli.ensure_schema"), \
+             patch("src.cli.get_async_checkpointer", new=AsyncMock(return_value=None)), \
+             patch("src.cli.run_pipeline", new=AsyncMock(
+                 return_value={"run_id": "run-fresh123", "final_report": {}}
+             )), \
+             patch("src.export.export_run") as export_run, \
+             patch("src.cli.close_async_pool", new=AsyncMock()), \
+             patch("src.cli.close_pools"), \
+             patch("uuid.uuid4") as u:
+            u.return_value.hex = "fresh123456789"
+            await _run(["Finance"], resume_thread_id=None)
+
+        called_run_id = export_run.call_args[0][0]
+        assert called_run_id == "run-fresh123", (
+            "for a fresh run the minted id and the state id are the same value"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resumed_run_exports_under_the_ORIGINAL_id_not_the_minted_one(self):
+        from src.cli import _run
+
+        with patch("src.cli.ensure_schema"), \
+             patch("src.cli.get_async_checkpointer", new=AsyncMock(return_value=None)), \
+             patch("src.cli.run_pipeline", new=AsyncMock(
+                 # The pipeline returns the ORIGINAL checkpointed run_id —
+                 # never the fresh one _run() generated for this invocation.
+                 return_value={"run_id": "run-ORIGINAL", "final_report": {}}
+             )), \
+             patch("src.export.export_run") as export_run, \
+             patch("src.cli.close_async_pool", new=AsyncMock()), \
+             patch("src.cli.close_pools"):
+            await _run(["Finance"], resume_thread_id="thread-existing")
+
+        called_run_id = export_run.call_args[0][0]
+        assert called_run_id == "run-ORIGINAL", (
+            "must export under the id the data was actually tagged with"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_run_id_in_final_state_falls_back_to_the_minted_one(self):
+        """Never crash on export because the state was somehow thin — fall
+        back to the id this invocation generated rather than exporting under
+        an empty string."""
+        from src.cli import _run
+
+        with patch("src.cli.ensure_schema"), \
+             patch("src.cli.get_async_checkpointer", new=AsyncMock(return_value=None)), \
+             patch("src.cli.run_pipeline", new=AsyncMock(return_value={"final_report": {}})), \
+             patch("src.export.export_run") as export_run, \
+             patch("src.cli.close_async_pool", new=AsyncMock()), \
+             patch("src.cli.close_pools"), \
+             patch("uuid.uuid4") as u:
+            u.return_value.hex = "fallback123456"
+            await _run(["Finance"], resume_thread_id="thread-x")
+
+        called_run_id = export_run.call_args[0][0]
+        assert called_run_id == "run-fallback1234"  # run_id truncates hex to [:12]
