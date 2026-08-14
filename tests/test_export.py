@@ -6,7 +6,7 @@ graph exceeds export_max_graph_nodes.
 
 from __future__ import annotations
 
-from src.export import _category, _ref_label, build_graph_payload
+from src.export import _category, _ref_label, build_graph_payload, flag_low_confidence_channels
 
 
 class TestCategory:
@@ -153,3 +153,54 @@ class TestBuildGraphPayload:
         channels = [{"channel_id": "", "title": "No id", "subscriber_count": 1, "discovery_method": "keyword"}]
         payload = build_graph_payload(channels, edges=[])
         assert payload["nodes"] == []
+
+
+class TestFlagLowConfidenceChannels:
+    """Two independent contamination sources found in the Finance export:
+    60 zero-subscriber keyword-search hits with no other discovery edge
+    (likely dead/spam/placeholder channels), and 65 real channels whose
+    only discovery edge is a comment_author edge (someone commented on a
+    video — no evidence they're a finance channel). Zero overlap between
+    the two in that data, but the flag must handle both independently."""
+
+    def test_zero_subscriber_channel_is_flagged(self):
+        channels = [{"channel_id": "c1", "subscriber_count": 0}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids=set())
+        assert flagged[0]["low_confidence"] is True
+        assert flagged[0]["low_confidence_reasons"] == ["zero_subscribers"]
+
+    def test_null_subscriber_count_is_also_flagged(self):
+        channels = [{"channel_id": "c1", "subscriber_count": None}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids=set())
+        assert flagged[0]["low_confidence"] is True
+        assert flagged[0]["low_confidence_reasons"] == ["zero_subscribers"]
+
+    def test_comment_author_only_channel_is_flagged_even_with_real_subscribers(self):
+        channels = [{"channel_id": "c1", "subscriber_count": 1650000}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids={"c1"})
+        assert flagged[0]["low_confidence"] is True
+        assert flagged[0]["low_confidence_reasons"] == ["comment_author_only"]
+
+    def test_a_real_channel_with_subscribers_and_no_comment_flag_is_clean(self):
+        channels = [{"channel_id": "c1", "subscriber_count": 500000}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids=set())
+        assert flagged[0]["low_confidence"] is False
+        assert flagged[0]["low_confidence_reasons"] == []
+
+    def test_both_reasons_can_apply_at_once(self):
+        channels = [{"channel_id": "c1", "subscriber_count": 0}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids={"c1"})
+        assert flagged[0]["low_confidence"] is True
+        assert set(flagged[0]["low_confidence_reasons"]) == {"zero_subscribers", "comment_author_only"}
+
+    def test_does_not_mutate_the_input_dicts(self):
+        original = {"channel_id": "c1", "subscriber_count": 0}
+        channels = [original]
+        flag_low_confidence_channels(channels, comment_author_only_ids=set())
+        assert "low_confidence" not in original
+
+    def test_preserves_all_other_fields(self):
+        channels = [{"channel_id": "c1", "subscriber_count": 100, "title": "Some Channel"}]
+        flagged = flag_low_confidence_channels(channels, comment_author_only_ids=set())
+        assert flagged[0]["title"] == "Some Channel"
+        assert flagged[0]["channel_id"] == "c1"

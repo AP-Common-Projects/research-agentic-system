@@ -97,6 +97,77 @@ def fetch_run_videos(run_id: str, limit: int) -> list[dict[str, Any]]:
     )
 
 
+def fetch_run_comment_author_only_channel_ids(run_id: str) -> set[str]:
+    """Channels with NO independent evidence of relevance beyond a comment.
+
+    Two conditions, both required: every discovery edge into the channel is
+    a comment_author edge, AND its discovery_method is not 'keyword' or
+    'both'. The discovery_method check matters more than it looks — an
+    early version of this query checked edges alone and flagged Graham
+    Stephan (a root SEED channel, 5.18M subscribers, discovery_method
+    'keyword') as comment-only, because his one inbound edge in this run
+    happens to be a pinned self-comment on his own video (source ==
+    target). 58 of 65 "comment-only" hits on the first pass turned out to
+    be exactly this: real channels independently found by keyword search
+    that also had a self-comment or a comment from another real creator.
+    Only channels with NO keyword evidence at all — discovery_method
+    'graph_walk' or 'unattributed' — are genuinely "in this dataset for no
+    reason other than a comment."
+    """
+    rows = _fetch(
+        """
+        SELECT e.target_channel_id
+        FROM discovery_edges e
+        JOIN channels c ON c.channel_id = e.target_channel_id
+        WHERE e.run_id = %s AND e.target_channel_id IS NOT NULL
+          AND c.discovery_method NOT IN ('keyword', 'both')
+        GROUP BY e.target_channel_id
+        HAVING array_agg(DISTINCT e.edge_type) = ARRAY['comment_author']::text[]
+        """,
+        (run_id,),
+    )
+    return {r["target_channel_id"] for r in rows}
+
+
+def flag_low_confidence_channels(
+    channels: list[dict[str, Any]],
+    comment_author_only_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Mark channels a report should discount or exclude — never drop them.
+
+    Two independent contamination sources, both observed on the Finance run:
+
+      - zero_subscribers: BrightData returned no/zero subscriber count.
+        Keyword search surfacing a channel it happened to return is not the
+        same as that channel being a real, active creator — this run's
+        zero-subscriber channels are templated/duplicate-looking names
+        ("Money Management Guide" x3, "Moneytok2026") with no other
+        discovery edge, i.e. nothing else in the dataset points at them.
+      - comment_author_only: see fetch_run_comment_author_only_channel_ids —
+        NO independent (keyword-search) evidence of relevance, and every
+        discovery edge into the channel is a comment_author edge. The ONLY
+        reason a channel this flags is in the dataset is that whoever runs
+        it commented on a video — not evidence it's a finance channel.
+
+    The ambiguity a report writer needs to resolve — is this noise, or a
+    genuine small channel? — belongs to the report, not a silent filter
+    at export time. Flagging keeps the data and makes the judgment call
+    visible instead of invisible.
+    """
+    flagged = []
+    for ch in channels:
+        reasons = []
+        if not ch.get("subscriber_count"):
+            reasons.append("zero_subscribers")
+        if ch.get("channel_id") in comment_author_only_ids:
+            reasons.append("comment_author_only")
+        ch = dict(ch)
+        ch["low_confidence"] = bool(reasons)
+        ch["low_confidence_reasons"] = reasons
+        flagged.append(ch)
+    return flagged
+
+
 def fetch_run_edges(run_id: str) -> list[dict[str, Any]]:
     return _fetch(
         """
@@ -288,6 +359,24 @@ def _report_markdown(
             "",
         ]
 
+    low_conf = manifest.get("low_confidence_channels", {})
+    if low_conf.get("total_flagged"):
+        lines += [
+            f"> **{low_conf['total_flagged']} of {manifest['channels']} channels are flagged "
+            "in `low_confidence_reasons`** (channels.csv / research_bundle.json), still "
+            "included below. "
+            f"{low_conf.get('zero_subscribers', 0)} have no subscriber count and no other "
+            "discovery edge — likely dead, spam, or placeholder channels keyword search "
+            f"happened to return; treat as noise. {low_conf.get('comment_author_only', 0)} "
+            "entered the dataset only because someone commented on a video already in it — "
+            "this run's own discovery methods (keyword search, featured/recommended graph "
+            "walk) never independently surfaced them. Some are genuinely relevant channels "
+            "that just got in by a side door (a real creator's own comment, say); this flag "
+            "is about *how* the channel was found, not whether it belongs — confirm before "
+            "citing.",
+            "",
+        ]
+
     lines += ["## Summary", "", report.get("summary", "_No summary._"), "", "## Findings", ""]
     for finding in findings:
         lines.append(f"### [{finding.get('grade', '?').upper()}] {finding.get('claim', '')}")
@@ -318,16 +407,26 @@ def _report_markdown(
         "| Channel | Subscribers | Found by | Engagement | Uploads/30d |",
         "|---|---:|---|---:|---:|",
     ]
+    # Not filtered: zero_subscribers channels never rank near the top of a
+    # subscriber-sorted list anyway, and comment_author_only can include
+    # genuinely major channels (Coin Bureau, Altcoin Daily) whose only
+    # weakness is HOW this run found them, not whether they're real —
+    # hiding them would remove signal, not noise. Marked instead.
     for ch in channels[:20]:
         eng = ch.get("engagement_rate")
         cad = ch.get("cadence")
+        method = ch.get("discovery_method", "?")
+        if "comment_author_only" in ch.get("low_confidence_reasons", []):
+            method += " ⚠"
         lines.append(
             f"| {ch.get('title') or ch['channel_id']} "
             f"| {ch.get('subscriber_count') or 0:,} "
-            f"| {ch.get('discovery_method', '?')} "
+            f"| {method} "
             f"| {eng if eng is not None else '—'} "
             f"| {cad if cad is not None else '—'} |"
         )
+    if any("comment_author_only" in ch.get("low_confidence_reasons", []) for ch in channels[:20]):
+        lines += ["", "⚠ found only via a comment on another video — see the caveat above."]
     lines.append("")
     return "\n".join(lines)
 
@@ -1107,8 +1206,16 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
             logger.warning("export_checkpoint_unavailable", run_id=run_id, error=str(exc))
 
     channels = fetch_run_channels(run_id)
+    comment_author_only_ids = fetch_run_comment_author_only_channel_ids(run_id)
+    channels = flag_low_confidence_channels(channels, comment_author_only_ids)
     videos = fetch_run_videos(run_id, cfg.export_max_videos)
     edges = fetch_run_edges(run_id)
+
+    low_confidence_counts = {
+        "zero_subscribers": sum(1 for c in channels if "zero_subscribers" in c["low_confidence_reasons"]),
+        "comment_author_only": sum(1 for c in channels if "comment_author_only" in c["low_confidence_reasons"]),
+        "total_flagged": sum(1 for c in channels if c["low_confidence"]),
+    }
 
     tree = state.get("tree", {}) or {}
     manifest = {
@@ -1121,6 +1228,14 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
         "videos": len(videos),
         "discovery_edges": len(edges),
         "attribution": _attribution_counts(channels),
+        # Two contamination sources a report should discount, not treat as
+        # findings: zero-subscriber channels keyword search happened to
+        # return (no other discovery edge points at them — likely dead,
+        # spam, or placeholder), and channels whose only discovery edge is
+        # someone commenting on a video in the dataset (real channel, real
+        # subscriber count, but no evidence it's actually a finance
+        # channel). See low_confidence_reasons on each channel record.
+        "low_confidence_channels": low_confidence_counts,
         "spend": {
             "brightdata_records": state.get("brightdata_records_used", 0),
             "brightdata_usd": round(
@@ -1141,7 +1256,13 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
 
     graph_payload = build_graph_payload(channels, edges, max_nodes=cfg.export_max_graph_nodes)
 
-    _write_csv(out / "channels.csv", channels)
+    # CSV wants a flat cell, not a Python list repr — join for the sheet,
+    # keep the real list in research_bundle.json/discovery_graph.json.
+    channels_csv_rows = [
+        {**c, "low_confidence_reasons": "; ".join(c["low_confidence_reasons"])}
+        for c in channels
+    ]
+    _write_csv(out / "channels.csv", channels_csv_rows)
     _write_csv(out / "outlier_videos.csv", videos)
     (out / "discovery_graph.json").write_text(
         json.dumps(graph_payload, indent=2, default=str), encoding="utf-8"
