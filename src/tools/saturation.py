@@ -149,6 +149,29 @@ def check_saturation(state: dict) -> dict:
                 state, start, reason="novelty_below_threshold", round_update=round_update
             )
 
+        # A track is "done" when it either exhausts (threshold) or stops
+        # improving (plateau) — whichever it reaches. Measured on Finance the
+        # two tracks behave completely differently: graph walk genuinely decays
+        # to zero, while keyword search drops once and then holds ~0.65
+        # forever, because broaden_or_pivot keeps generating NEW query variants
+        # rather than draining a fixed pool. Requiring both to cross an
+        # absolute threshold means the keyword track alone blocks saturation
+        # indefinitely, which is why every live branch has died on a governor.
+        if cfg.plateau_detection_enabled:
+            kw_done = kw_low or _is_plateaued(kw_history, window, cfg.novelty_plateau_epsilon)
+            gw_done = gw_low or _is_plateaued(gw_history, window, cfg.novelty_plateau_epsilon)
+            if kw_done and gw_done:
+                return _mark_saturated(
+                    state, start,
+                    reason="novelty_plateaued",
+                    detail={
+                        "keyword_novelty": kw_recent[-1] if kw_recent else None,
+                        "graph_walk_novelty": gw_recent[-1] if gw_recent else None,
+                        "epsilon": cfg.novelty_plateau_epsilon,
+                    },
+                    round_update=round_update,
+                )
+
     return {
         "next_action": "expand_deeper",
         "rounds_by_node": round_update,
@@ -157,6 +180,38 @@ def check_saturation(state: dict) -> dict:
             {"decision": "expand_deeper", "node_id": active_node_id, "round": rounds},
         ),
     }
+
+
+def _is_plateaued(history: list, window: int, epsilon: float) -> bool:
+    """True when a track's novelty has stopped improving.
+
+    Scale-invariant, deliberately. An absolute threshold is a guess about how
+    big the niche is, and the guess was wrong: measured on Finance, keyword
+    novelty settles at ~0.65 across every branch and never approaches 0.05, so
+    any threshold below the plateau never fires and any above it fires
+    immediately and meaninglessly. What IS observable is that the series stops
+    moving — deltas of +0.017, -0.05, 0.0 over three rounds.
+
+    This detects diminishing returns, NOT exhaustion, and check_saturation
+    reports it under its own name so the two are never conflated. A plateaued
+    branch has not covered its niche; it has reached steady-state extraction,
+    where further rounds add volume at constant cost without converging.
+
+    Requires a real decline from the peak, so a track that returns 1.0 for its
+    first several rounds — discovering as fast as it possibly can — is not
+    mistaken for one that has levelled off.
+
+    Unmeasured rounds (None, from a failed discovery call) are skipped rather
+    than treated as values: an outage must not manufacture a flat line.
+    """
+    measured = [r for r in history if r is not None]
+    if len(measured) < window:
+        return False
+    recent = measured[-window:]
+    deltas = [recent[i + 1] - recent[i] for i in range(len(recent) - 1)]
+    if any(abs(d) > epsilon for d in deltas):
+        return False
+    return recent[-1] < max(measured) - epsilon
 
 
 def _log(state: dict, start: float, input_summary: dict) -> list[dict]:

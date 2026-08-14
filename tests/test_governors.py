@@ -1329,3 +1329,81 @@ class TestBranchCapCountsBranchesNotNodes:
         """A 1-branch cap with only the root present has room for one branch."""
         result = self._run(self._tree(0), max_branches=1, max_tree_depth=2)
         assert result.get("active_node_id") == "child"
+
+
+class TestNoveltyPlateau:
+    """Measured on Finance, the two tracks behave completely differently:
+    graph walk decays to zero, keyword drops once and holds ~0.65 forever
+    because broaden_or_pivot keeps generating NEW query variants rather than
+    draining a fixed pool. Requiring both to cross an absolute threshold means
+    keyword alone blocks saturation indefinitely — which is why every live
+    branch has died on a governor rather than on the project's stated stop
+    condition."""
+
+    @staticmethod
+    def _state(kw, gw):
+        return {
+            "tree": {"n1": {"id": "n1", "status": "active",
+                            "_kw_novelty_history": kw, "_gw_novelty_history": gw}},
+            "active_node_id": "n1",
+            "budget_spent_usd": 0.0, "brightdata_records_used": 0,
+            "youtube_quota_used": 0, "rounds_by_node": {}, "saturated_branches": [],
+        }
+
+    def _run(self, state, **cfg):
+        with patch("src.tools.saturation.get_config") as c:
+            c.return_value.harness = make_harness_config(**cfg)
+            return check_saturation(state)
+
+    def test_detects_the_real_measured_plateau(self):
+        """The exact series from the live Finance run, both tracks levelled."""
+        result = self._run(self._state([0.96, 0.65, 0.6667, 0.6167],
+                                       [0.9, 0.62, 0.64, 0.63]))
+        assert result["next_action"] == "saturated"
+        assert result["node_logs"][0]["input_summary"]["reason"] == "novelty_plateaued"
+
+    def test_plateau_is_not_reported_as_exhaustion(self):
+        """A plateaued branch has NOT covered its niche. Conflating the two
+        would tell a reader the search was complete when it was not."""
+        result = self._run(self._state([0.96, 0.65, 0.6667, 0.6167],
+                                       [0.9, 0.62, 0.64, 0.63]))
+        assert result["node_logs"][0]["input_summary"]["reason"] != "novelty_below_threshold"
+
+    def test_exhaustion_still_wins_when_genuinely_exhausted(self):
+        """Real exhaustion must keep its own, stronger label."""
+        result = self._run(self._state([0.0, 0.01, 0.0], [0.0, 0.0, 0.02]))
+        assert result["node_logs"][0]["input_summary"]["reason"] == "novelty_below_threshold"
+
+    def test_a_still_climbing_track_does_not_stop(self):
+        result = self._run(self._state([0.1, 0.4, 0.7, 0.9], [0.1, 0.4, 0.7, 0.9]))
+        assert result["next_action"] == "expand_deeper"
+
+    def test_flat_at_maximum_is_not_a_plateau(self):
+        """Four rounds of 1.0 is discovering as fast as possible, not
+        levelling off. Without the decline requirement this reads as done."""
+        result = self._run(self._state([1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]))
+        assert result["next_action"] == "expand_deeper"
+
+    def test_one_plateaued_track_is_not_enough(self):
+        """Both tracks must be done — by threshold or plateau, either way."""
+        result = self._run(self._state([0.96, 0.65, 0.6667, 0.6167],
+                                       [0.2, 0.5, 0.8, 0.95]))
+        assert result["next_action"] == "expand_deeper"
+
+    def test_mixed_criteria_saturate(self):
+        """The intended case: graph walk exhausts, keyword plateaus."""
+        result = self._run(self._state([0.96, 0.65, 0.6667, 0.6167],
+                                       [0.0, 0.0, 0.0]))
+        assert result["node_logs"][0]["input_summary"]["reason"] == "novelty_plateaued"
+
+    def test_an_outage_cannot_manufacture_a_plateau(self):
+        """Unmeasured rounds are skipped, not read as a flat line — otherwise
+        a dead vendor looks like diminishing returns."""
+        result = self._run(self._state([None, None, None], [None, None, None]))
+        assert result["node_logs"][0]["input_summary"]["reason"] == "discovery_unavailable"
+
+    def test_can_be_disabled(self):
+        result = self._run(self._state([0.96, 0.65, 0.6667, 0.6167],
+                                       [0.9, 0.62, 0.64, 0.63]),
+                           plateau_detection_enabled=False)
+        assert result["next_action"] == "expand_deeper"
