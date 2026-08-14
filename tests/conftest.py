@@ -74,6 +74,8 @@ def make_harness_config(**overrides) -> HarnessConfig:
         "min_subscribers_for_expansion": 0,
         "brightdata_record_budget": 0,
         "youtube_quota_budget_per_run": 0,
+        "plateau_detection_enabled": True,
+        "novelty_plateau_epsilon": 0.05,
     }
     base.update(overrides)
     return HarnessConfig(**base)

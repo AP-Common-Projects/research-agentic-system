@@ -193,6 +193,15 @@ class HarnessConfig(BaseSettings):
     budget_limit_usd: float = 10.0
     saturation_novelty_threshold: float = 0.05
     saturation_consecutive_window: int = 3
+    # Plateau detection: stop a track that has stopped IMPROVING, not just
+    # one that has run out. Measured on Finance, keyword novelty settles at
+    # ~0.65 and never nears the 0.05 threshold, so without this the keyword
+    # track alone blocks saturation forever and every branch dies on a
+    # governor. Reported as `novelty_plateaued`, never as exhaustion.
+    plateau_detection_enabled: bool = True
+    # Max round-on-round novelty change still counted as 'flat'. Observed
+    # plateau deltas were +0.017, -0.05, 0.0.
+    novelty_plateau_epsilon: float = 0.05
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     youtube_daily_quota_ceiling: int = 10000
     youtube_quota_target_ratio: float = 0.90
