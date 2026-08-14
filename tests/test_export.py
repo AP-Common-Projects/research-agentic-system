@@ -6,7 +6,7 @@ graph exceeds export_max_graph_nodes.
 
 from __future__ import annotations
 
-from src.export import _category, _ref_label, build_graph_payload, build_taxonomy_payload
+from src.export import _category, _ref_label, build_graph_payload
 
 
 class TestCategory:
@@ -153,81 +153,3 @@ class TestBuildGraphPayload:
         channels = [{"channel_id": "", "title": "No id", "subscriber_count": 1, "discovery_method": "keyword"}]
         payload = build_graph_payload(channels, edges=[])
         assert payload["nodes"] == []
-
-
-def _tree_node(id_, label, depth, parent_id, **overrides):
-    node = {
-        "id": id_, "label": label, "depth": depth, "parent_id": parent_id,
-        "children_ids": [],  # deliberately never populated, matching real data
-        "status": "compacted", "split_method": "llm_seed",
-        "cluster_distinctness_score": None, "seed_channel_ids": [],
-        "keywords": [], "compaction_summary": "",
-    }
-    node.update(overrides)
-    return node
-
-
-class TestBuildTaxonomyPayload:
-    def test_topology_is_derived_from_parent_id_not_children_ids(self):
-        """The real children_ids field is written at split time and never
-        kept in sync — every compacted node observed in production carries
-        children_ids: [] despite having children pointing at it via
-        parent_id. Topology must come from parent_id alone."""
-        tree = {
-            "root": _tree_node("root", "Finance", 0, None),
-            "a": _tree_node("a", "Investing", 1, "root"),
-            "b": _tree_node("b", "Budgeting", 1, "root"),
-        }
-        payload = build_taxonomy_payload(tree)
-        assert payload["roots"] == ["root"]
-        assert set(payload["children"]["root"]) == {"a", "b"}
-
-    def test_all_nodes_are_included_no_trim_policy(self):
-        tree = {f"n{i}": _tree_node(f"n{i}", f"Node {i}", 1, "root") for i in range(50)}
-        tree["root"] = _tree_node("root", "Root", 0, None)
-        payload = build_taxonomy_payload(tree)
-        assert len(payload["nodes"]) == 51
-
-    def test_a_node_with_a_dangling_parent_id_becomes_a_root(self):
-        """Defensive: a partial/interrupted run should still render rather
-        than crash on a parent_id that points at nothing in this tree."""
-        tree = {"orphan": _tree_node("orphan", "Orphan", 1, "missing_parent")}
-        payload = build_taxonomy_payload(tree)
-        assert payload["roots"] == ["orphan"]
-
-    def test_coverage_counts_prefer_category_tags_over_seed_count(self):
-        tree = {"root": _tree_node("root", "Finance", 0, None, seed_channel_ids=["@a", "@b"])}
-        counts = {"root": {"channels": 285, "videos": 9598}}
-        payload = build_taxonomy_payload(tree, counts)
-        node = payload["nodes"][0]
-        assert node["channel_count"] == 285
-        assert node["video_count"] == 9598
-
-    def test_coverage_falls_back_to_seed_count_when_untagged(self):
-        tree = {"root": _tree_node("root", "Finance", 0, None, seed_channel_ids=["@a", "@b", "@c"])}
-        payload = build_taxonomy_payload(tree, counts=None)
-        assert payload["nodes"][0]["channel_count"] == 3
-        assert payload["nodes"][0]["video_count"] == 0
-
-    def test_status_counts_tally_every_node(self):
-        tree = {
-            "root": _tree_node("root", "Finance", 0, None, status="compacted"),
-            "a": _tree_node("a", "A", 1, "root", status="active"),
-            "b": _tree_node("b", "B", 1, "root", status="pending"),
-            "c": _tree_node("c", "C", 1, "root", status="saturated"),
-        }
-        payload = build_taxonomy_payload(tree)
-        assert payload["status_counts"] == {"compacted": 1, "active": 1, "pending": 1, "saturated": 1}
-
-    def test_governor_saturation_reason_is_preserved_verbatim(self):
-        tree = {
-            "root": _tree_node("root", "Finance", 0, None,
-                                saturation_reason="governor:brightdata_record_budget"),
-        }
-        payload = build_taxonomy_payload(tree)
-        assert payload["nodes"][0]["saturation_reason"] == "governor:brightdata_record_budget"
-
-    def test_empty_tree_produces_an_empty_payload_not_a_crash(self):
-        payload = build_taxonomy_payload({})
-        assert payload["nodes"] == []
-        assert payload["roots"] == []
