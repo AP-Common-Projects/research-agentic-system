@@ -1,0 +1,1033 @@
+{
+  "edges": [
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/channel/UCGy7SkBjcIAgTiwkXEtPnYg",
+      "edge_type": "recommendation",
+      "discovered_at": "2026-08-14 19:29:37.193625+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_ref": "https://www.youtube.com/@grahamstephan",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.195044+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCVJylUIDVDHV-S2fJ1OPnhQ",
+      "target_channel_ref": "https://www.youtube.com/@ds-er4ng",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.196334+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UC8uzQ0ETTwm3YNyVBwPbZ2Q",
+      "target_channel_ref": "https://www.youtube.com/@mikemast-v3q",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.197494+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCIl8HDcb2pWWYNjBRT1X47g",
+      "target_channel_ref": "https://www.youtube.com/@neversleep8820",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.198494+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCReaHz3omyGvl3wFqbf1DUA",
+      "target_channel_ref": "https://www.youtube.com/@davidnhem9957",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.199532+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCQsx-T0hNFTbzZBd2OmkSFw",
+      "target_channel_ref": "https://www.youtube.com/@assistsftw184",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.200579+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCFl3X9s0H1vcRi-6JKHRcdQ",
+      "target_channel_ref": "https://www.youtube.com/@joe8188",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.201517+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCn7o-iDBa4dBXawjpvaht7g",
+      "target_channel_ref": "https://www.youtube.com/@aew217",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.202482+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UC0Won3VWZA_FAYwZoYVGSDg",
+      "target_channel_ref": "https://www.youtube.com/@1488-t1s",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.203497+03:00"
+    },
+    {
+      "source_channel_id": "UCV6KDgJskWaEckne5aPA0aQ",
+      "target_channel_id": "UCWQdu2btgSXn9FwwQMHBQpQ",
+      "target_channel_ref": "https://www.youtube.com/@webone77",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.204492+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_ref": "https://www.youtube.com/@andreijikh",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.205538+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCcuwuNe9nUWedU6h3dbcW7w",
+      "target_channel_ref": "https://www.youtube.com/@vinnaypatel3810",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.206548+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCcHsfN3JFihd2P-6fUUF_pw",
+      "target_channel_ref": "https://www.youtube.com/@josephbrown3476",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.207582+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCgtOCMd71HKPZ4eZyRKI-cw",
+      "target_channel_ref": "https://www.youtube.com/@shorewallet",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.208625+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCRCNU8D5mG-tCADMh515qiA",
+      "target_channel_ref": "https://www.youtube.com/@jerseyreddevilx890",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.209557+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCibQaD-ke-zS7pTnMBY5rUQ",
+      "target_channel_ref": "https://www.youtube.com/@pdaniel8",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.210490+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCphhxyqkDLYyyDX_jKgYA6Q",
+      "target_channel_ref": "https://www.youtube.com/@plux67",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.211481+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCpkwW3MnT38-JkEHBbbD3WQ",
+      "target_channel_ref": "https://www.youtube.com/@frekwensiemusiek",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.212438+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCfbPbS03bvrYqNU5FmF8Ofw",
+      "target_channel_ref": "https://www.youtube.com/@soysauce_boy",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.214074+03:00"
+    },
+    {
+      "source_channel_id": "UCGy7SkBjcIAgTiwkXEtPnYg",
+      "target_channel_id": "UCi5hDCdHHawvFw5lUrwN9Jg",
+      "target_channel_ref": "https://www.youtube.com/@oneriver7808",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:29:37.215341+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UC9hB920Jh-FDccSGlMHPALg",
+      "target_channel_ref": "https://www.youtube.com/@nordwolf8755",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.227790+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCZCmAETdyjkUvV1RxxEO6Cg",
+      "target_channel_ref": "https://www.youtube.com/@gamerdad1213",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.228708+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UC9UXqB_COwWe0Jifx8FqiDg",
+      "target_channel_ref": "https://www.youtube.com/@qwazse4",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.229643+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCQV4AVabOfTJvP2nvRWoaRA",
+      "target_channel_ref": "https://www.youtube.com/@quietshade0",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.230577+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCauSNu6B_W9a68Vcu8O2ueA",
+      "target_channel_ref": "https://www.youtube.com/@mercer696",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.231505+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCAl0PP1bL6E7EsLLnHLM8Rw",
+      "target_channel_ref": "https://www.youtube.com/@willnestor6422",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.232494+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCkzqkBn5jfGrjHMcj09sXHg",
+      "target_channel_ref": "https://www.youtube.com/@kevinduffy2210",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.233450+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCU0Q7S9rqqRcgQIkhQpwHGA",
+      "target_channel_ref": "https://www.youtube.com/@lorenemeyer4665",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.234391+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCrPCQVg0PaEokaOOhW6Gy2w",
+      "target_channel_ref": "https://www.youtube.com/@beasy42069",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.235432+03:00"
+    },
+    {
+      "source_channel_id": "UCLe_q9axMaeTbjN0hy1Z9xA",
+      "target_channel_id": "UCjX9MfvJB-LNcCsXcoux4rg",
+      "target_channel_ref": "https://www.youtube.com/@acebucketz",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.236489+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_ref": "https://www.youtube.com/@whiteboardfinance",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.238348+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCtykv27ZXb_Ww5qAOnkICtw",
+      "target_channel_ref": "https://www.youtube.com/@elonboytesla",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.239921+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCcWYQckQ8-xpxvNqqSUKYWQ",
+      "target_channel_ref": "https://www.youtube.com/@jacksampson7711",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.241311+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCv9rs1ORSyMnii99NBjDffw",
+      "target_channel_ref": "https://www.youtube.com/@danielcasey7385",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.242410+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCi8AaLP-kUgybcM3TKWeRuA",
+      "target_channel_ref": "https://www.youtube.com/@favband24",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.243517+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UClnIRyqJDB1U3sigHh5IGkQ",
+      "target_channel_ref": "https://www.youtube.com/@carriewilson1",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.244553+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCpLt0CBHY5m8GXK-vXHl9rA",
+      "target_channel_ref": "https://www.youtube.com/@cryengine_x",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.245436+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCGqGiTeaDaOw-SMHEFxeOXg",
+      "target_channel_ref": "https://www.youtube.com/@leeamessage",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.247153+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCsfEg6L3BPX9oSX0jmuX3bQ",
+      "target_channel_ref": "https://www.youtube.com/@jmoyta21",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.248030+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCPdY5GBqeeGG3Kc8trVxMQw",
+      "target_channel_ref": "https://www.youtube.com/@nichresearch-g7e",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.249851+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCF1VvKHELY6TMilF6eA6K6A",
+      "target_channel_ref": "https://www.youtube.com/@mr.fusion9872",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.250679+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCALNmpTTj_wesfLs5gkvklw",
+      "target_channel_ref": "https://www.youtube.com/@financial_awareness",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.251552+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UC1Eh9wrYs4plB9-W0ckesQw",
+      "target_channel_ref": "https://www.youtube.com/@rasheedschair",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.252419+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCaDEDNM3ylHbkr1P3oxo2vg",
+      "target_channel_ref": "https://www.youtube.com/@erikgutierrez3613",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.253360+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCXozXJfyWZAgRuDZEW_2_ZQ",
+      "target_channel_ref": "https://www.youtube.com/@chiknaheavyhauling3646",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.254290+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCwBTXtYLzw-FckAFKhNvJLA",
+      "target_channel_ref": "https://www.youtube.com/@magellanicspaceclouds",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.255152+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCDivYvr-vCnLEIxdWuQMhKg",
+      "target_channel_ref": "https://www.youtube.com/@kazisahagislam",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.255976+03:00"
+    },
+    {
+      "source_channel_id": "UCL_v4tC26PvOFytV1_eEVSg",
+      "target_channel_id": "UCv062xTc51v7eri5YgqLdHw",
+      "target_channel_ref": "https://www.youtube.com/@ambbb4691",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:33:29.256878+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/channel/UCqP6K5GNGvQXSI10xNIAkxA",
+      "edge_type": "recommendation",
+      "discovered_at": "2026-08-14 19:38:35.112129+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCE4S9ReEoRDQ7UdpEBbU_yw",
+      "target_channel_ref": "https://www.youtube.com/@tha_mavryck",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.117464+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCIug6wRyEXURNvmk8wjZc_g",
+      "target_channel_ref": "https://www.youtube.com/@petitbisou",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.118457+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCOmuzwdZS2X9Oc0xYif4hfg",
+      "target_channel_ref": "https://www.youtube.com/@queenshaton73",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.119328+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UC9HMPsajQ5wwoK3c28Fz2bQ",
+      "target_channel_ref": "https://www.youtube.com/@lorie8212",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.120315+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCadJaZSJhXnKUEf9muxoglg",
+      "target_channel_ref": "https://www.youtube.com/@josephjohnson1057",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.121352+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UC_Wlry-mgHOTiTSWO_wcKtQ",
+      "target_channel_ref": "https://www.youtube.com/@kipiyash",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.122296+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCbH8EqllweUdRLl497KSWsg",
+      "target_channel_ref": "https://www.youtube.com/@wefinallybeatmedicare",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.123194+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UC97mxeVEHGeO_m66iq2tZ6g",
+      "target_channel_ref": "https://www.youtube.com/@benjaminreyes3624",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.124162+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UC_0iaJ2IdC4t_p2W0SkQvug",
+      "target_channel_ref": "https://www.youtube.com/@jeantesc812",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.125083+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCpRjFQdZa_w9X86ApX0bC7Q",
+      "target_channel_ref": "https://www.youtube.com/@86framer",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.126012+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCckBHxO5R0uVh7t6pEqPGQQ",
+      "target_channel_ref": "https://www.youtube.com/@celyr9505",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.126952+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UC5p82VE6b0KFJl8I4_mfyKg",
+      "target_channel_ref": "https://www.youtube.com/@panthermum",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.127767+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCwrOdELhzBrdwEBAvJv3RWg",
+      "target_channel_ref": "https://www.youtube.com/@etoshajohnson-vk4qy",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.128550+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCJgg13HBtRGnEn1LbY2Q4VA",
+      "target_channel_ref": "https://www.youtube.com/@plannedwithlove",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.129447+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCJOjx0maaE3IrJh4EK1c7Og",
+      "target_channel_ref": "https://www.youtube.com/@kaaattsavingsbudgeting",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.130396+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCyim6sFnx1jhBa4I9TrDgHg",
+      "target_channel_ref": "https://www.youtube.com/@savewithjenny1",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.131322+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCwQZRECyDw6tKwoThwyi6dg",
+      "target_channel_ref": "https://www.youtube.com/@chicky6three",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.132114+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCwxqnU6nPlRCMtEa77J92UA",
+      "target_channel_ref": "https://www.youtube.com/@tl5741",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.133954+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCnbzY1eduz8Bwu7nvg82Vkg",
+      "target_channel_ref": "https://www.youtube.com/@cecelia-creationsbymuneca",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.135080+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCszDuNm_zJpYUk61N7X5uEw",
+      "target_channel_ref": "https://www.youtube.com/@mostafa_youtube_expert",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.136236+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCaDzevznZJ-udjD-OCknvPg",
+      "target_channel_ref": "https://www.youtube.com/@senapetersen6356",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.137392+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCxyd0TS46D-oi31AW8bTJWw",
+      "target_channel_ref": "https://www.youtube.com/@terriaustin1753",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.138409+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UC0sKIBvxC_WeLe14DOWOsAQ",
+      "target_channel_ref": "https://www.youtube.com/@kat-oe7gb",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.139490+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCrbZMiWh7XomtQbCx7Ld9Pw",
+      "target_channel_ref": "https://www.youtube.com/@hughmadbro",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.140618+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCpEXkrL0EVk_Rl3mHTtRdAw",
+      "target_channel_ref": "https://www.youtube.com/@alphafox-r3e",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.141796+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCYYoxYiwQS2AOhngQweo1jg",
+      "target_channel_ref": "https://www.youtube.com/@destinystup6675",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.142973+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCWPrdHOX6PjF06-wyJ3kp3A",
+      "target_channel_ref": "https://www.youtube.com/@jayjay-iu3wc",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.144100+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCi__cX6VilfaPeqxzpBqEXw",
+      "target_channel_ref": "https://www.youtube.com/@mash2031",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.145166+03:00"
+    },
+    {
+      "source_channel_id": "UCvs2mwDS-ZiIeJ01kvzarbQ",
+      "target_channel_id": "UCqaMu8ynSjpTrRwytfFa-Cg",
+      "target_channel_ref": "https://www.youtube.com/@realsteel8113",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.147241+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCNKcDuVMBudkmWizvLKdUxA",
+      "target_channel_ref": "https://www.youtube.com/@fedlynealexis-alexandre7724",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.148333+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UC8W62yD4KJ8tF8U7zy55d_g",
+      "target_channel_ref": "https://www.youtube.com/@paulneugbiyobo4156",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.149447+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCNeoTPaj4AGvhHAyyYIEWvA",
+      "target_channel_ref": "https://www.youtube.com/@sharonmlewismoneycoach",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.150485+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCKOrKngSTqNxo57tAMOw4AQ",
+      "target_channel_ref": "https://www.youtube.com/@infantlosssupportcoachjess157",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.151555+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCAIzptZ7p42zo_INN1fqplw",
+      "target_channel_ref": "https://www.youtube.com/@auntkookiewitak",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.152569+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCKd0jrA4tEyK9nVQ1nz9u6Q",
+      "target_channel_ref": "https://www.youtube.com/@scrumpy615",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.153585+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCvHdZ3V5a1vmpGuqA4GniWw",
+      "target_channel_ref": "https://www.youtube.com/@charleshayes2729",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.154639+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCE_WzE9abI5uE6t9F93t67A",
+      "target_channel_ref": "https://www.youtube.com/@kolvinlewis",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.155573+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UC7bWp-c-2ghmNHUy8LV402w",
+      "target_channel_ref": "https://www.youtube.com/@itsmesdr771",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.156517+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCRyELMdjyMSzOhQ8SkCfjxQ",
+      "target_channel_ref": "https://www.youtube.com/@olgaperez4267",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.157562+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UC_QlxDH_gySh7NX6rop2TYw",
+      "target_channel_ref": "https://www.youtube.com/@lifewithmellasoul",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.158490+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCAgfVIiU8mXI5gLmIbyipzw",
+      "target_channel_ref": "https://www.youtube.com/@amyhiggins1721",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.159490+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UC2TbG9rKhW54XBY23j8npyg",
+      "target_channel_ref": "https://www.youtube.com/@afrugalfairy",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.160610+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCzcWVVaOErwK7k_XCyDXBeQ",
+      "target_channel_ref": "https://www.youtube.com/@pamelabarnes3409",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.161695+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCi1IOShELpDHq-EjgDp4HoA",
+      "target_channel_ref": "https://www.youtube.com/@jennaaldrich1009",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.162712+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCirfi9jAYhqMpCrr_Kv_6Yg",
+      "target_channel_ref": "https://www.youtube.com/@ibislife",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.163767+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCazCwy0oYRGX4KtlRPXJm6A",
+      "target_channel_ref": "https://www.youtube.com/@dorislaw6294",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.164791+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UCtQqw6Oi2mnieVML6i_hZcg",
+      "target_channel_ref": "https://www.youtube.com/@just1fanofeverythingnlife",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.165832+03:00"
+    },
+    {
+      "source_channel_id": "UCqP6K5GNGvQXSI10xNIAkxA",
+      "target_channel_id": "UClnjIUBtv7I4O538JFryr6g",
+      "target_channel_ref": "https://www.youtube.com/@dongles717",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.167017+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCyQ4XqTd16IDXus6s5iFALQ",
+      "target_channel_ref": "https://www.youtube.com/@propertyopportunityprofit",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.168049+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCnVvR-tpwIjhIxCYM623RMQ",
+      "target_channel_ref": "https://www.youtube.com/@larizg",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.169066+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCN7GdglizR0WbrBhVWnXIjw",
+      "target_channel_ref": "https://www.youtube.com/@eurojane72",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.170131+03:00"
+    },
+    {
+      "source_channel_id": "UCCnXqVJZq_cD9wpycpml9LQ",
+      "target_channel_id": "UCHxrRqQhUuXZqMwhLfGFWig",
+      "target_channel_ref": "https://www.youtube.com/@marigoldcarter5995",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:38:35.171175+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/channel/UC2zVhoKml5z9cGsiptWxCgA",
+      "edge_type": "recommendation",
+      "discovered_at": "2026-08-14 19:44:15.509094+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/channel/UC8ry6TMsZCtErARp8NoimRQ",
+      "edge_type": "recommendation",
+      "discovered_at": "2026-08-14 19:44:15.513547+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCUVYhWejdAI06Kf0-Fd3hiQ",
+      "target_channel_ref": "https://www.youtube.com/@poly_budgeting_mermaid",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.514826+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCXAOms2zRaJhvlEnWZnJt6A",
+      "target_channel_ref": "https://www.youtube.com/@jonnaborosky8836",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.515873+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCy5WVlOhIAt_KTWte-eV6Tg",
+      "target_channel_ref": "https://www.youtube.com/@sjimenez9471",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.516936+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCwoaQZuOHUvP_eUlSFciTiw",
+      "target_channel_ref": "https://www.youtube.com/@dollarsandcentsbudgeting",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.517819+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCJ7k-a273F7yIZufDiu9pFQ",
+      "target_channel_ref": "https://www.youtube.com/@lovinaz-g1q",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.518592+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCOGA5j_wrqDww41SbNTi2zA",
+      "target_channel_ref": "https://www.youtube.com/@cashingwithclara",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.519433+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCzSJwoWF1-L_u3pJwdUcTDA",
+      "target_channel_ref": "https://www.youtube.com/@mariaclaro21",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.520350+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCSJqz9L0ldB-ZQVeEzVN82A",
+      "target_channel_ref": "https://www.youtube.com/@im_libby",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.521275+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCg2mo20rTOh06lle76eGR6g",
+      "target_channel_ref": "https://www.youtube.com/@jessleibrecht",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.522089+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCVW48kaKbrN-V7yXnvsm6Nw",
+      "target_channel_ref": "https://www.youtube.com/@former_ms_jones",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.523037+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC4E3ttr-PYIsipjT5A33i7Q",
+      "target_channel_ref": "https://www.youtube.com/@letsdoyoga5137",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.523944+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC9u7WnOn7pSTJwQYF4aaW5Q",
+      "target_channel_ref": "https://www.youtube.com/@michellerose7591",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.525723+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC1KebfBShTD7_0Rpd7WR8KA",
+      "target_channel_ref": "https://www.youtube.com/@paulkiritsis",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.526604+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCF_xcr4NF7E2iO3uK6FX5Qg",
+      "target_channel_ref": "https://www.youtube.com/@jessicakristy",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.527413+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC1uSDrcImCS86dnVSt3AZug",
+      "target_channel_ref": "https://www.youtube.com/@donnamckinley9807",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.528283+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCO-koKMH2rt6q-6Idw-i1Ag",
+      "target_channel_ref": "https://www.youtube.com/@metamorphosis1013",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.529090+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCwUAHiUkpPXuMV_nWpzMbAw",
+      "target_channel_ref": "https://www.youtube.com/@renatarenata-e4z",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.530019+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCHFnwK9doe79yCjog8c93lw",
+      "target_channel_ref": "https://www.youtube.com/@cosmicalchemist8219",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.530793+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCs1f6FdyQfErCd3uh5bEfPQ",
+      "target_channel_ref": "https://www.youtube.com/@lifehearthustle",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.533306+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCFtthSj_OXWN0NRg_R0KtLQ",
+      "target_channel_ref": "https://www.youtube.com/@shrimpnoises",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.534133+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCWuzwzsiW0zVqCOg9ZP1tTQ",
+      "target_channel_ref": "https://www.youtube.com/@dangerouslycheeky3746",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.535874+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCHiNOqsutsx7olaD4IOnKXg",
+      "target_channel_ref": "https://www.youtube.com/@kimobrink",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.536643+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC1CJgcEVIhuMFV5utPogXlw",
+      "target_channel_ref": "https://www.youtube.com/@blueleafevirosvc.inc.2796",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.537440+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UC7QawQ9BE2t0HmLDfiKfC2A",
+      "target_channel_ref": "https://www.youtube.com/@dennis-l7p",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.538343+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCJP6QGGo8LibM-aH1ac_IuA",
+      "target_channel_ref": "https://www.youtube.com/@lightfungaming",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.539267+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCa_CMoV_8rSXwaiGTInAgOA",
+      "target_channel_ref": "https://www.youtube.com/@splatapousss",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.540095+03:00"
+    },
+    {
+      "source_channel_id": "UC4_aeHO9Et1h3rEpQAtMAPw",
+      "target_channel_id": "UCAyN2hhgEeUFTEOs7F8TTdw",
+      "target_channel_ref": "https://www.youtube.com/@misselizabeth6631",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.540972+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCQvSLzQXcBtw2D8SOnTVGZA",
+      "target_channel_ref": "https://www.youtube.com/@adventureswitha",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.541840+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCJZGBxWDXEm-R_U-NlT67wQ",
+      "target_channel_ref": "https://www.youtube.com/@clauds939",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.544275+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCOGsPb4M0XodHp__Mp92qjA",
+      "target_channel_ref": "https://www.youtube.com/@thegroundeddollar",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.546044+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCEsEr8VQ432TvQpFX90Vf_w",
+      "target_channel_ref": "https://www.youtube.com/@glendawarren-f1n",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.546861+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCbEIdX373bpLbWax3mjs6iw",
+      "target_channel_ref": "https://www.youtube.com/@gildedliberty6090",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.548396+03:00"
+    },
+    {
+      "source_channel_id": "UC8ry6TMsZCtErARp8NoimRQ",
+      "target_channel_id": "UCaCLVbWYg4btNFC5jNxtv6w",
+      "target_channel_ref": "https://www.youtube.com/@thebudgetevolution",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.549317+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCL1WjXWtRVnYmjxEZObpgJQ",
+      "target_channel_ref": "https://www.youtube.com/@kennethtaylor-n1c",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.550291+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCSmWCTeMYLUi8KRWl-U_4uA",
+      "target_channel_ref": "https://www.youtube.com/@atharvabhavsar-hj5mv",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.551093+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCwXWuO77FWI7-jODV4K-c1g",
+      "target_channel_ref": "https://www.youtube.com/@racheldeng-888",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.552004+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCPaE4z7_2YxMGs-rYZjX0rw",
+      "target_channel_ref": "https://www.youtube.com/@leestew4676",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.552835+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCloQBrwF3TIiMFkKy6DN07g",
+      "target_channel_ref": "https://www.youtube.com/@1000morfactory",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.553568+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UC72MCwGhng_JSmlKdnB-VIQ",
+      "target_channel_ref": "https://www.youtube.com/@funnymabey",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.554353+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCkgK5p4MzSkvcIVu63DDspw",
+      "target_channel_ref": "https://www.youtube.com/@lumingrace3131",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.555308+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UCtChdaUC884tCbbtnJ4vsMQ",
+      "target_channel_ref": "https://www.youtube.com/@7ashim9x9",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.556113+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_ref": "https://www.youtube.com/@caspercapital",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.556899+03:00"
+    },
+    {
+      "source_channel_id": "UC2zVhoKml5z9cGsiptWxCgA",
+      "target_channel_id": "UC7ackoJBCrkGqxkn1Jeidrw",
+      "target_channel_ref": "https://www.youtube.com/@tb-2013",
+      "edge_type": "comment_author",
+      "discovered_at": "2026-08-14 19:44:15.557717+03:00"
+    }
+  ]
+}
