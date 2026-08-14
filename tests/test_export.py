@@ -202,11 +202,29 @@ class TestBuildTaxonomyPayload:
         node = payload["nodes"][0]
         assert node["channel_count"] == 285
         assert node["video_count"] == 9598
+        assert node["has_data"] is True
 
     def test_coverage_falls_back_to_seed_count_when_untagged(self):
+        """A node absent from category_tags entirely never ran — its
+        seed_channel_ids are the LLM's original proposed candidates, never
+        fetched. has_data=False lets the export distinguish that from a
+        branch that genuinely ran and found nothing."""
         tree = {"root": _tree_node("root", "Finance", 0, None, seed_channel_ids=["@a", "@b", "@c"])}
         payload = build_taxonomy_payload(tree, counts=None)
-        assert payload["nodes"][0]["channel_count"] == 3
+        node = payload["nodes"][0]
+        assert node["channel_count"] == 3
+        assert node["has_data"] is False
+
+    def test_a_branch_that_ran_and_genuinely_found_nothing_is_not_flagged_no_data(self):
+        """Distinct from the untagged case: category_tags has an entry for
+        this node (it ran), it just tagged zero entities. has_data must stay
+        True — the branch did its work, it just came up empty."""
+        tree = {"root": _tree_node("root", "Finance", 0, None, seed_channel_ids=["@a", "@b"])}
+        counts = {"root": {"channels": 0, "videos": 0}}
+        payload = build_taxonomy_payload(tree, counts)
+        node = payload["nodes"][0]
+        assert node["has_data"] is True
+        assert node["channel_count"] == 0
         assert payload["nodes"][0]["video_count"] == 0
 
     def test_status_counts_tally_every_node(self):
