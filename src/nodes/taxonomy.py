@@ -106,6 +106,11 @@ def _parse_tree_json(raw: str, niche_name: str) -> dict[str, dict]:
             status="pending",
         )
         tree[node_id] = node.model_dump()
+    # v2: depth-1 branches root their own budget lineage. The root itself has
+    # no lineage (None).
+    for node in tree.values():
+        if node.get("depth") == 1 and not node.get("lineage_root_id"):
+            node["lineage_root_id"] = node.get("id")
     return tree
 
 

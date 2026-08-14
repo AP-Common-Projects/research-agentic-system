@@ -6,6 +6,7 @@ from src.tools.dedup import (
     persist_edge,
     persist_video,
 )
+from src.tools.graph_clustering import cluster_branch
 from src.tools.graph_walk import graph_walk
 from src.tools.hydrate_metadata import hydrate_metadata
 from src.tools.keyword_search import broaden_or_pivot, keyword_search
@@ -31,6 +32,7 @@ __all__ = [
     "broaden_or_pivot",
     "check_near_duplicate",
     "check_saturation",
+    "cluster_branch",
     "compute_cadence",
     "compute_engagement_rate",
     "compute_opportunity_score",

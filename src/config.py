@@ -125,6 +125,10 @@ PROFILES: dict[str, dict[str, object]] = {
         "brightdata_record_budget": 150,
         "youtube_quota_budget_per_run": 1000,
         "budget_limit_usd": 1.0,
+        "min_channels_for_split": 5,
+        "min_cluster_distinctness": 0.5,
+        "cluster_seed": 42,
+        "branch_lineage_budget_enabled": False,
     },
     "bounded": {
         "max_rounds_per_branch": 4,
@@ -140,6 +144,10 @@ PROFILES: dict[str, dict[str, object]] = {
         "brightdata_record_budget": 1500,
         "youtube_quota_budget_per_run": 3000,
         "budget_limit_usd": 5.0,
+        "min_channels_for_split": 8,
+        "min_cluster_distinctness": 0.3,
+        "cluster_seed": 42,
+        "branch_lineage_budget_enabled": True,
     },
     "full": {
         "max_rounds_per_branch": 0,  # 0 == uncapped
@@ -155,6 +163,10 @@ PROFILES: dict[str, dict[str, object]] = {
         "brightdata_record_budget": 0,
         "youtube_quota_budget_per_run": 0,
         "budget_limit_usd": 10.0,
+        "min_channels_for_split": 3,
+        "min_cluster_distinctness": 0.15,
+        "cluster_seed": 42,
+        "branch_lineage_budget_enabled": True,
     },
 }
 
@@ -226,7 +238,26 @@ class HarnessConfig(BaseSettings):
 
     # LangGraph's own default is 25, which a legitimately deep run can hit.
     # Set explicitly so the ceiling is a decision rather than an inheritance.
-    graph_recursion_limit: int = 100
+    # Raised for v2: a multi-level graph-cluster-driven tree produces far more
+    # supersteps than a flat 2-level tree. The actual guarantee is the
+    # saturation and governor logic in check_saturation; this is the backstop.
+    graph_recursion_limit: int = 200
+
+    # --- adaptive depth (v2) ---
+    # Communities smaller than this are dropped — below this threshold a
+    # "cluster" can't be evidence-graded as corroborated.
+    min_channels_for_split: int = 8
+    # Intra/inter edge-weight ratio below which a community is algorithmic
+    # noise, not real structure. Higher = stricter.
+    min_cluster_distinctness: float = 0.3
+    # Fixed seed for Louvain community detection. Without one, a resumed
+    # run recomputes different clusters than the original — silent
+    # nondeterminism wearing an idempotency PASS. Non-negotiable.
+    cluster_seed: int = 42
+    # Whether per-depth-1-lineage budget enforcement is active. Off in
+    # smoke (the first live run shouldn't have a partially-implemented
+    # governor as a new failure mode); on in bounded and full.
+    branch_lineage_budget_enabled: bool = True
 
     model_config = {"env_prefix": "", "extra": "allow"}
 

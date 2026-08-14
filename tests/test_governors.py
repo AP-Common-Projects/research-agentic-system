@@ -323,6 +323,49 @@ class TestSaturationGovernors:
         )
         assert result["saturated_branches"] == []
 
+    def test_lineage_budget_force_saturates_only_its_subtree(self):
+        # ADR-0006 rejected a global-only ceiling because one runaway branch
+        # starves the run. Unbounded depth reintroduces that one level up: a
+        # deep chain of splits under one root branch must not starve its
+        # sibling. Only the offending lineage's subtree force-saturates.
+        state = self._state(
+            tree={
+                "n1": {"id": "n1", "status": "active", "depth": 1, "lineage_root_id": "n1"},
+                "n1_child": {"id": "n1_child", "status": "pending", "depth": 2, "lineage_root_id": "n1"},
+                "other": {"id": "other", "status": "pending", "depth": 1, "lineage_root_id": "other"},
+            },
+            branch_lineage_spend={"n1": 10.0},
+        )
+        result = self._run(state, budget_limit_usd=10.0)
+        assert result["next_action"] == "saturated"
+        log = result["node_logs"][0]["input_summary"]
+        assert log["reason"] == "governor:branch_lineage_budget"
+        assert result["tree"]["n1"]["saturation_reason"] == "governor:branch_lineage_budget"
+        assert result["tree"]["n1_child"]["saturation_reason"] == "governor:branch_lineage_budget"
+        # The sibling lineage is untouched — it keeps its budget.
+        assert "other" not in result["tree"]
+
+    def test_lineage_under_share_does_not_fire(self):
+        state = self._state(
+            tree={
+                "n1": {"id": "n1", "status": "active", "depth": 1, "lineage_root_id": "n1"},
+                "other": {"id": "other", "status": "pending", "depth": 1, "lineage_root_id": "other"},
+            },
+            branch_lineage_spend={"n1": 1.0},
+        )
+        result = self._run(state, budget_limit_usd=10.0)
+        assert result["next_action"] == "expand_deeper"
+
+    def test_lineage_budget_disabled_does_not_fire(self):
+        state = self._state(
+            tree={
+                "n1": {"id": "n1", "status": "active", "depth": 1, "lineage_root_id": "n1"},
+            },
+            branch_lineage_spend={"n1": 100.0},
+        )
+        result = self._run(state, budget_limit_usd=10.0, branch_lineage_budget_enabled=False)
+        assert result["next_action"] == "expand_deeper"
+
 
 # ---------------------------------------------------------------------------
 # Tree growth

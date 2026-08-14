@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 
 from src.config import get_config
 from src.tools.bright_data import BrightDataClient, normalize_channel_ref
-from src.tools.budget import clamp_frontier, records_remaining, tier_b_affordable
+from src.tools.budget import clamp_frontier, records_remaining, tier_b_affordable, lineage_spend_delta
 from src.state import ErrorRecord, NodeLog
 
 
@@ -183,6 +183,10 @@ async def graph_walk(state: dict) -> dict:
         return {
             "brightdata_records_used": worst_case,
             "budget_spent_usd": round(worst_case * cfg.brightdata_cost_per_record_usd, 8),
+            "branch_lineage_spend": lineage_spend_delta(
+                state, node.get("lineage_root_id"),
+                worst_case * cfg.brightdata_cost_per_record_usd,
+            ),
             "expanded_channel_refs": set(frontier),
             "tree": {
                 # None, not 0.0 — no measurement was taken. See the same
@@ -441,6 +445,10 @@ async def graph_walk(state: dict) -> dict:
     return {
         "discovered_channel_ids": truly_new_ids,
         "graph_walk_channel_ids": resolved_ids,
+        # Inverted ref_to_id, built while resolving Tier A. Seeds included:
+        # they are excluded from ATTRIBUTION, but their ref is still the
+        # correct identity for graph keying.
+        "channel_refs_by_id": {cid: ref for ref, cid in ref_to_id.items()},
         "visited_channel_ids": expanded_ids,
         # Record BOTH forms of every channel actually expanded. String
         # canonicalisation cannot collapse `/@handle` and `/channel/UC…` —
@@ -453,6 +461,9 @@ async def graph_walk(state: dict) -> dict:
         },
         "brightdata_records_used": records,
         "budget_spent_usd": cost,
+        "branch_lineage_spend": lineage_spend_delta(
+            state, node.get("lineage_root_id"), cost
+        ),
         "novelty_rates": [round(novelty, 4)],
         "tree": {
             active_node_id: {
