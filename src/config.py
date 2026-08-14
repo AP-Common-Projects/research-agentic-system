@@ -198,6 +198,10 @@ class HarnessConfig(BaseSettings):
     youtube_quota_target_ratio: float = 0.90
     brightdata_max_concurrency: int = 10
     log_dir: str = "logs"
+    export_dir: str = "exports"
+    # Top-N by outlier score. The full video table runs to five figures;
+    # a Content Creation Team wants the actionable slice, not the dump.
+    export_max_videos: int = 500
 
     # --- cost governors (0 means uncapped, for the `full` profile) ---
     max_rounds_per_branch: int = 3

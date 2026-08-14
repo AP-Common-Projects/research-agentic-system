@@ -1,0 +1,270 @@
+{
+  "edges": [
+    {
+      "source_channel_id": "UCDXTQ8nWmx_EhZ2v-kp7QxA",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@rationalreminder",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.868836+03:00"
+    },
+    {
+      "source_channel_id": "UCZsxeYbUP30aMu54J8Vin4A",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@estherkissofficial",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.873424+03:00"
+    },
+    {
+      "source_channel_id": "UCve6AcM_V7mnpBCl9TFjRRg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@careergrowthglobal",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.874487+03:00"
+    },
+    {
+      "source_channel_id": "UCDdVWGejfB3_M57sWv3yniQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@screensandstreams",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.875479+03:00"
+    },
+    {
+      "source_channel_id": "UCDdVWGejfB3_M57sWv3yniQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@adamanswers",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.876432+03:00"
+    },
+    {
+      "source_channel_id": "UCDdVWGejfB3_M57sWv3yniQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@unbox-em",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.877401+03:00"
+    },
+    {
+      "source_channel_id": "UCk_TpncJMwQvCyqvLVp2SNw",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@simplykrissy",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.878416+03:00"
+    },
+    {
+      "source_channel_id": "UCMw07uiVxGULqePlrOZnx9A",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@livinglikeleila",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.879371+03:00"
+    },
+    {
+      "source_channel_id": "UCaOm0WoOuPZJPl7GOsprzEw",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@kiranbhatwoodworking",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.880292+03:00"
+    },
+    {
+      "source_channel_id": "UCBxa4d96Gq2GAbIBkbw9nzg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@beauhumphreys99",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.881460+03:00"
+    },
+    {
+      "source_channel_id": "UCBxa4d96Gq2GAbIBkbw9nzg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@jessicamoorhouse",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.882437+03:00"
+    },
+    {
+      "source_channel_id": "UCBxa4d96Gq2GAbIBkbw9nzg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@halfbanked",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.883424+03:00"
+    },
+    {
+      "source_channel_id": "UC-5JG7ApVwWgIIg0bDSy5_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@businessinsider",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.884304+03:00"
+    },
+    {
+      "source_channel_id": "UC-5JG7ApVwWgIIg0bDSy5_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@insidertech",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.885158+03:00"
+    },
+    {
+      "source_channel_id": "UC-5JG7ApVwWgIIg0bDSy5_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@insidercars",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.886043+03:00"
+    },
+    {
+      "source_channel_id": "UC-5JG7ApVwWgIIg0bDSy5_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@insiderscience",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.887078+03:00"
+    },
+    {
+      "source_channel_id": "UCgqU4kDON1LwuBbtmlSO9-g",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@investwithqueenie",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.888027+03:00"
+    },
+    {
+      "source_channel_id": "UCgqU4kDON1LwuBbtmlSO9-g",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@euancopeland",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.888987+03:00"
+    },
+    {
+      "source_channel_id": "UCgqU4kDON1LwuBbtmlSO9-g",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@catscoinschaos",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.889921+03:00"
+    },
+    {
+      "source_channel_id": "UCgqU4kDON1LwuBbtmlSO9-g",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@etoro",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.890843+03:00"
+    },
+    {
+      "source_channel_id": "UChWBKpyL-WNwnuMdrpUvR_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@optionalpha",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.891600+03:00"
+    },
+    {
+      "source_channel_id": "UChWBKpyL-WNwnuMdrpUvR_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@skyviewtrading",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.892551+03:00"
+    },
+    {
+      "source_channel_id": "UChWBKpyL-WNwnuMdrpUvR_Q",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@tastyliveshow",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.893454+03:00"
+    },
+    {
+      "source_channel_id": "UC8hRZgzTh25ZgpStQCBWOLg",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@fitnessfreak329",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.894366+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@tedx",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.895285+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@bigthink",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.896224+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@tonyrobbinslive",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.897065+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@timferriss",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.898078+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@motleyfool",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.899150+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@markets",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.900175+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@southchinamorningpost",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.901088+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@theedgetv",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.901999+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@bnmofficial",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.902886+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@kclaumoney",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.904007+03:00"
+    },
+    {
+      "source_channel_id": "UCN2kIpBA_A3aVjcR67HnFng",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@cflieu",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.905049+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@financialeducation2",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.906031+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@jeremylefebvre-clips",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.906843+03:00"
+    },
+    {
+      "source_channel_id": "UCnMn36GT_H0X-w5_ckLtlgQ",
+      "target_channel_id": null,
+      "target_channel_ref": "https://www.youtube.com/@jeremylefebvremakesmoney7934",
+      "edge_type": "featured_channel",
+      "discovered_at": "2026-08-14 18:35:08.907588+03:00"
+    }
+  ]
+}

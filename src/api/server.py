@@ -116,6 +116,12 @@ def _load_checkpoint(thread_id: str) -> dict[str, Any] | None:
         "tree": values.get("tree", {}),
         "active_node_id": values.get("active_node_id"),
         "budget_spent_usd": values.get("budget_spent_usd", 0.0),
+        # The non-LLM counters. Without these the export's manifest reported
+        # brightdata_records: 0 next to a non-zero total_usd — a spend figure
+        # that contradicts itself is worse than no figure, since the manifest
+        # exists to tell a reader what the run actually cost.
+        "brightdata_records_used": values.get("brightdata_records_used", 0),
+        "youtube_quota_used": values.get("youtube_quota_used", 0),
         "novelty_rates": values.get("novelty_rates", []),
         "saturated_branches": values.get("saturated_branches", []),
         "errors": values.get("errors", []),

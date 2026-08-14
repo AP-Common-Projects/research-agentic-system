@@ -31,13 +31,25 @@ CREATE TABLE IF NOT EXISTS videos (
     extra JSONB DEFAULT '{}'::jsonb
 );
 
+-- Membership: which entities belong to which branch of which run.
+--
+-- `channels` and `videos` are deliberately NOT run-scoped — a channel is a
+-- shared entity that can legitimately appear in both a Finance run and a Legal
+-- one, so stamping a run_id on the row would either duplicate it or lose the
+-- overlap. This is the many-to-many table that carries that relationship, and
+-- it is what makes a per-run export possible without wiping the store between
+-- runs.
+--
+-- run_id is part of the key because tree node ids are only unique WITHIN a
+-- run: every run has a "root".
 CREATE TABLE IF NOT EXISTS category_tags (
     id SERIAL PRIMARY KEY,
     entity_type TEXT NOT NULL CHECK (entity_type IN ('channel', 'video')),
     entity_id TEXT NOT NULL,
     tree_node_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
     tagged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (entity_type, entity_id, tree_node_id)
+    UNIQUE (entity_type, entity_id, tree_node_id, run_id)
 );
 
 -- Graph traversal is keyed on channel *refs* (handle/URL): featured_channels
@@ -106,6 +118,15 @@ MIGRATIONS: list[str] = [
        ON discovery_edges (source_channel_id, target_channel_ref, edge_type)""",
     """CREATE INDEX IF NOT EXISTS idx_discovery_edges_run
        ON discovery_edges (run_id)""",
+    # category_tags gains run_id: tree node ids repeat across runs (every run
+    # has a "root"), so without it a per-run export cannot be scoped.
+    "ALTER TABLE category_tags ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''",
+    """ALTER TABLE category_tags
+       DROP CONSTRAINT IF EXISTS category_tags_entity_type_entity_id_tree_node_id_key""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS category_tags_entity_node_run_key
+       ON category_tags (entity_type, entity_id, tree_node_id, run_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_category_tags_run
+       ON category_tags (run_id)""",
 ]
 
 

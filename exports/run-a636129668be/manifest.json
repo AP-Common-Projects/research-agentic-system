@@ -1,0 +1,28 @@
+{
+  "run_id": "run-a636129668be",
+  "thread_id": "thread-08c1cf29f3b2",
+  "niche": "Finance",
+  "exported_at": "2026-08-14T15:41:13.186956+00:00",
+  "profile": "smoke",
+  "channels": 22,
+  "videos": 500,
+  "discovery_edges": 38,
+  "attribution": {
+    "keyword": 1,
+    "both": 21
+  },
+  "spend": {
+    "brightdata_records": 396,
+    "brightdata_usd": 0.594,
+    "total_usd": 0.6636,
+    "youtube_quota": 67
+  },
+  "stop_reasons": [
+    "max_rounds_per_branch"
+  ],
+  "saturated_branches": [
+    "root",
+    "passive_income",
+    "stock_investing"
+  ]
+}
