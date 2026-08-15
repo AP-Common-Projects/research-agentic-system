@@ -350,6 +350,13 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def _clean_title(title: str | None) -> str:
+    """Some real YouTube channel titles contain embedded newlines — left
+    raw, one breaks a markdown list item into a stray blank line and a
+    dangling continuation. Collapse to a single line."""
+    return " ".join((title or "").split())
+
+
 def _report_markdown(
     report: dict[str, Any],
     manifest: dict[str, Any],
@@ -401,7 +408,7 @@ def _report_markdown(
         lines.append(f"### [{finding.get('grade', '?').upper()}] {finding.get('claim', '')}")
         supporting = finding.get("supporting_channel_ids", [])
         if supporting:
-            by_id = {c["channel_id"]: c.get("title") or c["channel_id"] for c in channels}
+            by_id = {c["channel_id"]: _clean_title(c.get("title")) or c["channel_id"] for c in channels}
             named = [by_id.get(cid, cid) for cid in supporting[:6]]
             lines.append(f"Channels: {', '.join(named)}")
         lines.append("")
@@ -428,7 +435,7 @@ def _report_markdown(
         eng = ch.get("engagement_rate")
         cad = ch.get("cadence")
         lines.append(
-            f"| {ch.get('title') or ch['channel_id']} "
+            f"| {_clean_title(ch.get('title')) or ch['channel_id']} "
             f"| {ch.get('subscriber_count') or 0:,} "
             f"| {ch.get('discovery_method', '?')} "
             f"| {eng if eng is not None else '—'} "
