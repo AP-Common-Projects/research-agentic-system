@@ -18,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from psycopg_pool import PoolTimeout
 
 from src.nodes.compact_branch import compact_branch
 from src.nodes.select_next_node import select_next_node
@@ -1101,6 +1102,24 @@ class TestSynthesizeIsRunScoped:
 
         mock_global_vids.assert_called_once()
         mock_vids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_global_store_when_run_scoped_fetch_fails(self, base_state):
+        base_state["branch_compactions"] = []
+        with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
+             patch("src.export.fetch_run_videos", side_effect=PoolTimeout("timeout")) as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch, \
+             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_global_vids, \
+             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_global_ch:
+            mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
+            mock_ch.return_value = []
+            mock_global_vids.return_value = []
+            mock_global_ch.return_value = []
+            await synthesize(base_state)
+
+        mock_ch.assert_called_once_with("run-001")
+        mock_vids.assert_called_once_with("run-001", 1_000_000)
+        mock_global_vids.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
