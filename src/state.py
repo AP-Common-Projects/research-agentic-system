@@ -205,6 +205,9 @@ class FinalReport(BaseModel):
     findings: list[GradedFinding] = Field(default_factory=list)
     cannot_determine: list[str] = Field(default_factory=list)
     discovery_stats: dict[str, Any] = Field(default_factory=dict)
+    # Direct content-strategy guidance for the team deciding what to make —
+    # not caveats about the data. {"do": [...], "avoid": [...]}.
+    recommendations: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class NodeLog(BaseModel):

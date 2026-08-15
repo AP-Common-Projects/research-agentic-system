@@ -718,6 +718,17 @@ SYNTHESIS_VALID_JSON = json.dumps({
     "discovery_stats": {"total_channels": 15, "total_videos": 120, "branches_explored": 4, "patterns_found": 6},
 })
 
+SYNTHESIS_WITH_RECOMMENDATIONS = json.dumps({
+    "summary": "AI coding tools are a rapidly growing niche with strong engagement.",
+    "findings": [],
+    "cannot_determine": [],
+    "recommendations": {
+        "do": ["Make Copilot extension walkthroughs.", "Cover Fireship-style rapid-fire explainers."],
+        "avoid": ["Generic 'what is AI coding' explainers with no format hook."],
+    },
+    "discovery_stats": {"total_channels": 15, "total_videos": 120, "branches_explored": 4, "patterns_found": 6},
+})
+
 SYNTHESIS_WEAK_ONLY = json.dumps({
     "summary": "The niche shows some activity but no strong patterns.",
     "findings": [
@@ -978,6 +989,35 @@ class TestSynthesize:
         assert isinstance(report.get("findings"), list)
         assert "cannot_determine" in report
         assert "discovery_stats" in report
+
+    @pytest.mark.asyncio
+    async def test_recommendations_round_trip_from_llm_response(self, base_state):
+        base_state["branch_compactions"] = []
+        with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
+            mock_complete.return_value = _fake_llm_response(SYNTHESIS_WITH_RECOMMENDATIONS)
+            mock_vids.return_value = []
+            mock_ch.return_value = []
+            result = await synthesize(base_state)
+
+        recs = result.get("final_report", {}).get("recommendations", {})
+        assert recs["do"] == ["Make Copilot extension walkthroughs.", "Cover Fireship-style rapid-fire explainers."]
+        assert recs["avoid"] == ["Generic 'what is AI coding' explainers with no format hook."]
+
+    @pytest.mark.asyncio
+    async def test_recommendations_default_to_empty_lists_when_llm_omits_them(self, base_state):
+        base_state["branch_compactions"] = []
+        with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
+            mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)  # no "recommendations" key
+            mock_vids.return_value = []
+            mock_ch.return_value = []
+            result = await synthesize(base_state)
+
+        recs = result.get("final_report", {}).get("recommendations", {})
+        assert recs == {"do": [], "avoid": []}
 
     @pytest.mark.asyncio
     async def test_retry_on_invalid_json(self, base_state):

@@ -30,6 +30,7 @@ Rules:
 3. State the claim clearly. Do NOT assert causality or content quality — if a pattern suggests causality, say "correlates with" not "causes".
 4. For any causal or content-level inference you cannot make with the available data, flag it as "cannot determine".
 5. Your confidence does NOT determine the grade — a separate evidence grading step will assign strong/moderate/weak.
+6. Also write direct recommendations for a content team deciding what to make, grounded in the same patterns as your findings — specific formats, angles, or sub-niches to pursue (recommendations.do) and specific patterns, formats, or channel types that underperform or are noise to avoid citing (recommendations.avoid). These are actionable guidance, not caveats about data completeness — write them the way a strategist would brief a creator, not the way a QA report flags a gap.
 
 Respond with ONLY a JSON object:
 {
@@ -43,6 +44,10 @@ Respond with ONLY a JSON object:
     }
   ],
   "cannot_determine": ["<thing the data doesn't support>", ...],
+  "recommendations": {
+    "do": ["<specific, actionable content strategy recommendation>", ...],
+    "avoid": ["<specific pattern, format, or channel type to steer away from>", ...]
+  },
   "discovery_stats": {
     "total_channels": <int>,
     "total_videos": <int>,
@@ -270,6 +275,11 @@ async def synthesize(state: dict) -> dict:
             raw_findings = parsed.get("findings", [])
             cannot_determine = parsed.get("cannot_determine", [])
             discovery_stats = parsed.get("discovery_stats", {})
+            raw_recs = parsed.get("recommendations", {}) or {}
+            recommendations = {
+                "do": [str(x) for x in raw_recs.get("do", []) if str(x).strip()],
+                "avoid": [str(x) for x in raw_recs.get("avoid", []) if str(x).strip()],
+            }
 
             graded = grade_findings(raw_findings, store_data)
 
@@ -291,6 +301,7 @@ async def synthesize(state: dict) -> dict:
                 findings=[GradedFinding(**f) for f in graded],
                 cannot_determine=list(cannot_determine),
                 discovery_stats=discovery_stats,
+                recommendations=recommendations,
             )
 
             usage = result.get("usage", {})

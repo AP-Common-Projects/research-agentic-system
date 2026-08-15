@@ -6,7 +6,13 @@ graph exceeds export_max_graph_nodes.
 
 from __future__ import annotations
 
-from src.export import _category, _ref_label, build_graph_payload, flag_low_confidence_channels
+from src.export import (
+    _category,
+    _ref_label,
+    _report_markdown,
+    build_graph_payload,
+    flag_low_confidence_channels,
+)
 
 
 class TestCategory:
@@ -204,3 +210,103 @@ class TestFlagLowConfidenceChannels:
         flagged = flag_low_confidence_channels(channels, comment_author_only_ids=set())
         assert flagged[0]["title"] == "Some Channel"
         assert flagged[0]["channel_id"] == "c1"
+
+
+def _report(**overrides):
+    r = {
+        "niche": "Finance",
+        "summary": "A summary of the niche.",
+        "findings": [
+            {"grade": "strong", "claim": "A strong claim.", "supporting_channel_ids": ["c1"]},
+            {"grade": "weak", "claim": "A weak claim.", "supporting_channel_ids": []},
+        ],
+        "cannot_determine": ["Whether content quality drives growth."],
+        "recommendations": {"do": ["Make audit-format videos."], "avoid": ["Generic tutorials."]},
+    }
+    r.update(overrides)
+    return r
+
+
+def _manifest(**overrides):
+    m = {
+        "run_id": "run-x", "niche": "Finance", "channels": 2, "videos": 2,
+        "exported_at": "2026-08-15T00:00:00+00:00",
+        "stop_reasons": ["governor:brightdata_record_budget"],
+        "low_confidence_channels": {"zero_subscribers": 1, "comment_author_only": 0, "total_flagged": 1},
+        "sub_niches_covered": 2,
+    }
+    m.update(overrides)
+    return m
+
+
+class TestReportMarkdown:
+    """The report is a brief for a content team, not a pipeline status
+    page — no mention of governors, saturation, or which channels the
+    export is less confident about. That provenance lives in manifest.json
+    and channels.csv's low_confidence_reasons column instead."""
+
+    def test_no_saturation_or_governor_language(self):
+        md = _report_markdown(_report(), _manifest(), channels=[], branch_counts={}, tree={})
+        assert "saturation" not in md.lower()
+        assert "governor" not in md.lower()
+
+    def test_no_low_confidence_caveat(self):
+        md = _report_markdown(_report(), _manifest(), channels=[], branch_counts={}, tree={})
+        assert "low_confidence" not in md
+        assert "flagged" not in md.lower()
+
+    def test_no_warning_marker_on_channels(self):
+        channels = [{
+            "channel_id": "c1", "title": "Coin Bureau", "subscriber_count": 2720000,
+            "discovery_method": "unattributed", "low_confidence_reasons": ["comment_author_only"],
+        }]
+        md = _report_markdown(_report(), _manifest(), channels, branch_counts={}, tree={})
+        assert "⚠" not in md
+
+    def test_overview_table_lists_sub_niches_by_depth_then_size(self):
+        tree = {
+            "root": {"label": "Finance", "depth": 0},
+            "a": {"label": "Crypto", "depth": 1},
+            "b": {"label": "Investing", "depth": 1},
+        }
+        branch_counts = {
+            "root": {"channels": 300, "videos": 9000},
+            "a": {"channels": 100, "videos": 3000},
+            "b": {"channels": 200, "videos": 4000},
+        }
+        md = _report_markdown(_report(), _manifest(), [], branch_counts, tree)
+        overview = md.split("## Overview")[1].split("## Summary")[0]
+        # root (depth 0) first, then depth-1 branches sorted by channel count desc
+        assert overview.index("Finance") < overview.index("Investing") < overview.index("Crypto")
+
+    def test_branch_with_no_data_is_omitted_from_overview(self):
+        tree = {
+            "root": {"label": "Finance", "depth": 0},
+            "empty": {"label": "Empty Branch", "depth": 1},
+        }
+        branch_counts = {"root": {"channels": 10, "videos": 100}}
+        md = _report_markdown(_report(), _manifest(), [], branch_counts, tree)
+        assert "Empty Branch" not in md
+
+    def test_what_to_do_and_avoid_sections_present_when_recommendations_exist(self):
+        md = _report_markdown(_report(), _manifest(), [], {}, {})
+        assert "## What to do" in md
+        assert "Make audit-format videos." in md
+        assert "## What to avoid" in md
+        assert "Generic tutorials." in md
+
+    def test_sections_omitted_when_no_recommendations(self):
+        md = _report_markdown(_report(recommendations={}), _manifest(), [], {}, {})
+        assert "## What to do" not in md
+        assert "## What to avoid" not in md
+
+    def test_findings_and_top_channels_still_present(self):
+        channels = [{
+            "channel_id": "c1", "title": "Graham Stephan", "subscriber_count": 5000000,
+            "discovery_method": "keyword",
+        }]
+        md = _report_markdown(_report(), _manifest(), channels, {}, {})
+        assert "## Findings" in md
+        assert "A strong claim." in md
+        assert "## Top channels by audience" in md
+        assert "Graham Stephan" in md
