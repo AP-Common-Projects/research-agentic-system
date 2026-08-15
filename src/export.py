@@ -168,6 +168,31 @@ def flag_low_confidence_channels(
     return flagged
 
 
+def fetch_run_branch_counts(run_id: str) -> dict[str, dict[str, int]]:
+    """Per-branch coverage: how many channels/videos this run tagged under
+    each tree node, from category_tags. Feeds the report's sub-niche
+    breakdown — the same "how does this attribute per branch" question
+    the taxonomy tree used to answer, without the full tree/UI machinery.
+    """
+    rows = _fetch(
+        """
+        SELECT tree_node_id, entity_type, COUNT(DISTINCT entity_id) AS n
+        FROM category_tags
+        WHERE run_id = %s
+        GROUP BY tree_node_id, entity_type
+        """,
+        (run_id,),
+    )
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        node_counts = counts.setdefault(row["tree_node_id"], {"channels": 0, "videos": 0})
+        if row["entity_type"] == "channel":
+            node_counts["channels"] = row["n"]
+        elif row["entity_type"] == "video":
+            node_counts["videos"] = row["n"]
+    return counts
+
+
 def fetch_run_edges(run_id: str) -> list[dict[str, Any]]:
     return _fetch(
         """
@@ -326,68 +351,54 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _report_markdown(
-    report: dict[str, Any], manifest: dict[str, Any], channels: list[dict]
+    report: dict[str, Any],
+    manifest: dict[str, Any],
+    channels: list[dict],
+    branch_counts: dict[str, dict[str, int]] | None = None,
+    tree: dict[str, dict] | None = None,
 ) -> str:
+    """A brief for the team deciding what to make — statistics, findings,
+    what to do, what to avoid, top channels. Nothing about how the run was
+    conducted, what it stopped on, or which channels the pipeline is less
+    sure about: that provenance detail lives in manifest.json and
+    channels.csv's low_confidence_reasons column for anyone who wants it,
+    not in the document a content strategist reads.
+    """
     grade_order = {"strong": 0, "moderate": 1, "weak": 2}
     findings = sorted(
         report.get("findings", []),
         key=lambda f: grade_order.get(f.get("grade", "weak"), 3),
     )
+    niche = report.get("niche") or manifest.get("niche") or "Untitled"
 
     lines = [
-        f"# {report.get('niche', 'Untitled')} — niche research",
+        f"# {niche} — research report",
         "",
-        f"Run `{manifest['run_id']}` · generated {manifest['exported_at'][:19]}Z",
+        f"{manifest['channels']:,} channels and {manifest['videos']:,} videos analyzed "
+        f"across {manifest.get('sub_niches_covered', 0)} sub-niches.",
         "",
-        "## How to read this",
+        "## Overview",
         "",
-        f"{manifest['channels']} channels and {manifest['videos']} videos were "
-        f"discovered and scored. Findings are graded **strong / moderate / weak** "
-        "by a deterministic four-axis check — corroboration, consistency, "
-        "recency, effect size — not by how confident the writing sounds.",
-        "",
+        "| Sub-niche | Channels | Videos |",
+        "|---|---:|---:|",
     ]
-
-    stop = manifest.get("stop_reasons", [])
-    if stop and not all(s == "novelty_below_threshold" for s in stop):
-        lines += [
-            "> **This run did not reach saturation.** It stopped on "
-            f"`{', '.join(sorted(set(stop)))}`, meaning the budget or round "
-            "ceiling ended it while new channels were still being found. Treat "
-            "this as a survey of what was reached, not a complete picture of "
-            "the niche.",
-            "",
-        ]
-
-    low_conf = manifest.get("low_confidence_channels", {})
-    if low_conf.get("total_flagged"):
-        lines += [
-            f"> **{low_conf['total_flagged']} of {manifest['channels']} channels are flagged "
-            "in `low_confidence_reasons`** (channels.csv / research_bundle.json), still "
-            "included below. "
-            f"{low_conf.get('zero_subscribers', 0)} have no subscriber count and no other "
-            "discovery edge — likely dead, spam, or placeholder channels keyword search "
-            f"happened to return; treat as noise. {low_conf.get('comment_author_only', 0)} "
-            "entered the dataset only because someone commented on a video already in it — "
-            "this run's own discovery methods (keyword search, featured/recommended graph "
-            "walk) never independently surfaced them. Some are genuinely relevant channels "
-            "that just got in by a side door (a real creator's own comment, say); this flag "
-            "is about *how* the channel was found, not whether it belongs — confirm before "
-            "citing.",
-            "",
-        ]
+    tree = tree or {}
+    branch_counts = branch_counts or {}
+    rows = sorted(
+        (
+            (n.get("label") or nid, n.get("depth", 0), branch_counts.get(nid, {}))
+            for nid, n in tree.items()
+            if branch_counts.get(nid, {}).get("channels")
+        ),
+        key=lambda r: (r[1], -r[2].get("channels", 0)),
+    )
+    for label, _depth, counts in rows:
+        lines.append(f"| {label} | {counts.get('channels', 0):,} | {counts.get('videos', 0):,} |")
+    lines.append("")
 
     lines += ["## Summary", "", report.get("summary", "_No summary._"), "", "## Findings", ""]
     for finding in findings:
         lines.append(f"### [{finding.get('grade', '?').upper()}] {finding.get('claim', '')}")
-        evidence = finding.get("evidence", {})
-        if evidence:
-            lines.append(
-                f"*Corroboration: {evidence.get('corroboration', '?')} · "
-                f"consistency: {evidence.get('consistency', '?')} · "
-                f"recency: {evidence.get('recency', '?')} · "
-                f"effect size: {evidence.get('effect_size', '?')}*"
-            )
         supporting = finding.get("supporting_channel_ids", [])
         if supporting:
             by_id = {c["channel_id"]: c.get("title") or c["channel_id"] for c in channels}
@@ -395,10 +406,16 @@ def _report_markdown(
             lines.append(f"Channels: {', '.join(named)}")
         lines.append("")
 
-    cannot = report.get("cannot_determine", [])
-    if cannot:
-        lines += ["## What this data cannot tell you", ""]
-        lines += [f"- {item}" for item in cannot]
+    recs = report.get("recommendations", {}) or {}
+    do_items = recs.get("do", [])
+    avoid_items = recs.get("avoid", [])
+    if do_items:
+        lines += ["## What to do", ""]
+        lines += [f"- {item}" for item in do_items]
+        lines.append("")
+    if avoid_items:
+        lines += ["## What to avoid", ""]
+        lines += [f"- {item}" for item in avoid_items]
         lines.append("")
 
     lines += [
@@ -407,26 +424,16 @@ def _report_markdown(
         "| Channel | Subscribers | Found by | Engagement | Uploads/30d |",
         "|---|---:|---|---:|---:|",
     ]
-    # Not filtered: zero_subscribers channels never rank near the top of a
-    # subscriber-sorted list anyway, and comment_author_only can include
-    # genuinely major channels (Coin Bureau, Altcoin Daily) whose only
-    # weakness is HOW this run found them, not whether they're real —
-    # hiding them would remove signal, not noise. Marked instead.
     for ch in channels[:20]:
         eng = ch.get("engagement_rate")
         cad = ch.get("cadence")
-        method = ch.get("discovery_method", "?")
-        if "comment_author_only" in ch.get("low_confidence_reasons", []):
-            method += " ⚠"
         lines.append(
             f"| {ch.get('title') or ch['channel_id']} "
             f"| {ch.get('subscriber_count') or 0:,} "
-            f"| {method} "
+            f"| {ch.get('discovery_method', '?')} "
             f"| {eng if eng is not None else '—'} "
             f"| {cad if cad is not None else '—'} |"
         )
-    if any("comment_author_only" in ch.get("low_confidence_reasons", []) for ch in channels[:20]):
-        lines += ["", "⚠ found only via a comment on another video — see the caveat above."]
     lines.append("")
     return "\n".join(lines)
 
@@ -1210,6 +1217,7 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
     channels = flag_low_confidence_channels(channels, comment_author_only_ids)
     videos = fetch_run_videos(run_id, cfg.export_max_videos)
     edges = fetch_run_edges(run_id)
+    branch_counts = fetch_run_branch_counts(run_id)
 
     low_confidence_counts = {
         "zero_subscribers": sum(1 for c in channels if "zero_subscribers" in c["low_confidence_reasons"]),
@@ -1227,6 +1235,7 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
         "channels": len(channels),
         "videos": len(videos),
         "discovery_edges": len(edges),
+        "sub_niches_covered": sum(1 for c in branch_counts.values() if c.get("channels")),
         "attribution": _attribution_counts(channels),
         # Two contamination sources a report should discount, not treat as
         # findings: zero-subscriber channels keyword search happened to
@@ -1283,7 +1292,8 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
     )
     if report:
         (out / "report.md").write_text(
-            _report_markdown(report, manifest, channels), encoding="utf-8"
+            _report_markdown(report, manifest, channels, branch_counts, tree),
+            encoding="utf-8",
         )
 
     logger.info(
