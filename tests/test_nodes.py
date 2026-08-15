@@ -909,8 +909,8 @@ class TestSynthesize:
             {"node_id": "n1", "node_label": "N1", "narrative_summary": "summary 1", "key_patterns": []},
         ]
         with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_complete.return_value = _fake_llm_response(SYNTHESIS_CAUSAL)
             recent = datetime.now(timezone.utc) - timedelta(days=30)
             mock_vids.return_value = [
@@ -932,8 +932,8 @@ class TestSynthesize:
             {"node_id": "n1", "node_label": "N1", "narrative_summary": "summary", "key_patterns": []},
         ]
         with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
             recent = datetime.now(timezone.utc) - timedelta(days=30)
             mock_vids.return_value = [
@@ -959,8 +959,8 @@ class TestSynthesize:
             {"node_id": "n1", "node_label": "N1", "narrative_summary": "summary", "key_patterns": []},
         ]
         with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
             recent = datetime.now(timezone.utc) - timedelta(days=30)
             mock_vids.return_value = [
@@ -987,8 +987,8 @@ class TestSynthesize:
         ]
         base_state["branch_compactions"] = []
         with patch("src.nodes.synthesize.complete_tier", side_effect=calls) as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_vids.return_value = []
             mock_ch.return_value = []
             result = await synthesize(base_state)
@@ -1000,8 +1000,8 @@ class TestSynthesize:
     async def test_weak_claim_from_single_channel_remains_weak(self, base_state):
         base_state["branch_compactions"] = []
         with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_complete.return_value = _fake_llm_response(SYNTHESIS_WEAK_ONLY)
             recent = datetime.now(timezone.utc) - timedelta(days=10)
             mock_vids.return_value = [
@@ -1016,6 +1016,51 @@ class TestSynthesize:
         for f in findings:
             if len(f.get("supporting_channel_ids", [])) == 1:
                 assert f["grade"] != "strong", f"Single-channel finding got grade={f['grade']}: {f['claim']}"
+
+
+class TestSynthesizeIsRunScoped:
+    """channels and videos are deliberately NOT run-scoped tables (see
+    export.py's own docstring) — a channel found in a Finance run and a
+    Legal run is one shared row. store.get_all_videos() has no channel_ids
+    filter, so it returns every video ever discovered by every run sharing
+    this database. Caught live: a Finance report cited "32,485 videos"
+    against a run that had tagged under a thousand — synthesize was
+    drafting findings from the whole cross-run pool, not this run's slice.
+    fetch_run_channels/fetch_run_videos (category_tags-scoped, the same
+    functions export.py uses) must be the data source whenever a run_id
+    is available."""
+
+    @pytest.mark.asyncio
+    async def test_uses_run_scoped_fetchers_when_run_id_present(self, base_state):
+        base_state["branch_compactions"] = []
+        with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch, \
+             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_global_vids:
+            mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
+            mock_vids.return_value = []
+            mock_ch.return_value = []
+            await synthesize(base_state)
+
+        mock_vids.assert_called_once_with("run-001", 1_000_000)
+        mock_ch.assert_called_once_with("run-001")
+        mock_global_vids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_global_store_only_without_a_run_id(self, base_state):
+        base_state["branch_compactions"] = []
+        base_state["run_id"] = ""
+        with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_global_vids, \
+             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_global_ch:
+            mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
+            mock_global_vids.return_value = []
+            mock_global_ch.return_value = []
+            await synthesize(base_state)
+
+        mock_global_vids.assert_called_once()
+        mock_vids.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1115,8 +1160,8 @@ class TestIntegrationSynthesizeGrading:
             {"node_id": "n1", "node_label": "N1", "narrative_summary": "summary", "key_patterns": []},
         ]
         with patch("src.nodes.synthesize.complete_tier") as mock_complete, \
-             patch("src.nodes.store.StoreAccess.get_all_videos", new_callable=AsyncMock) as mock_vids, \
-             patch("src.nodes.store.StoreAccess.get_channels_by_ids", new_callable=AsyncMock) as mock_ch:
+             patch("src.export.fetch_run_videos") as mock_vids, \
+             patch("src.export.fetch_run_channels") as mock_ch:
             mock_complete.return_value = _fake_llm_response(SYNTHESIS_VALID_JSON)
             recent = datetime.now(timezone.utc) - timedelta(days=30)
             mock_vids.return_value = [

@@ -186,16 +186,31 @@ async def synthesize(state: dict) -> dict:
     compactions = state.get("branch_compactions", [])
     errors: list[dict] = []
 
-    store = get_store()
-    videos = await store.get_all_videos()
-    all_channel_ids = list(
-        set(
-            v.get("channel_id", "")
-            for v in videos
-            if v.get("channel_id")
+    # Scoped to THIS run via category_tags, never the raw store. channels
+    # and videos are deliberately not run-scoped tables — a channel found
+    # in the Finance run and the Legal run is one row either way — so
+    # store.get_all_videos() (no channel_ids filter) returns every video
+    # ever discovered by every run sharing this database, and the report
+    # synthesizes findings, subscriber counts, and "total channels/videos"
+    # figures from that entire cross-run pool. Caught when a Finance report
+    # cited "32,485 videos" against a run that had tagged under a thousand.
+    if run_id:
+        import asyncio
+
+        from src.export import fetch_run_channels, fetch_run_videos
+
+        channels = await asyncio.to_thread(fetch_run_channels, run_id)
+        videos = await asyncio.to_thread(fetch_run_videos, run_id, 1_000_000)
+    else:
+        # No run_id to scope by (should not happen in practice — every
+        # run_pipeline invocation stamps one) — fall back to the
+        # cross-run store rather than producing an empty report.
+        store = get_store()
+        videos = await store.get_all_videos()
+        all_channel_ids = list(
+            set(v.get("channel_id", "") for v in videos if v.get("channel_id"))
         )
-    )
-    channels = await store.get_channels_by_ids(all_channel_ids)
+        channels = await store.get_channels_by_ids(all_channel_ids)
     store_data = {"videos": videos, "channels": channels}
 
     compactions_text = json.dumps(
