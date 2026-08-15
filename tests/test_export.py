@@ -310,3 +310,16 @@ class TestReportMarkdown:
         assert "A strong claim." in md
         assert "## Top channels by audience" in md
         assert "Graham Stephan" in md
+
+    def test_channel_titles_with_embedded_newlines_dont_break_markdown(self):
+        """A real YouTube channel title can contain a literal newline —
+        observed live, it split a "Channels: ..." list item into a stray
+        blank line and a dangling continuation ("Blockchain basics\\n\\n,
+        Tax.Crypto")."""
+        report = _report(findings=[{
+            "grade": "moderate", "claim": "A claim.", "supporting_channel_ids": ["c1"],
+        }])
+        channels = [{"channel_id": "c1", "title": "Blockchain basics\n\n", "subscriber_count": 100}]
+        md = _report_markdown(report, _manifest(), channels, {}, {})
+        assert "Channels: Blockchain basics" in md
+        assert "\n\n," not in md
