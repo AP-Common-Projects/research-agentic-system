@@ -191,6 +191,15 @@ async def synthesize(state: dict) -> dict:
     compactions = state.get("branch_compactions", [])
     errors: list[dict] = []
 
+    async def _load_global_store_data() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        store = get_store()
+        global_videos = await store.get_all_videos()
+        all_channel_ids = list(
+            set(v.get("channel_id", "") for v in global_videos if v.get("channel_id"))
+        )
+        global_channels = await store.get_channels_by_ids(all_channel_ids)
+        return global_channels, global_videos
+
     # Scoped to THIS run via category_tags, never the raw store. channels
     # and videos are deliberately not run-scoped tables — a channel found
     # in the Finance run and the Legal run is one row either way — so
@@ -202,20 +211,20 @@ async def synthesize(state: dict) -> dict:
     if run_id:
         import asyncio
 
+        from psycopg import OperationalError
+        from psycopg_pool import PoolTimeout
         from src.export import fetch_run_channels, fetch_run_videos
 
-        channels = await asyncio.to_thread(fetch_run_channels, run_id)
-        videos = await asyncio.to_thread(fetch_run_videos, run_id, 1_000_000)
+        try:
+            channels = await asyncio.to_thread(fetch_run_channels, run_id)
+            videos = await asyncio.to_thread(fetch_run_videos, run_id, 1_000_000)
+        except (PoolTimeout, OperationalError, OSError):
+            channels, videos = await _load_global_store_data()
     else:
         # No run_id to scope by (should not happen in practice — every
         # run_pipeline invocation stamps one) — fall back to the
         # cross-run store rather than producing an empty report.
-        store = get_store()
-        videos = await store.get_all_videos()
-        all_channel_ids = list(
-            set(v.get("channel_id", "") for v in videos if v.get("channel_id"))
-        )
-        channels = await store.get_channels_by_ids(all_channel_ids)
+        channels, videos = await _load_global_store_data()
     store_data = {"videos": videos, "channels": channels}
 
     compactions_text = json.dumps(
