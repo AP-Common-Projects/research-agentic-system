@@ -1198,11 +1198,18 @@ _EXCEL_COLUMN_WIDTHS = {
 def _excel_safe(value: Any) -> Any:
     """openpyxl rejects tz-aware datetimes outright (Excel has no timezone
     type) — Postgres TIMESTAMPTZ columns come back as tz-aware datetime
-    objects via psycopg, so every date column here needs this. Everything
-    else passes through except lists, which get joined for a flat cell.
+    objects via psycopg, so every date column here needs this. It also
+    raises IllegalCharacterError on control characters in strings — real
+    YouTube channel descriptions carry them (caught live, exporting
+    Legal's real data). Everything else passes through except lists,
+    which get joined for a flat cell.
     """
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
     if isinstance(value, list):
-        return "; ".join(value)
+        value = "; ".join(value)
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
     if isinstance(value, datetime) and value.tzinfo is not None:
         return value.replace(tzinfo=None)
     return value

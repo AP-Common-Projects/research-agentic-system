@@ -396,6 +396,15 @@ class TestBuildExcelWorkbook:
         wb.save(tmp_path / "test.xlsx")  # must not raise
         assert (tmp_path / "test.xlsx").exists()
 
+    def test_control_characters_in_descriptions_dont_crash_the_workbook_save(self, tmp_path):
+        """Real channel descriptions can carry raw control characters —
+        openpyxl raises IllegalCharacterError outright rather than
+        stripping them. Caught live exporting Legal's real data."""
+        channels = [{"channel_id": "c1", "description": "Helping Attorneys\x0bBuild Their Practice"}]
+        wb = build_excel_workbook(_manifest(), channels, [], {}, {})
+        wb.save(tmp_path / "test.xlsx")  # must not raise
+        assert (tmp_path / "test.xlsx").exists()
+
 
 class TestExcelSafe:
     def test_strips_timezone_from_datetimes(self):
@@ -415,3 +424,9 @@ class TestExcelSafe:
         assert _excel_safe("plain string") == "plain string"
         assert _excel_safe(42) == 42
         assert _excel_safe(None) is None
+
+    def test_strips_illegal_control_characters_from_strings(self):
+        """openpyxl raises IllegalCharacterError outright on these — caught
+        live exporting a real Legal channel description containing one."""
+        assert _excel_safe("before\x0bafter") == "beforeafter"
+        assert _excel_safe("clean text") == "clean text"
