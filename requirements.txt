@@ -12,3 +12,4 @@ structlog>=24.0.0
 tenacity>=9.0.0
 uuid7>=0.1.0
 networkx>=3.0
+openpyxl>=3.1.0
