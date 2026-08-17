@@ -6,10 +6,14 @@ graph exceeds export_max_graph_nodes.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from src.export import (
     _category,
+    _excel_safe,
     _ref_label,
     _report_markdown,
+    build_excel_workbook,
     build_graph_payload,
     flag_low_confidence_channels,
 )
@@ -323,3 +327,91 @@ class TestReportMarkdown:
         md = _report_markdown(report, _manifest(), channels, {}, {})
         assert "Channels: Blockchain basics" in md
         assert "\n\n," not in md
+
+
+class TestBuildExcelWorkbook:
+    def test_has_the_three_expected_sheets(self):
+        wb = build_excel_workbook(_manifest(), [], [], {}, {})
+        assert wb.sheetnames == ["Overview", "Channels", "Outlier Videos"]
+
+    def test_overview_sheet_has_totals(self):
+        manifest = _manifest(channels=706, videos=500, sub_niches_covered=3)
+        wb = build_excel_workbook(manifest, [], [], {}, {})
+        ws = wb["Overview"]
+        values = [cell.value for row in ws.iter_rows() for cell in row]
+        assert 706 in values
+        assert 500 in values
+        assert 3 in values
+
+    def test_overview_sheet_lists_sub_niche_breakdown(self):
+        tree = {
+            "root": {"label": "Finance", "depth": 0},
+            "a": {"label": "Crypto", "depth": 1},
+        }
+        branch_counts = {"root": {"channels": 300, "videos": 9000}, "a": {"channels": 100, "videos": 3000}}
+        wb = build_excel_workbook(_manifest(), [], [], branch_counts, tree)
+        ws = wb["Overview"]
+        values = [cell.value for row in ws.iter_rows() for cell in row]
+        assert "Finance" in values
+        assert "Crypto" in values
+
+    def test_channels_sheet_has_header_and_data_rows(self):
+        channels = [
+            {"channel_id": "c1", "title": "Channel One", "subscriber_count": 1000},
+            {"channel_id": "c2", "title": "Channel Two", "subscriber_count": 2000},
+        ]
+        wb = build_excel_workbook(_manifest(), channels, [], {}, {})
+        ws = wb["Channels"]
+        assert [c.value for c in ws[1]] == ["channel_id", "title", "subscriber_count"]
+        assert [c.value for c in ws[2]] == ["c1", "Channel One", 1000]
+        assert [c.value for c in ws[3]] == ["c2", "Channel Two", 2000]
+
+    def test_list_valued_cells_are_joined_not_left_as_python_lists(self):
+        channels = [{"channel_id": "c1", "low_confidence_reasons": ["zero_subscribers", "comment_author_only"]}]
+        wb = build_excel_workbook(_manifest(), channels, [], {}, {})
+        ws = wb["Channels"]
+        assert ws[2][1].value == "zero_subscribers; comment_author_only"
+
+    def test_outlier_videos_sheet_has_header_and_data_rows(self):
+        videos = [{"video_id": "v1", "title": "A Video", "view_count": 5000}]
+        wb = build_excel_workbook(_manifest(), [], videos, {}, {})
+        ws = wb["Outlier Videos"]
+        assert [c.value for c in ws[1]] == ["video_id", "title", "view_count"]
+        assert [c.value for c in ws[2]] == ["v1", "A Video", 5000]
+
+    def test_empty_sheets_dont_crash(self):
+        wb = build_excel_workbook(_manifest(), [], [], {}, {})
+        assert wb["Channels"]["A1"].value == "(no rows)"
+        assert wb["Outlier Videos"]["A1"].value == "(no rows)"
+
+    def test_tz_aware_datetimes_dont_crash_the_workbook_save(self, tmp_path):
+        """Postgres TIMESTAMPTZ columns come back as tz-aware datetimes via
+        psycopg — openpyxl raises TypeError on those outright (Excel has no
+        timezone type). Caught live: exporting Finance's real
+        first_seen_at/published_at columns crashed the save() call."""
+        published = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        channels = [{"channel_id": "c1", "first_seen_at": published}]
+        videos = [{"video_id": "v1", "published_at": published}]
+        wb = build_excel_workbook(_manifest(), channels, videos, {}, {})
+        wb.save(tmp_path / "test.xlsx")  # must not raise
+        assert (tmp_path / "test.xlsx").exists()
+
+
+class TestExcelSafe:
+    def test_strips_timezone_from_datetimes(self):
+        aware = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        result = _excel_safe(aware)
+        assert result.tzinfo is None
+        assert result == datetime(2026, 1, 1)
+
+    def test_naive_datetimes_pass_through_unchanged(self):
+        naive = datetime(2026, 1, 1)
+        assert _excel_safe(naive) == naive
+
+    def test_joins_lists(self):
+        assert _excel_safe(["a", "b"]) == "a; b"
+
+    def test_other_types_pass_through(self):
+        assert _excel_safe("plain string") == "plain string"
+        assert _excel_safe(42) == 42
+        assert _excel_safe(None) is None
