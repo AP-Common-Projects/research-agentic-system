@@ -57,6 +57,18 @@ def _create_retry_decorator():
     )
 
 
+def _parse_duration_seconds(iso: str) -> int:
+    """Parse ISO 8601 duration (PT1H2M3S) to total seconds."""
+    import re
+
+    if not iso:
+        return 0
+    match = re.match(r"PT(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+)S)?", iso)
+    if not match:
+        return 0
+    return int(match.group("h") or 0) * 3600 + int(match.group("m") or 0) * 60 + int(match.group("s") or 0)
+
+
 class YouTubeAPIClient:
     BASE_URL = "https://www.googleapis.com/youtube/v3"
 
@@ -207,7 +219,7 @@ class YouTubeAPIClient:
             data = self._get(
                 "videos",
                 {
-                    "part": "snippet,statistics",
+                    "part": "snippet,statistics,contentDetails",
                     "id": ",".join(batch),
                     "maxResults": 50,
                 },
@@ -229,11 +241,17 @@ class YouTubeAPIClient:
             "view_count": int(stats.get("viewCount", 0)),
             "published_at": snippet.get("publishedAt", ""),
             "thumbnails": snippet.get("thumbnails", {}),
+            # v3: geo/language enrichment fields from YouTube's self-report
+            "country": snippet.get("country", ""),
+            "default_language": snippet.get("defaultLanguage", ""),
+            "default_audio_language": snippet.get("defaultAudioLanguage", ""),
         }
 
     def _parse_video(self, item: dict) -> dict:
         snippet = item.get("snippet", {})
         stats = item.get("statistics", {})
+        content = item.get("contentDetails", {})
+        duration_str = content.get("duration", "PT0S")
         return {
             "video_id": item.get("id", ""),
             "channel_id": snippet.get("channelId", ""),
@@ -243,4 +261,8 @@ class YouTubeAPIClient:
             "like_count": int(stats.get("likeCount", 0)),
             "comment_count": int(stats.get("commentCount", 0)),
             "published_at": snippet.get("publishedAt", ""),
+            "tags": snippet.get("tags", []),
+            "default_language": snippet.get("defaultLanguage", ""),
+            "default_audio_language": snippet.get("defaultAudioLanguage", ""),
+            "duration_seconds": _parse_duration_seconds(duration_str),
         }

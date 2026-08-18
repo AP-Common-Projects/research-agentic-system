@@ -70,6 +70,56 @@ def compute_velocity(videos: list[dict]) -> float:
     return round(recent_mean / older_mean, 4)
 
 
+def compute_evergreen_score(video_published: Any, video_views: int) -> float:
+    if not video_views or video_views <= 0:
+        return 0.0
+    pub = _parse_timestamp(video_published)
+    if not pub:
+        return 0.0
+    days = max(1, (datetime.now(timezone.utc) - pub).total_seconds() / 86400)
+    return round(min(100.0, max(0.0, video_views / days)), 2)
+
+
+def compute_engagement_score_components(channel_signals: dict, cfg) -> tuple[float, dict]:
+    components = {
+        "views_per_sub": channel_signals.get("views_per_sub_ratio"),
+        "comment_rate": channel_signals.get("comment_rate"),
+        "like_rate": channel_signals.get("like_rate"),
+        "upload_consistency": channel_signals.get("upload_consistency_score"),
+    }
+    weights = {
+        "views_per_sub": cfg.weight_views_per_sub,
+        "comment_rate": cfg.weight_comment_rate,
+        "like_rate": cfg.weight_like_rate,
+        "upload_consistency": cfg.weight_upload_consistency,
+    }
+    available = {k: w for k, w in weights.items() if components.get(k) is not None}
+    if not available:
+        return 0.0, {"reason": "no visible components", "components": components}
+    total_w = sum(available.values())
+    if total_w == 0:
+        return 0.0, {"reason": "zero total weight", "components": components}
+    norm = {k: w / total_w for k, w in available.items()}
+    score = sum(max(0.0, min(1.0, float(components.get(k, 0) or 0))) * norm[k] for k in norm)
+    return round(score * 100, 2), {"components": components, "weights": norm, "score": round(score * 100, 2)}
+
+
+def compute_subscriber_floor(channel: dict, cfg) -> tuple[bool, str | None]:
+    subs = int(channel.get("subscriber_count") or 0)
+    if subs >= cfg.subscriber_floor:
+        return True, None
+    vids = channel.get("_videos", [])
+    for v in vids:
+        v_views = int(v.get("view_count") or 0)
+        if v_views >= subs * cfg.breakout_video_multiplier and subs > 0:
+            return True, f"breakout_video_{cfg.breakout_video_multiplier}x_subs"
+    if vids and subs > 0:
+        avg_views = sum(int(v.get("view_count") or 0) for v in vids) / len(vids)
+        if avg_views >= subs * cfg.thriving_views_per_sub_multiplier:
+            return True, f"views_per_video_{cfg.thriving_views_per_sub_multiplier}x_subs"
+    return False, None
+
+
 def _parse_timestamp(ts: Any) -> datetime | None:
     """Accept what the store actually hands back, not just what the API does.
 
@@ -111,7 +161,7 @@ def score_signals(state: dict) -> dict:
     from collections import defaultdict
 
     from src.db.connection import get_connection, put_connection
-    from src.tools.dedup import fetch_videos_by_channels, persist_channel_signals
+    from src.tools.dedup import fetch_videos_by_channels, persist_channel_signals, persist_channel_v3, persist_video_v3
     from src.state import ErrorRecord, NodeLog
 
     channel_ids = state.get("discovered_channel_ids", [])
@@ -146,6 +196,66 @@ def score_signals(state: dict) -> dict:
                     }
                     persist_channel_signals(conn, ch_id, signals)
                     scored += 1
+
+                    # v3: evergreen, engagement, floor, news
+                    cfg = get_config().harness
+                    run_id = state.get("run_id", "")
+                    v3_fields: dict[str, Any] = {}
+                    v3_vid_updates: dict[str, dict] = {}
+
+                    # Evergreen: per-video score, then channel-level rollup
+                    vid_evergreens: list[float] = []
+                    for v in vids:
+                        eg = compute_evergreen_score(v.get("published_at"), int(v.get("view_count") or 0))
+                        vid_evergreens.append(eg)
+                        v3_vid_updates[v.get("video_id", "")] = {
+                            "evergreen_score": eg,
+                            "views_per_day_since_publish": round(
+                                int(v.get("view_count") or 0) / max(1,
+                                    (datetime.now(timezone.utc) - (_parse_timestamp(v.get("published_at")) or datetime.now(timezone.utc))).total_seconds() / 86400
+                                ), 2
+                            ) if v.get("published_at") else 0,
+                        }
+                    if vid_evergreens:
+                        subs_weighted = sum(
+                            eg * int(v.get("view_count") or 0) for v, eg in zip(vids, vid_evergreens)
+                        ) / max(1, sum(int(v.get("view_count") or 0) for v in vids))
+                        v3_fields["evergreen_score"] = round(subs_weighted, 2)
+                    else:
+                        v3_fields["evergreen_score"] = 0.0
+
+                    # Engagement composite
+                    sigs = {
+                        "views_per_sub_ratio": (sum(int(v.get("view_count") or 0) for v in vids) / max(1, len(vids))) / max(1, channel.get("subscriber_count", 0)),
+                        "comment_rate": sum(int(v.get("comment_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
+                        "like_rate": sum(int(v.get("like_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
+                        "upload_consistency_score": signals.get("upload_consistency_score", 0),
+                    }
+                    eng_score, eng_components = compute_engagement_score_components(sigs, cfg)
+                    v3_fields["engagement_score"] = eng_score
+                    v3_fields["engagement_components"] = eng_components
+
+                    # News derivation
+                    uploads_per_week = signals.get("cadence", 0) / 30 * 7 if signals.get("cadence") else 0
+                    if v3_fields["evergreen_score"] < cfg.news_evergreen_threshold and uploads_per_week > cfg.news_high_frequency_threshold:
+                        v3_fields["is_likely_news"] = True
+                    elif v3_fields["evergreen_score"] >= cfg.news_evergreen_threshold:
+                        v3_fields["is_likely_news"] = False
+
+                    # Subscriber floor
+                    ch_data = {**channel, "_videos": vids}
+                    meets, reason = compute_subscriber_floor(ch_data, cfg)
+                    v3_fields["meets_subscriber_floor"] = meets
+                    if reason:
+                        v3_fields["floor_override_reason"] = reason
+
+                    try:
+                        persist_channel_v3(conn, ch_id, run_id, v3_fields)
+                        for vid_id, vf in v3_vid_updates.items():
+                            if vid_id:
+                                persist_video_v3(conn, vid_id, vf)
+                    except Exception:
+                        pass
                 except Exception as exc:
                     errors.append(
                         ErrorRecord(
