@@ -279,6 +279,7 @@ def score_signals(state: dict) -> dict:
 
     return {
         "next_action": "continue",
+        "floor_gate_eligible": scored > 0,
         "errors": errors,
         "node_logs": [
             NodeLog(
