@@ -346,6 +346,9 @@ def ensure_schema() -> None:
     conn = get_connection()
     try:
         create_schema(conn)
+        from src.db.seeds import seed_taxonomies
+
+        seed_taxonomies(conn)
     finally:
         put_connection(conn)
 
