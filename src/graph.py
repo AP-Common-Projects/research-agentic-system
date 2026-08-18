@@ -24,8 +24,13 @@ from src.tools.saturation import check_saturation
 from src.tools.graph_clustering import cluster_branch
 from src.nodes.taxonomy import build_taxonomy
 from src.nodes.compact_branch import compact_branch
-from src.nodes.synthesize import synthesize
+from src.nodes.finalize_dataset import finalize_dataset
 from src.nodes.select_next_node import select_next_node
+from src.nodes.resolve_geo_language import resolve_geo_language
+from src.nodes.extract_metadata_signals import extract_metadata_signals
+from src.nodes.score_thumbnail_signals import score_thumbnail_signals
+from src.nodes.classify_channel import classify_channel
+from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 
 
 def _logged(fn, name: str):
@@ -104,7 +109,7 @@ def route_after_scan(state: dict) -> list[str]:
 
 
 #: Terminal states. Once a run-level ceiling has tripped, the only legal
-#: destination is synthesis — see route_after_select.
+#: destination is finalize_dataset — see route_after_select.
 _TERMINAL_ACTIONS = {"all_done", "budget_exhausted"}
 
 
@@ -121,7 +126,7 @@ def route_after_select(state: dict) -> list[str]:
     is bounded only by the recursion limit.
     """
     if state.get("next_action") in _TERMINAL_ACTIONS:
-        return ["synthesize"]
+        return ["finalize_dataset"]
     return ["keyword_search", "graph_walk"]
 
 
@@ -130,26 +135,26 @@ def route_after_saturation(state: dict) -> list[str]:
     if action == "expand_deeper":
         return ["select_next_node"]
     if action == "budget_exhausted":
-        # Circuit breakers skip community detection: the run is over, paying
-        # for a deterministic (but store-reading) node on the way out is
-        # pointless. Route straight to compaction for whatever's in flight.
         return ["compact_branch"]
-    # "saturated" — run community detection first; its candidates decide
-    # whether compaction is judging a split or writing a leaf summary.
     return ["cluster_branch"]
 
 
 def route_after_compaction(state: dict) -> list[str]:
-    # A tripped ceiling ends the run at synthesis; it must not re-enter node
-    # selection, which is what would put a proposed node back on the frontier.
     if state.get("next_action") == "budget_exhausted":
-        return ["synthesize"]
+        return ["finalize_dataset"]
     tree = state.get("tree", {})
     has_pending = any(n.get("status") == "pending" for n in tree.values())
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
     if has_pending or has_proposed:
         return ["select_next_node"]
-    return ["synthesize"]
+    return ["finalize_dataset"]
+
+
+def route_after_floor(state: dict) -> list[str]:
+    """v3 floor gate: only qualifying channels get expensive LLM/vision."""
+    if state.get("floor_gate_eligible"):
+        return ["score_thumbnail_signals"]
+    return ["check_saturation"]
 
 
 def build_graph() -> StateGraph:
@@ -161,11 +166,16 @@ def build_graph() -> StateGraph:
     graph.add_node("keyword_search", _logged(_guarded(keyword_search, "keyword_search"), "keyword_search"))
     graph.add_node("graph_walk", _logged(_guarded(graph_walk, "graph_walk"), "graph_walk"))
     graph.add_node("hydrate_metadata", _logged(hydrate_metadata, "hydrate_metadata"))
+    graph.add_node("resolve_geo_language", _logged(resolve_geo_language, "resolve_geo_language"))
+    graph.add_node("extract_metadata_signals", _logged(extract_metadata_signals, "extract_metadata_signals"))
     graph.add_node("score_signals", _logged(score_signals, "score_signals"))
+    graph.add_node("score_thumbnail_signals", _logged(score_thumbnail_signals, "score_thumbnail_signals"))
+    graph.add_node("classify_channel", _logged(classify_channel, "classify_channel"))
     graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
     graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
-    graph.add_node("synthesize", _logged(synthesize, "synthesize"))
+    graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
+    graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
     graph.add_edge(START, "scan_niches")
     graph.add_conditional_edges(
@@ -175,26 +185,33 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "select_next_node",
         route_after_select,
-        ["keyword_search", "graph_walk", "synthesize"],
+        ["keyword_search", "graph_walk", "finalize_dataset"],
     )
     graph.add_edge("keyword_search", "hydrate_metadata")
     graph.add_edge("graph_walk", "hydrate_metadata")
-    graph.add_edge("hydrate_metadata", "score_signals")
-    graph.add_edge("score_signals", "check_saturation")
+    graph.add_edge("hydrate_metadata", "resolve_geo_language")
+    graph.add_edge("resolve_geo_language", "extract_metadata_signals")
+    graph.add_edge("extract_metadata_signals", "score_signals")
+    # v3 floor gate: expensive LLM/vision only for qualifying channels
+    graph.add_conditional_edges(
+        "score_signals", route_after_floor,
+        ["score_thumbnail_signals", "check_saturation"],
+    )
+    graph.add_edge("score_thumbnail_signals", "classify_channel")
+    graph.add_edge("classify_channel", "check_saturation")
     graph.add_conditional_edges(
         "check_saturation",
         route_after_saturation,
         ["select_next_node", "cluster_branch", "compact_branch"],
     )
-    # cluster_branch always hands off to compact_branch — a single
-    # deterministic predecessor, single successor, no fan-out.
     graph.add_edge("cluster_branch", "compact_branch")
     graph.add_conditional_edges(
         "compact_branch",
         route_after_compaction,
-        ["select_next_node", "synthesize"],
+        ["select_next_node", "extract_success_failure_factors", "finalize_dataset"],
     )
-    graph.add_edge("synthesize", END)
+    graph.add_edge("extract_success_failure_factors", "finalize_dataset")
+    graph.add_edge("finalize_dataset", END)
 
     return graph
 
@@ -280,5 +297,24 @@ async def run_pipeline(
     if state_overrides:
         initial.update(state_overrides)
 
+    # v3: initialize harness_runs row at run start
+    try:
+        from src.db.connection import get_connection, put_connection
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO harness_runs (run_id, thread_id, seed_niches, config_snapshot) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (run_id) DO NOTHING",
+                (run_id, thread_id, candidate_niches, json.dumps({"profile": get_config().harness.profile})),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            put_connection(conn)
+    except Exception:
+        pass
+
+    import json
     final = await app.ainvoke(initial, config=config)
     return migrate_state(final)

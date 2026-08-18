@@ -473,7 +473,7 @@ class TestBudgetExhaustedIsTerminal:
     discovery round via compaction -> proposed node -> select -> fan-out."""
 
     def test_select_routes_to_synthesis_when_budget_exhausted(self):
-        assert route_after_select({"next_action": "budget_exhausted"}) == ["synthesize"]
+        assert route_after_select({"next_action": "budget_exhausted"}) == ["finalize_dataset"]
 
     def test_select_still_fans_out_normally(self):
         assert route_after_select({"next_action": "expand_deeper"}) == [
@@ -485,7 +485,7 @@ class TestBudgetExhaustedIsTerminal:
             "next_action": "budget_exhausted",
             "tree": {"n": {"status": "pending", "proposed_new_nodes": [{"label": "x"}]}},
         }
-        assert route_after_compaction(state) == ["synthesize"]
+        assert route_after_compaction(state) == ["finalize_dataset"]
 
     def test_compaction_still_continues_normally(self):
         state = {
