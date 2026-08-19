@@ -163,6 +163,7 @@ def score_signals(state: dict) -> dict:
     from src.db.connection import get_connection, put_connection
     from src.tools.dedup import fetch_videos_by_channels, persist_channel_signals, persist_channel_v3, persist_video_v3
     from src.state import ErrorRecord, NodeLog
+    from src.config import get_config
 
     channel_ids = state.get("discovered_channel_ids", [])
     thread_id = state.get("thread_id", "")
@@ -203,6 +204,18 @@ def score_signals(state: dict) -> dict:
                     v3_fields: dict[str, Any] = {}
                     v3_vid_updates: dict[str, dict] = {}
 
+                    # Look up channel metadata from store for subscriber count
+                    ch_subs = 0
+                    try:
+                        cur2 = conn.cursor()
+                        cur2.execute("SELECT subscriber_count FROM channels WHERE channel_id = %s", (ch_id,))
+                        crow = cur2.fetchone()
+                        cur2.close()
+                        if crow:
+                            ch_subs = int(crow[0] or 0)
+                    except Exception:
+                        pass
+
                     # Evergreen: per-video score, then channel-level rollup
                     vid_evergreens: list[float] = []
                     for v in vids:
@@ -226,7 +239,7 @@ def score_signals(state: dict) -> dict:
 
                     # Engagement composite
                     sigs = {
-                        "views_per_sub_ratio": (sum(int(v.get("view_count") or 0) for v in vids) / max(1, len(vids))) / max(1, channel.get("subscriber_count", 0)),
+                        "views_per_sub_ratio": (sum(int(v.get("view_count") or 0) for v in vids) / max(1, len(vids))) / max(1, ch_subs),
                         "comment_rate": sum(int(v.get("comment_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
                         "like_rate": sum(int(v.get("like_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
                         "upload_consistency_score": signals.get("upload_consistency_score", 0),
@@ -243,7 +256,7 @@ def score_signals(state: dict) -> dict:
                         v3_fields["is_likely_news"] = False
 
                     # Subscriber floor
-                    ch_data = {**channel, "_videos": vids}
+                    ch_data = {"subscriber_count": ch_subs, "_videos": vids}
                     meets, reason = compute_subscriber_floor(ch_data, cfg)
                     v3_fields["meets_subscriber_floor"] = meets
                     if reason:

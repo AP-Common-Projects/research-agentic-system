@@ -9,3 +9,4 @@
 | [0005](0005-openrouter-routing.md) | Route the DeepSeek/Kimi cascade through OpenRouter | Accepted | 2026-08-13 |
 | [0006](0006-cost-governors-and-two-tier-walk.md) | Cost governors and a two-tier graph walk | Accepted | 2026-08-14 |
 | [0007](0007-adaptive-depth.md) | Graph-driven, evidence-gated adaptive depth | Accepted | 2026-08-14 |
+| [0008](0008-dataset-first-output.md) | Dataset-first — remove report generation, expand the structured store as the sole deliverable | Accepted | 2026-08-18 |
