@@ -1097,7 +1097,9 @@ class TestSignalsActuallyGetComputed:
         with patch("src.db.connection.get_connection"), \
              patch("src.db.connection.put_connection"), \
              patch("src.tools.dedup.fetch_videos_by_channels", return_value=rows), \
-             patch("src.tools.dedup.persist_channel_signals", side_effect=fake_persist):
+             patch("src.tools.dedup.persist_channel_signals", side_effect=fake_persist), \
+             patch("src.tools.dedup.persist_channel_v3"), \
+             patch("src.tools.dedup.persist_video_v3"):
             result = score_signals({"discovered_channel_ids": ["UC_a"], "thread_id": "t"})
 
         assert persisted, "signals must actually reach the store"
@@ -1124,7 +1126,9 @@ class TestSignalsActuallyGetComputed:
         with patch("src.db.connection.get_connection"), \
              patch("src.db.connection.put_connection"), \
              patch("src.tools.dedup.fetch_videos_by_channels", return_value=rows), \
-             patch("src.tools.dedup.persist_channel_signals", side_effect=flaky):
+             patch("src.tools.dedup.persist_channel_signals", side_effect=flaky), \
+             patch("src.tools.dedup.persist_channel_v3"), \
+             patch("src.tools.dedup.persist_video_v3"):
             result = score_signals(
                 {"discovered_channel_ids": ["UC_ok", "UC_bad"], "thread_id": "t"}
             )
