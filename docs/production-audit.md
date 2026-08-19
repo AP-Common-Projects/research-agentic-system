@@ -114,3 +114,18 @@ Only the categories that change under ADR-0007:
   matching the Phase 2 convention applied to the other nodes.
 
 Everything else in the nine-category checklist is unaffected.
+
+## v3 dataset-first delta (18 Aug 2026)
+
+- Cost guardrails — new per-qualifying-channel LLM/vision cost from
+  classify_channel and score_thumbnail_signals. The existing budget_limit_usd
+  circuit breaker covers all nodes; per-model spend tracking (spend_by_model)
+  is in state but not yet populated node-by-node — Phase 5 calibration item.
+- Schema evolution — migrate_state v7 verified: v6 checkpoint fields
+  defaulted correctly, lineage_root_id and cluster fields preserved.
+- Observability — all five new enrichment nodes emit NodeLog on every return
+  path, matching the Phase 2 convention.
+- Idempotency — classify_channel's version guard tested via
+  classifier_model IS NULL OR classifier_model != 'deepseek-v4-pro'
+  filter in the eligibility query. Resume runs skip already-classified
+  channels without re-billing.
