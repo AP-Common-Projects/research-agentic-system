@@ -147,7 +147,8 @@ def route_after_compaction(state: dict) -> list[str]:
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
     if has_pending or has_proposed:
         return ["select_next_node"]
-    return ["finalize_dataset"]
+    # All branches done — extract factors before finalization
+    return ["extract_success_failure_factors"]
 
 
 def route_after_floor(state: dict) -> list[str]:
