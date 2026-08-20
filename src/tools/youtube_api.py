@@ -57,6 +57,27 @@ def _create_retry_decorator():
     )
 
 
+def _parse_duration_seconds(iso: str) -> int | None:
+    """Parse ISO 8601 duration (PT1H2M3S) to total seconds.
+
+    Returns None, not 0, when YouTube didn't report a fixed-length duration
+    at all — livestreams and 24/7 rebroadcasts report contentDetails.duration
+    as "P0D" (a date-only ISO 8601 duration, no "T" time component, so it
+    never matches this pattern) rather than a real PT... value. Collapsing
+    that into 0 read as "a zero-second video" on a 64-episode compilation or
+    an ongoing livestream — a real value with no reasonable interpretation,
+    not a missing one. None lets the caller leave the field genuinely blank.
+    """
+    import re
+
+    if not iso:
+        return None
+    match = re.match(r"PT(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+)S)?", iso)
+    if not match:
+        return None
+    return int(match.group("h") or 0) * 3600 + int(match.group("m") or 0) * 60 + int(match.group("s") or 0)
+
+
 class YouTubeAPIClient:
     BASE_URL = "https://www.googleapis.com/youtube/v3"
 
@@ -207,7 +228,7 @@ class YouTubeAPIClient:
             data = self._get(
                 "videos",
                 {
-                    "part": "snippet,statistics",
+                    "part": "snippet,statistics,contentDetails",
                     "id": ",".join(batch),
                     "maxResults": 50,
                 },
@@ -229,11 +250,17 @@ class YouTubeAPIClient:
             "view_count": int(stats.get("viewCount", 0)),
             "published_at": snippet.get("publishedAt", ""),
             "thumbnails": snippet.get("thumbnails", {}),
+            # v3: geo/language enrichment fields from YouTube's self-report
+            "country": snippet.get("country", ""),
+            "default_language": snippet.get("defaultLanguage", ""),
+            "default_audio_language": snippet.get("defaultAudioLanguage", ""),
         }
 
     def _parse_video(self, item: dict) -> dict:
         snippet = item.get("snippet", {})
         stats = item.get("statistics", {})
+        content = item.get("contentDetails", {})
+        duration_str = content.get("duration", "PT0S")
         return {
             "video_id": item.get("id", ""),
             "channel_id": snippet.get("channelId", ""),
@@ -243,4 +270,13 @@ class YouTubeAPIClient:
             "like_count": int(stats.get("likeCount", 0)),
             "comment_count": int(stats.get("commentCount", 0)),
             "published_at": snippet.get("publishedAt", ""),
+            "tags": snippet.get("tags", []),
+            "default_language": snippet.get("defaultLanguage", ""),
+            "default_audio_language": snippet.get("defaultAudioLanguage", ""),
+            "duration_seconds": _parse_duration_seconds(duration_str),
+            # score_thumbnail_signals reads this back out of videos.extra —
+            # it was never extracted here at all, so thumbnail vision
+            # scoring had nothing to work with regardless of how the
+            # persistence layer stored it.
+            "thumbnails": snippet.get("thumbnails", {}),
         }

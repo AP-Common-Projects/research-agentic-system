@@ -125,8 +125,193 @@ MIGRATIONS: list[str] = [
        DROP CONSTRAINT IF EXISTS category_tags_entity_type_entity_id_tree_node_id_key""",
     """CREATE UNIQUE INDEX IF NOT EXISTS category_tags_entity_node_run_key
        ON category_tags (entity_type, entity_id, tree_node_id, run_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_category_tags_run
-       ON category_tags (run_id)""",
+"""CREATE INDEX IF NOT EXISTS idx_category_tags_run
+        ON category_tags (run_id)""",
+
+    # === v3 dataset-first schema — run metadata (plan §4.1) ===
+    """CREATE TABLE IF NOT EXISTS harness_runs (
+        run_id              TEXT PRIMARY KEY,
+        thread_id           TEXT NOT NULL,
+        started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        completed_at        TIMESTAMPTZ,
+        status              TEXT NOT NULL DEFAULT 'running'
+                              CHECK (status IN ('running','completed','failed','partial')),
+        seed_niches         TEXT[] NOT NULL DEFAULT '{}',
+        channels_discovered INT NOT NULL DEFAULT 0,
+        channels_enriched   INT NOT NULL DEFAULT 0,
+        videos_persisted    INT NOT NULL DEFAULT 0,
+        total_cost_usd      NUMERIC(10,4) NOT NULL DEFAULT 0,
+        cost_by_model       JSONB,
+        config_snapshot     JSONB NOT NULL DEFAULT '{}'::jsonb,
+        schema_version      INT NOT NULL DEFAULT 7,
+        notes               TEXT
+    )""",
+    """COMMENT ON TABLE harness_runs IS 'One row per invocation. Every enrichment row elsewhere traces back to a run_id.'""",
+
+    # === v3 taxonomy — controlled vocabularies (plan §4.2) ===
+    """CREATE TABLE IF NOT EXISTS niche_taxonomy (
+        niche_id            SERIAL PRIMARY KEY,
+        niche_name          TEXT NOT NULL UNIQUE,
+        parent_category     TEXT NOT NULL,
+        description         TEXT NOT NULL,
+        is_evergreen_prone  BOOLEAN,
+        proposed_by_run_id  TEXT,
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""",
+    """COMMENT ON TABLE niche_taxonomy IS 'Canonical niche labels. LLM-proposed niches are fuzzy-matched here before insert.'""",
+    """CREATE TABLE IF NOT EXISTS success_factor_taxonomy (
+        factor_id     SERIAL PRIMARY KEY,
+        factor_code   TEXT NOT NULL UNIQUE,
+        factor_label  TEXT NOT NULL,
+        factor_group  TEXT NOT NULL CHECK (factor_group IN
+                       ('title_metadata','thumbnail','format','cadence','niche_fit','monetization','other')),
+        description   TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS failure_factor_taxonomy (
+        factor_id     SERIAL PRIMARY KEY,
+        factor_code   TEXT NOT NULL UNIQUE,
+        factor_label  TEXT NOT NULL,
+        factor_group  TEXT NOT NULL CHECK (factor_group IN
+                       ('title_metadata','thumbnail','format','cadence','niche_fit','monetization','other')),
+        description   TEXT NOT NULL
+    )""",
+    """COMMENT ON TABLE success_factor_taxonomy IS 'Metadata-tier only for v3 — no content-level factors.'""",
+
+    # === v3 channels ALTER — geo, language, format, niche, scoring (plan §4.3) ===
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS country_code TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS country_source TEXT NOT NULL DEFAULT 'unknown'
+       CHECK (country_source IN ('self_reported','inferred_language','inferred_llm','unknown'))""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS country_confidence NUMERIC(3,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS region TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_us_market BOOLEAN NOT NULL DEFAULT FALSE""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS primary_language_code TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS audience_language_code TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS language_confidence NUMERIC(3,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS face_status TEXT NOT NULL DEFAULT 'unknown'
+       CHECK (face_status IN ('face','faceless','mixed','unknown'))""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS dominant_format TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS primary_niche_id INT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS meets_subscriber_floor BOOLEAN NOT NULL DEFAULT FALSE""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS floor_override_reason TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS evergreen_score NUMERIC(5,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_likely_news BOOLEAN""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS engagement_score NUMERIC(5,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS entertainment_score NUMERIC(5,2)""",
+    """COMMENT ON COLUMN channels.entertainment_score IS 'LLM-classified 0-100: personality/drama/humor/story-driven vs pure information delivery. A documentary or true-crime channel can score high if narratively engaging, not just factual.'""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS engagement_components JSONB""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS priority_score NUMERIC(8,3)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS has_affiliate_signal BOOLEAN""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS has_sponsor_signal BOOLEAN""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS has_membership_signal BOOLEAN""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS uploads_per_week_avg NUMERIC(6,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS upload_consistency_score NUMERIC(3,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS data_completeness_score NUMERIC(3,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS missing_required_fields TEXT[] NOT NULL DEFAULT '{}'""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS classifier_model TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS classifier_version TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS first_discovered_run_id TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_enriched_run_id TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()""",
+
+    # === v3 videos ALTER — description, tags, hashtags, evergreen, title patterns (plan §4.3) ===
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS description TEXT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS tags TEXT[]""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS hashtags TEXT[]""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration_seconds INT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS is_short BOOLEAN""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS language_code TEXT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS evergreen_score NUMERIC(5,2)""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS is_likely_news BOOLEAN""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS views_per_day_since_publish NUMERIC(12,2)""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_char_count INT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_word_count INT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_has_number BOOLEAN""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_is_question BOOLEAN""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_capitalization TEXT
+        CHECK (title_capitalization IN ('title_case','sentence_case','all_caps','mixed_emphasis'))""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_emoji_count INT""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_has_face BOOLEAN""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_text_density TEXT
+        CHECK (thumbnail_text_density IN ('none','low','medium','high'))""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS data_completeness_score NUMERIC(3,2)""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS missing_required_fields TEXT[] NOT NULL DEFAULT '{}'""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_description TEXT""",
+    """COMMENT ON COLUMN videos.video_description IS 'One-sentence LLM description of what the video is likely about, from its title — the video-level analogue of niche_taxonomy.description, meant for reading across many titles at once to spot success/failure patterns without watching each video.'""",
+
+    # === v3 longitudinal + factor tables (plan §4.4-4.6) ===
+    """CREATE TABLE IF NOT EXISTS channel_snapshots (
+        snapshot_id        BIGSERIAL PRIMARY KEY,
+        channel_id          TEXT NOT NULL,
+        run_id               TEXT NOT NULL,
+        snapshot_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        subscriber_count     BIGINT,
+        total_view_count     BIGINT,
+        total_video_count    INT,
+        UNIQUE (channel_id, run_id)
+    )""",
+    """COMMENT ON TABLE channel_snapshots IS 'One row per channel per run. Growth-rate detection and true evergreen measurement both need history a single run cannot produce.'""",
+    """CREATE TABLE IF NOT EXISTS channel_success_factors (
+        id                   BIGSERIAL PRIMARY KEY,
+        channel_id            TEXT NOT NULL,
+        factor_id             INT NOT NULL,
+        evidence_grade        TEXT NOT NULL CHECK (evidence_grade IN ('strong','moderate','weak')),
+        corroboration_count   INT NOT NULL,
+        compared_against      TEXT,
+        evidence_note         TEXT,
+        extracted_by_run_id   TEXT NOT NULL,
+        classifier_model      TEXT NOT NULL,
+        extracted_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (channel_id, factor_id, extracted_by_run_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS channel_failure_factors (
+        id                   BIGSERIAL PRIMARY KEY,
+        channel_id            TEXT NOT NULL,
+        factor_id             INT NOT NULL,
+        evidence_grade        TEXT NOT NULL CHECK (evidence_grade IN ('strong','moderate','weak')),
+        corroboration_count   INT NOT NULL,
+        compared_against      TEXT,
+        evidence_note         TEXT,
+        extracted_by_run_id   TEXT NOT NULL,
+        classifier_model      TEXT NOT NULL,
+        extracted_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (channel_id, factor_id, extracted_by_run_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS channel_niches (
+        channel_id    TEXT NOT NULL,
+        niche_id       INT NOT NULL,
+        is_primary     BOOLEAN NOT NULL DEFAULT FALSE,
+        confidence     NUMERIC(3,2),
+        PRIMARY KEY (channel_id, niche_id)
+    )""",
+
+    # === v3 indexes (plan §4.7) ===
+    """CREATE INDEX IF NOT EXISTS idx_channels_country ON channels(country_code)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_us_market ON channels(is_us_market) WHERE is_us_market = TRUE""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_niche ON channels(primary_niche_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_evergreen ON channels(evergreen_score)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_engagement ON channels(engagement_score)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_entertainment ON channels(entertainment_score)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_floor ON channels(meets_subscriber_floor) WHERE meets_subscriber_floor = TRUE""",
+    """CREATE INDEX IF NOT EXISTS idx_videos_published ON videos(published_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_success_factors_channel ON channel_success_factors(channel_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_success_factors_factor ON channel_success_factors(factor_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_failure_factors_channel ON channel_failure_factors(channel_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_failure_factors_factor ON channel_failure_factors(factor_id)""",
+
+    # === category correction: the client's "Legal" category was a naming
+    # mistake — they mean Crime (True Crime, Body Cam, Interrogation), not
+    # legal education/court explainers. seed_taxonomies() only INSERTs
+    # ON CONFLICT DO NOTHING, so a category rename in seeds.py alone never
+    # touches rows a prior ensure_schema() call already wrote — this
+    # migration is what actually moves them. Idempotent: a no-op once
+    # every legal_crime row has already been renamed.
+    """UPDATE niche_taxonomy SET parent_category = 'crime' WHERE parent_category = 'legal_crime'""",
+    # legal_education doesn't fit the crime/entertainment framing the
+    # client actually asked for. Only ever removed if nothing real
+    # references it — never destroys a genuine classification.
+    """DELETE FROM niche_taxonomy
+       WHERE niche_name = 'legal_education'
+         AND NOT EXISTS (SELECT 1 FROM channel_niches WHERE niche_id = niche_taxonomy.niche_id)""",
 ]
 
 
@@ -181,6 +366,9 @@ def ensure_schema() -> None:
     conn = get_connection()
     try:
         create_schema(conn)
+        from src.db.seeds import seed_taxonomies
+
+        seed_taxonomies(conn)
     finally:
         put_connection(conn)
 

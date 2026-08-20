@@ -110,3 +110,45 @@ def lineage_spend_delta(state: dict, lineage_root_id: str | None, cost_usd: floa
     if not lineage_root_id or not cost_usd or cost_usd <= 0:
         return {}
     return {lineage_root_id: round(float(cost_usd), 8)}
+
+
+def priority_score(node: dict, tree: dict[str, dict], cfg) -> float:
+    """v3: weighted priority for select_next_node traversal order (§6.5).
+
+    Higher = explored earlier. Components: cluster distinctness (how clean
+    the parent split was), evidence richness (how many refs discovered),
+    US-market affinity, engagement potential, and a depth penalty.
+    """
+    distinctness = node.get("cluster_distinctness_score") or 0.0
+    if distinctness is None:
+        distinctness = 0.0
+    richness = len(node.get("_kw_refs") or {}) + len(node.get("_gw_refs") or {})
+    max_richness = max(
+        (len(n.get("_kw_refs") or {}) + len(n.get("_gw_refs") or {}))
+        for n in tree.values()
+    ) or 1
+    richness_norm = richness / max_richness
+
+    depth = node.get("depth", 0)
+    max_depth = max((n.get("depth", 0) for n in tree.values()), default=1) or 1
+
+    return (
+        cfg.priority_weight_cluster_distinctness * min(1.0, distinctness / 5.0)
+        + cfg.priority_weight_evidence_richness * richness_norm
+        + cfg.priority_weight_us_market * 0.5  # placeholder — set during enrichment
+        + cfg.priority_weight_engagement_potential * 0.5  # placeholder
+        - cfg.priority_weight_depth_penalty * (depth / max_depth)
+    )
+
+
+def weighted_budget_share(
+    lineage_weights: dict[str, float], budget_limit_usd: float, lineage_id: str
+) -> float | None:
+    """v3: priority-weighted budget share instead of equal split (§6.6)."""
+    if not lineage_weights or budget_limit_usd <= 0:
+        return None
+    total = sum(lineage_weights.values())
+    weight = lineage_weights.get(lineage_id, 0.0)
+    if total == 0 or weight == 0:
+        return budget_limit_usd / max(1, len(lineage_weights))
+    return budget_limit_usd * (weight / total)

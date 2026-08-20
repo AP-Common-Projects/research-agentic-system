@@ -133,6 +133,36 @@ async def test_end_to_end_run_completes():
         patch("src.nodes.taxonomy.complete_tier") as mock_tax,
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
+        # v3 added three more LLM-calling nodes to the graph
+        # (classify_channel, score_thumbnail_signals,
+        # extract_success_failure_factors) but this file's mocks were never
+        # extended to cover them. Harmless against an empty test DB — but
+        # their eligibility queries carry no run_id scoping at all, so
+        # against a shared dev DB that already has real floor-qualifying
+        # channels sitting in it (from any live run), an unmocked
+        # complete_tier here means the test suite silently starts making
+        # real, slow LLM calls and can hang for tens of minutes.
+        patch("src.nodes.classify_channel.complete_tier") as mock_classify,
+        patch("src.nodes.score_thumbnail_signals.complete_tier") as mock_thumb,
+        patch("src.nodes.extract_success_failure_factors.complete_tier") as mock_factors,
+        patch("src.nodes.describe_video_titles.complete_tier") as mock_describe,
+        # complete_tier being mocked stops the LLM-cost/hang risk, but these
+        # six nodes' own eligibility queries are unscoped SELECTs against
+        # the whole `channels` table — against a shared dev DB, that means
+        # a "harmless" test run reads AND WRITES real production rows.
+        # Confirmed live: channel_success_factors/channel_failure_factors
+        # for real Crime-run channels accumulated 235 stray rows tagged
+        # "run-test"/"run-test-budget" from exactly this test, silently
+        # corrupting a real deliverable's eligibility queries. Each of
+        # these nodes already has its own `except: return early` around
+        # get_connection() — raising here routes them through that
+        # existing, designed-in path instead of touching the real DB.
+        patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.tools.graph_walk.BrightDataClient") as mock_bd,
         patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
@@ -142,6 +172,10 @@ async def test_end_to_end_run_completes():
         _mock_llm_tier(mock_tax)
         _mock_llm_tier(mock_comp)
         _mock_llm_tier(mock_syn)
+        _mock_llm_tier(mock_classify)
+        _mock_llm_tier(mock_thumb)
+        _mock_llm_tier(mock_factors)
+        _mock_llm_tier(mock_describe)
         _mock_bright_data(mock_bd)
         _mock_bright_data(mock_bd_kw)
         _mock_youtube(mock_yt)
@@ -161,12 +195,12 @@ async def test_end_to_end_run_completes():
         )
 
     assert final.get("selected_niche") == "test_niche"
-    assert final.get("final_report") is not None
-    report = final["final_report"]
-    assert report.get("niche") == "test_niche"
-    assert len(report.get("findings", [])) >= 1
-    grades = {f.get("grade") for f in report.get("findings", [])}
-    assert grades <= {"strong", "moderate", "weak"}
+    # v3 is dataset-first: synthesize()/final_report were retired by
+    # ADR-0008 in favor of finalize_dataset writing deterministic rollups
+    # straight to the store. A completed run is proven by finalize_dataset
+    # actually firing at the end of the graph, not by a report payload.
+    node_names = {log.get("node_name") for log in final.get("node_logs", [])}
+    assert "finalize_dataset" in node_names
 
 
 @pytest.mark.asyncio
@@ -175,6 +209,36 @@ async def test_graph_terminates_with_budget_breaker():
         patch("src.nodes.taxonomy.complete_tier") as mock_tax,
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
+        # v3 added three more LLM-calling nodes to the graph
+        # (classify_channel, score_thumbnail_signals,
+        # extract_success_failure_factors) but this file's mocks were never
+        # extended to cover them. Harmless against an empty test DB — but
+        # their eligibility queries carry no run_id scoping at all, so
+        # against a shared dev DB that already has real floor-qualifying
+        # channels sitting in it (from any live run), an unmocked
+        # complete_tier here means the test suite silently starts making
+        # real, slow LLM calls and can hang for tens of minutes.
+        patch("src.nodes.classify_channel.complete_tier") as mock_classify,
+        patch("src.nodes.score_thumbnail_signals.complete_tier") as mock_thumb,
+        patch("src.nodes.extract_success_failure_factors.complete_tier") as mock_factors,
+        patch("src.nodes.describe_video_titles.complete_tier") as mock_describe,
+        # complete_tier being mocked stops the LLM-cost/hang risk, but these
+        # six nodes' own eligibility queries are unscoped SELECTs against
+        # the whole `channels` table — against a shared dev DB, that means
+        # a "harmless" test run reads AND WRITES real production rows.
+        # Confirmed live: channel_success_factors/channel_failure_factors
+        # for real Crime-run channels accumulated 235 stray rows tagged
+        # "run-test"/"run-test-budget" from exactly this test, silently
+        # corrupting a real deliverable's eligibility queries. Each of
+        # these nodes already has its own `except: return early` around
+        # get_connection() — raising here routes them through that
+        # existing, designed-in path instead of touching the real DB.
+        patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
+        patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.tools.graph_walk.BrightDataClient") as mock_bd,
         patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
@@ -184,6 +248,10 @@ async def test_graph_terminates_with_budget_breaker():
         _mock_llm_tier(mock_tax)
         _mock_llm_tier(mock_comp)
         _mock_llm_tier(mock_syn)
+        _mock_llm_tier(mock_classify)
+        _mock_llm_tier(mock_thumb)
+        _mock_llm_tier(mock_factors)
+        _mock_llm_tier(mock_describe)
         _mock_bright_data(mock_bd)
         _mock_bright_data(mock_bd_kw)
         _mock_youtube(mock_yt)
@@ -203,7 +271,12 @@ async def test_graph_terminates_with_budget_breaker():
             state_overrides={"budget_spent_usd": 999999.0},
         )
 
-    assert final.get("final_report") is not None
+    # The budget breaker trips downstream of check_saturation, but every
+    # route out of it (route_after_select/route_after_compaction) still
+    # funnels to finalize_dataset before END — the circuit breaker ends
+    # the run cleanly, it doesn't just abandon it.
+    node_names = {log.get("node_name") for log in final.get("node_logs", [])}
+    assert "finalize_dataset" in node_names
 
 
 @pytest.mark.asyncio
@@ -214,7 +287,10 @@ async def test_no_niches_terminates_gracefully():
         thread_id="thread-empty",
     )
     assert final.get("selected_niche") == ""
-    assert final.get("final_report") is None
+    # route_after_scan sends an empty candidate set straight to END —
+    # finalize_dataset is never reached, unlike the budget-breaker case.
+    node_names = {log.get("node_name") for log in final.get("node_logs", [])}
+    assert "finalize_dataset" not in node_names
 
 
 def test_graph_compiles_and_has_expected_nodes():
@@ -227,11 +303,16 @@ def test_graph_compiles_and_has_expected_nodes():
         "keyword_search",
         "graph_walk",
         "hydrate_metadata",
+        "resolve_geo_language",
+        "extract_metadata_signals",
         "score_signals",
+        "score_thumbnail_signals",
+        "classify_channel",
         "check_saturation",
         "cluster_branch",
         "compact_branch",
-        "synthesize",
+        "extract_success_failure_factors",
+        "finalize_dataset",
     }
     assert expected <= set(nodes)
     assert "analyze_deep" not in nodes

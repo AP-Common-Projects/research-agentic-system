@@ -248,3 +248,172 @@ def persist_category_tags(
     finally:
         cur.close()
     return written
+
+
+# ---------------------------------------------------------------------------
+# v3 dataset-first enrichment upserts
+# ---------------------------------------------------------------------------
+
+def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) -> None:
+    """Update v3 enrichment columns for a channel that already exists.
+
+    Every real caller (hydrate_metadata, resolve_geo_language,
+    classify_channel, extract_success_failure_factors) only ever enriches a
+    channel row persist_channel() already created — so this is a plain
+    UPDATE, not an upsert. That matters beyond style: an
+    `INSERT ... ON CONFLICT DO UPDATE` still has to construct a full
+    candidate row and satisfy every NOT NULL constraint on it (title,
+    discovery_method) even when the conflict means it will just become an
+    UPDATE — Postgres validates NOT NULL at tuple construction, before
+    conflict resolution runs. A prior version of this function used that
+    pattern, which (once a separate column-naming bug in the same query was
+    fixed) raised NotNullViolation on every real call. UPDATE only touches
+    the columns named in SET, so it never hits that trap, and correctly
+    no-ops on a channel_id that doesn't exist rather than inventing a
+    half-populated row.
+
+    first_discovered_run_id is set only if it's still NULL (the original
+    discovering run should never be overwritten); last_enriched_run_id
+    always moves to this run.
+    """
+    setters: list[str] = []
+    params: dict[str, Any] = {"channel_id": channel_id, "run_id": run_id}
+    v3_cols = {
+        "country_code", "country_source", "country_confidence", "region",
+        "is_us_market", "primary_language_code", "audience_language_code",
+        "language_confidence", "face_status", "dominant_format",
+        "primary_niche_id", "meets_subscriber_floor", "floor_override_reason",
+        "evergreen_score", "is_likely_news", "engagement_score",
+        "entertainment_score",
+        "engagement_components", "priority_score", "has_affiliate_signal",
+        "has_sponsor_signal", "has_membership_signal", "uploads_per_week_avg",
+        "upload_consistency_score", "data_completeness_score",
+        "missing_required_fields", "classifier_model", "classifier_version",
+    }
+    for col in v3_cols:
+        if col in fields:
+            setters.append(f"{col} = %(p_{col})s")
+            value = fields[col]
+            if isinstance(value, dict):
+                # engagement_components is JSONB — psycopg cannot adapt a
+                # raw dict to a placeholder ("cannot adapt type 'dict'"),
+                # so every score_signals call silently failed to persist
+                # any v3 field for a channel that had a components dict,
+                # discarding evergreen_score/engagement_score/
+                # meets_subscriber_floor along with it (the whole UPDATE is
+                # one statement, so one bad column fails the entire call).
+                from psycopg.types.json import Json
+
+                value = Json(value)
+            params[f"p_{col}"] = value
+    if not setters:
+        return
+    sql = f"""
+        UPDATE channels SET
+            {', '.join(setters)},
+            first_discovered_run_id = COALESCE(first_discovered_run_id, %(run_id)s),
+            last_enriched_run_id = %(run_id)s,
+            updated_at = now()
+        WHERE channel_id = %(channel_id)s
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_channel_snapshot(conn: Any, channel_id: str, run_id: str,
+                              subscriber_count: int, view_count: int, video_count: int) -> None:
+    """One row per channel per run — longitudinal tracking."""
+    sql = """
+        INSERT INTO channel_snapshots (channel_id, run_id, subscriber_count, total_view_count, total_video_count)
+        VALUES (%(channel_id)s, %(run_id)s, %(subs)s, %(views)s, %(vids)s)
+        ON CONFLICT (channel_id, run_id) DO NOTHING
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, {
+            "channel_id": channel_id,
+            "run_id": run_id,
+            "subs": subscriber_count or 0,
+            "views": view_count or 0,
+            "vids": video_count or 0,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_video_v3(conn: Any, video_id: str, fields: dict) -> None:
+    """Update v3 enrichment columns for a video that already exists.
+
+    Same reasoning as persist_channel_v3: every real caller enriches a row
+    persist_video() already created, so this is a plain UPDATE rather than
+    an INSERT ... ON CONFLICT DO UPDATE — which would have to satisfy
+    channel_id/title NOT NULL on a candidate row it never actually needs to
+    insert.
+    """
+    setters: list[str] = []
+    params: dict[str, Any] = {"video_id": video_id}
+    v3_cols = {
+        "hashtags", "duration_seconds", "is_short", "language_code",
+        "evergreen_score", "is_likely_news", "views_per_day_since_publish",
+        "title_char_count", "title_word_count", "title_has_number",
+        "title_is_question", "title_capitalization", "title_emoji_count",
+        "thumbnail_has_face", "thumbnail_text_density",
+        "data_completeness_score", "missing_required_fields",
+        "video_description",
+    }
+    for col in v3_cols:
+        if col in fields:
+            setters.append(f"{col} = %(p_{col})s")
+            params[f"p_{col}"] = fields[col]
+    if not setters:
+        return
+    sql = f"""
+        UPDATE videos SET {', '.join(setters)}
+        WHERE video_id = %(video_id)s
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_channel_niche_membership(conn: Any, channel_id: str, niche_id: int,
+                                      is_primary: bool = False, confidence: float | None = None) -> None:
+    """Record a channel's canonical niche membership."""
+    sql = """
+        INSERT INTO channel_niches (channel_id, niche_id, is_primary, confidence)
+        VALUES (%(channel_id)s, %(niche_id)s, %(primary)s, %(conf)s)
+        ON CONFLICT (channel_id, niche_id) DO UPDATE SET
+            is_primary = EXCLUDED.is_primary,
+            confidence = EXCLUDED.confidence
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, {
+            "channel_id": channel_id,
+            "niche_id": niche_id,
+            "primary": is_primary,
+            "conf": confidence,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
