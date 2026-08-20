@@ -1510,6 +1510,61 @@ def _write_excel_sheet(ws, rows: list[dict[str, Any]]) -> None:
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
 
 
+def build_excel_workbook(
+    manifest: dict[str, Any],
+    channels: list[dict[str, Any]],
+    outlier_videos: list[dict[str, Any]],
+    branch_counts: dict[str, dict[str, Any]],
+    tree: dict[str, dict[str, Any]],
+):
+    """Legacy workbook shape kept for tests and older callers.
+
+    Three sheets only: Overview, Channels, Outlier Videos.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Overview"
+    ws.append([manifest.get("niche", "Untitled"), "research data export"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([])
+    ws.append(["Channels", manifest.get("channels", 0)])
+    ws.append(["Videos", manifest.get("videos", 0)])
+    ws.append(["Sub-niches covered", manifest.get("sub_niches_covered", 0)])
+    ws.append(["Generated", str(manifest.get("exported_at", ""))[:19]])
+    ws.append([])
+
+    if tree and branch_counts:
+        ws.append(["Sub-niche", "Depth", "Channels", "Videos"])
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+        rows: list[tuple[int, int, str, int, int]] = []
+        for node_id, node in tree.items():
+            counts = branch_counts.get(node_id)
+            if not counts:
+                continue
+            rows.append(
+                (
+                    int(node.get("depth", 0) or 0),
+                    -int(counts.get("channels", 0) or 0),
+                    str(node.get("label", node_id)),
+                    int(counts.get("channels", 0) or 0),
+                    int(counts.get("videos", 0) or 0),
+                )
+            )
+        for depth, __, label, channels_n, videos_n in sorted(rows):
+            ws.append([label, depth, channels_n, videos_n])
+
+    for col, width in (("A", 28), ("B", 20), ("C", 14), ("D", 14)):
+        ws.column_dimensions[col].width = width
+
+    _write_excel_sheet(wb.create_sheet("Channels"), channels)
+    _write_excel_sheet(wb.create_sheet("Outlier Videos"), outlier_videos)
+    return wb
+
+
 def build_excel_workbook_v3(
     manifest: dict[str, Any],
     channels: list[dict[str, Any]],
