@@ -1184,6 +1184,150 @@ def _interactive_graph_html(payload: dict[str, Any], manifest: dict[str, Any]) -
     return html
 
 
+_EXCEL_COLUMN_WIDTHS = {
+    "channel_id": 14, "video_id": 14, "title": 42, "channel_title": 28,
+    "description": 60, "subscriber_count": 14, "view_count": 12,
+    "like_count": 10, "comment_count": 12, "outlier_score": 12,
+    "discovery_method": 14, "first_seen_at": 20, "published_at": 20,
+    "engagement_rate": 14, "cadence": 10, "velocity": 10,
+    "low_confidence": 12, "low_confidence_reasons": 30,
+    "sub_niche": 28, "channels": 10, "videos": 10,
+}
+
+
+def _excel_safe(value: Any) -> Any:
+    """openpyxl rejects tz-aware datetimes outright (Excel has no timezone
+    type) — Postgres TIMESTAMPTZ columns come back as tz-aware datetime
+    objects via psycopg, so every date column here needs this. It also
+    raises IllegalCharacterError on control characters in strings — real
+    YouTube channel descriptions carry them (caught live, exporting
+    Legal's real data). Everything else passes through except lists,
+    which get joined for a flat cell.
+    """
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    if isinstance(value, list):
+        value = "; ".join(value)
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def _write_excel_sheet(ws, rows: list[dict[str, Any]]) -> None:
+    from openpyxl.styles import Font
+
+    if not rows:
+        ws.append(["(no rows)"])
+        return
+    headers = list(rows[0].keys())
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for row in rows:
+        ws.append([_excel_safe(row.get(h)) for h in headers])
+    for i, h in enumerate(headers, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = (
+            _EXCEL_COLUMN_WIDTHS.get(h, 16)
+        )
+
+
+def build_excel_workbook(
+    manifest: dict[str, Any],
+    channels: list[dict[str, Any]],
+    videos: list[dict[str, Any]],
+    branch_counts: dict[str, dict[str, int]],
+    tree: dict[str, dict[str, Any]],
+):
+    """A workbook version of the same extracted data as channels.csv /
+    outlier_videos.csv — one file, multiple sheets, for a reader who wants
+    Excel rather than a folder of CSVs. Three sheets: an overview (totals
+    plus the same per-sub-niche breakdown report.md shows), the full
+    channel list, and the top-N outlier videos.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+
+    ws = wb.active
+    ws.title = "Overview"
+    ws.append([manifest.get("niche", "Untitled"), "research data export"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([])
+    ws.append(["Channels", manifest.get("channels", 0)])
+    ws.append(["Videos", manifest.get("videos", 0)])
+    ws.append(["Sub-niches covered", manifest.get("sub_niches_covered", 0)])
+    ws.append(["Generated", manifest.get("exported_at", "")[:19]])
+    ws.append([])
+    branch_rows = [
+        {"sub_niche": n.get("label") or nid, "channels": c.get("channels", 0), "videos": c.get("videos", 0)}
+        for nid, n in tree.items()
+        if (c := branch_counts.get(nid, {})).get("channels")
+    ]
+    branch_rows.sort(key=lambda r: -r["channels"])
+    if branch_rows:
+        ws.append(["Sub-niche", "Channels", "Videos"])
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+        for r in branch_rows:
+            ws.append([r["sub_niche"], r["channels"], r["videos"]])
+    for col, width in (("A", 32), ("B", 18), ("C", 12)):
+        ws.column_dimensions[col].width = width
+
+    _write_excel_sheet(wb.create_sheet("Channels"), channels)
+    _write_excel_sheet(wb.create_sheet("Outlier Videos"), videos)
+
+    return wb
+
+
+def export_excel(run_id: str, thread_id: str | None, out_path: Path) -> Path:
+    """Write just the Excel workbook for a run to an arbitrary path —
+    same underlying data as export_run(), a different delivery format and
+    location, for handing to someone who wants Excel specifically.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    state: dict[str, Any] = {}
+    report: dict[str, Any] = {}
+    if thread_id:
+        try:
+            from src.api.server import _load_checkpoint
+
+            state = _load_checkpoint(thread_id) or {}
+            report = state.get("final_report") or {}
+        except Exception as exc:  # pragma: no cover - environment dependent
+            logger.warning("export_excel_checkpoint_unavailable", run_id=run_id, error=str(exc))
+
+    cfg = get_config().harness
+    channels = fetch_run_channels(run_id)
+    comment_author_only_ids = fetch_run_comment_author_only_channel_ids(run_id)
+    channels = flag_low_confidence_channels(channels, comment_author_only_ids)
+    videos = fetch_run_videos(run_id, cfg.export_max_videos)
+    branch_counts = fetch_run_branch_counts(run_id)
+    tree = state.get("tree", {}) or {}
+
+    channels_rows = [
+        {**c, "low_confidence_reasons": "; ".join(c["low_confidence_reasons"])}
+        for c in channels
+    ]
+
+    manifest = {
+        "niche": report.get("niche") or state.get("selected_niche", ""),
+        "channels": len(channels),
+        "videos": len(videos),
+        "sub_niches_covered": sum(1 for c in branch_counts.values() if c.get("channels")),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    wb = build_excel_workbook(manifest, channels_rows, videos, branch_counts, tree)
+    wb.save(out_path)
+    logger.info("run_exported_excel", run_id=run_id, path=str(out_path))
+    return out_path
+
+
 def export_run(run_id: str, thread_id: str | None = None) -> Path:
     """Write one run's deliverable. Returns the directory."""
     from src.api import runs as runs_mod
@@ -1327,7 +1471,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export a run's research output")
     parser.add_argument("run_id")
     parser.add_argument("--thread-id", default=None)
+    parser.add_argument(
+        "--excel",
+        metavar="PATH",
+        help="Write only an Excel workbook (.xlsx) to this path, instead of the full export directory.",
+    )
     args = parser.parse_args()
+
+    if args.excel:
+        path = export_excel(args.run_id, args.thread_id, Path(args.excel))
+        print(f"Exported to {path}")
+        return
 
     path = export_run(args.run_id, args.thread_id)
     print(f"Exported to {path}")
