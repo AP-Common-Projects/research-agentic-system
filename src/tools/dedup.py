@@ -255,39 +255,66 @@ def persist_category_tags(
 # ---------------------------------------------------------------------------
 
 def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) -> None:
-    """Upsert v3 enrichment columns for a channel. Only writes the fields
-    actually provided — never clobbers existing data with NULL defaults."""
+    """Update v3 enrichment columns for a channel that already exists.
+
+    Every real caller (hydrate_metadata, resolve_geo_language,
+    classify_channel, extract_success_failure_factors) only ever enriches a
+    channel row persist_channel() already created — so this is a plain
+    UPDATE, not an upsert. That matters beyond style: an
+    `INSERT ... ON CONFLICT DO UPDATE` still has to construct a full
+    candidate row and satisfy every NOT NULL constraint on it (title,
+    discovery_method) even when the conflict means it will just become an
+    UPDATE — Postgres validates NOT NULL at tuple construction, before
+    conflict resolution runs. A prior version of this function used that
+    pattern, which (once a separate column-naming bug in the same query was
+    fixed) raised NotNullViolation on every real call. UPDATE only touches
+    the columns named in SET, so it never hits that trap, and correctly
+    no-ops on a channel_id that doesn't exist rather than inventing a
+    half-populated row.
+
+    first_discovered_run_id is set only if it's still NULL (the original
+    discovering run should never be overwritten); last_enriched_run_id
+    always moves to this run.
+    """
     setters: list[str] = []
-    params: dict[str, Any] = {"channel_id": channel_id}
+    params: dict[str, Any] = {"channel_id": channel_id, "run_id": run_id}
     v3_cols = {
         "country_code", "country_source", "country_confidence", "region",
         "is_us_market", "primary_language_code", "audience_language_code",
         "language_confidence", "face_status", "dominant_format",
         "primary_niche_id", "meets_subscriber_floor", "floor_override_reason",
         "evergreen_score", "is_likely_news", "engagement_score",
+        "entertainment_score",
         "engagement_components", "priority_score", "has_affiliate_signal",
         "has_sponsor_signal", "has_membership_signal", "uploads_per_week_avg",
         "upload_consistency_score", "data_completeness_score",
         "missing_required_fields", "classifier_model", "classifier_version",
-        "first_discovered_run_id", "last_enriched_run_id",
     }
     for col in v3_cols:
         if col in fields:
-            param_name = f"p_{col}"
-            setters.append(f"{col} = EXCLUDED.{col}")
-            params[param_name] = fields[col]
+            setters.append(f"{col} = %(p_{col})s")
+            value = fields[col]
+            if isinstance(value, dict):
+                # engagement_components is JSONB — psycopg cannot adapt a
+                # raw dict to a placeholder ("cannot adapt type 'dict'"),
+                # so every score_signals call silently failed to persist
+                # any v3 field for a channel that had a components dict,
+                # discarding evergreen_score/engagement_score/
+                # meets_subscriber_floor along with it (the whole UPDATE is
+                # one statement, so one bad column fails the entire call).
+                from psycopg.types.json import Json
+
+                value = Json(value)
+            params[f"p_{col}"] = value
     if not setters:
         return
-    # Always update discovery/enrichment provenance and the timestamp.
-    params["p_run_id"] = run_id
     sql = f"""
-        INSERT INTO channels (channel_id, {', '.join(p for p in params if p != 'channel_id')}, updated_at)
-        VALUES (%(channel_id)s, {', '.join(f'%({p})s' for p in params if p != 'channel_id')}, now())
-        ON CONFLICT (channel_id) DO UPDATE SET
+        UPDATE channels SET
             {', '.join(setters)},
-            last_enriched_run_id = COALESCE(channels.last_enriched_run_id, EXCLUDED.last_enriched_run_id),
-            first_discovered_run_id = COALESCE(channels.first_discovered_run_id, EXCLUDED.first_discovered_run_id),
+            first_discovered_run_id = COALESCE(first_discovered_run_id, %(run_id)s),
+            last_enriched_run_id = %(run_id)s,
             updated_at = now()
+        WHERE channel_id = %(channel_id)s
     """
     cur = conn.cursor()
     try:
@@ -326,7 +353,14 @@ def persist_channel_snapshot(conn: Any, channel_id: str, run_id: str,
 
 
 def persist_video_v3(conn: Any, video_id: str, fields: dict) -> None:
-    """Upsert v3 video enrichment columns."""
+    """Update v3 enrichment columns for a video that already exists.
+
+    Same reasoning as persist_channel_v3: every real caller enriches a row
+    persist_video() already created, so this is a plain UPDATE rather than
+    an INSERT ... ON CONFLICT DO UPDATE — which would have to satisfy
+    channel_id/title NOT NULL on a candidate row it never actually needs to
+    insert.
+    """
     setters: list[str] = []
     params: dict[str, Any] = {"video_id": video_id}
     v3_cols = {
@@ -336,19 +370,17 @@ def persist_video_v3(conn: Any, video_id: str, fields: dict) -> None:
         "title_is_question", "title_capitalization", "title_emoji_count",
         "thumbnail_has_face", "thumbnail_text_density",
         "data_completeness_score", "missing_required_fields",
+        "video_description",
     }
     for col in v3_cols:
         if col in fields:
-            param_name = f"p_{col}"
-            setters.append(f"{col} = EXCLUDED.{col}")
-            params[param_name] = fields[col]
+            setters.append(f"{col} = %(p_{col})s")
+            params[f"p_{col}"] = fields[col]
     if not setters:
         return
     sql = f"""
-        INSERT INTO videos (video_id, {', '.join(p for p in params if p != 'video_id')})
-        VALUES (%(video_id)s, {', '.join(f'%({p})s' for p in params if p != 'video_id')})
-        ON CONFLICT (video_id) DO UPDATE SET
-            {', '.join(setters)}
+        UPDATE videos SET {', '.join(setters)}
+        WHERE video_id = %(video_id)s
     """
     cur = conn.cursor()
     try:

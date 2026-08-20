@@ -103,9 +103,19 @@ def hydrate_metadata(state: dict) -> dict:
 
         conn = get_connection()
         try:
+            import json as _json
+
             for ch in channels:
                 persist_channel(conn, ch)
                 for vid in ch.get("_videos", []):
+                    if vid.get("thumbnails"):
+                        # persist_video only writes an explicit "extra" key
+                        # — the raw "thumbnails" dict from youtube_api.py
+                        # otherwise never reaches the DB at all, which is
+                        # what score_thumbnail_signals reads back out via
+                        # extra->'thumbnails'.
+                        vid = dict(vid)
+                        vid["extra"] = _json.dumps({"thumbnails": vid["thumbnails"]})
                     persist_video(conn, vid)
                 # v3: snapshot + enrichment provenance
                 run_id = state.get("run_id", "")
@@ -131,9 +141,18 @@ def hydrate_metadata(state: dict) -> dict:
                         v3_vid["description"] = vid["description"]
                     if vid.get("tags"):
                         v3_vid["tags"] = vid["tags"]
-                    if vid.get("duration_seconds"):
-                        v3_vid["duration_seconds"] = vid["duration_seconds"]
-                        v3_vid["is_short"] = vid["duration_seconds"] <= 60
+                    if vid.get("duration_seconds") is not None:
+                        # _parse_duration_seconds returns None (not 0) when
+                        # YouTube reported no fixed-length duration at all —
+                        # livestreams and 24/7 rebroadcasts send "P0D"
+                        # rather than a real PT... value. A live/rebroadcast
+                        # video genuinely has no duration to record here;
+                        # leaving both fields unset keeps them blank in the
+                        # export instead of showing a misleading "0 seconds"
+                        # on a multi-hour or ongoing stream.
+                        dur = vid["duration_seconds"]
+                        v3_vid["duration_seconds"] = dur
+                        v3_vid["is_short"] = 0 < dur <= 60
                     if vid.get("default_language"):
                         v3_vid["language_code"] = vid["default_language"]
                     if v3_vid:

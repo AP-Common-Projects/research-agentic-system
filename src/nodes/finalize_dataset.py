@@ -59,23 +59,44 @@ def finalize_dataset(state: dict) -> dict:
             "face_status", "evergreen_score", "engagement_score",
             "meets_subscriber_floor",
         ]
-        for col in required_cols:
-            cur.execute(
-                f"UPDATE channels SET data_completeness_score = "
-                f"(SELECT COUNT(*) FILTER (WHERE {col} IS NOT NULL) * 1.0 / {len(required_cols)} "
-                f"FROM channels WHERE channel_id = channels.channel_id) "
-                f"WHERE first_discovered_run_id = %s", (run_id,)
-            )
-            conn.commit()
+        # A prior version of this ran once per column with an unaliased
+        # self-referencing subquery: `FROM channels WHERE channel_id =
+        # channels.channel_id` — since the outer UPDATE target and the
+        # inner SELECT source share the same unqualified table name,
+        # Postgres resolves `channels.channel_id` to the subquery's OWN row,
+        # making the WHERE always true. COUNT(*) FILTER(...) then counted
+        # NOT-NULL rows across the entire table, not the one row being
+        # updated — divided by 7, this overflowed data_completeness_score's
+        # NUMERIC(3,2) the moment more than ~70 channels existed anywhere in
+        # the database (714 here), raising NumericValueOutOfRange and
+        # aborting finalize_dataset with no completeness data ever written.
+        # It also looped and overwrote the score per-column instead of
+        # summing all 7 — only the last column in the loop ever survived.
+        # A single direct-column expression, correlated by the UPDATE's own
+        # row (no subquery needed), fixes both.
+        score_expr = " + ".join(f"(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END)" for col in required_cols)
+        cur.execute(
+            f"UPDATE channels SET data_completeness_score = ({score_expr}) * 1.0 / {len(required_cols)} "
+            f"WHERE first_discovered_run_id = %s", (run_id,)
+        )
+        conn.commit()
 
-        for col in required_cols:
-            cur.execute(
-                f"UPDATE channels SET missing_required_fields = "
-                f"array_append(missing_required_fields, '{col}') "
-                f"WHERE {col} IS NULL AND first_discovered_run_id = %s "
-                f"AND NOT ('{col}' = ANY(missing_required_fields))", (run_id,)
-            )
-            conn.commit()
+        # A prior version only ever APPENDED here — a column that was NULL
+        # when finalize_dataset first ran and later got backfilled (by a
+        # resume, or by re-running an earlier enrichment node) stayed
+        # listed as missing forever, since nothing ever removed it from the
+        # array. Same fix as data_completeness_score above: rebuild the
+        # array fresh from the row's CURRENT state every call, rather than
+        # mutating whatever was there before.
+        missing_expr = ", ".join(
+            f"CASE WHEN {col} IS NULL THEN '{col}' END" for col in required_cols
+        )
+        cur.execute(
+            f"UPDATE channels SET missing_required_fields = "
+            f"ARRAY_REMOVE(ARRAY[{missing_expr}], NULL) "
+            f"WHERE first_discovered_run_id = %s", (run_id,)
+        )
+        conn.commit()
 
         # -- harness_runs update -------------------------------------------------
         cost_by_model = state.get("spend_by_model", {})
@@ -108,10 +129,17 @@ def finalize_dataset(state: dict) -> dict:
         conn.commit()
         cur.close()
 
-    except Exception:
+    except Exception as exc:
+        # A bare "finalization failed" here once hid a NumericValueOutOfRange
+        # (see the data_completeness_score comment above) with no way to
+        # diagnose it short of reproducing the whole function by hand.
         conn.rollback()
         put_connection(conn)
-        return {"node_logs": _log({"reason": "finalization failed"})}
+        return {"node_logs": _log({
+            "reason": "finalization failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        })}
 
     put_connection(conn)
     return {

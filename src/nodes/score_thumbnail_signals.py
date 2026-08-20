@@ -15,7 +15,7 @@ import time
 
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
-from src.llm.cascade import complete_tier
+from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
 
 SYSTEM_PROMPT = """You are a thumbnail analyst. For each thumbnail URL, answer two questions:
@@ -64,13 +64,17 @@ def score_thumbnail_signals(state: dict) -> dict:
         return {"node_logs": _log({"reason": "query failed", "scored": 0})}
 
     scored = 0
+    total_cost = 0.0
     from src.tools.dedup import persist_video_v3, persist_channel_v3
 
     for ch_id in eligible:
         try:
             cur = conn.cursor()
+            # There is no `videos.thumbnails` column — hydrate_metadata
+            # writes the raw thumbnails dict into the extra JSONB catch-all,
+            # which is the only place it's ever persisted.
             cur.execute(
-                "SELECT video_id, thumbnails FROM videos WHERE channel_id = %s "
+                "SELECT video_id, extra->'thumbnails' FROM videos WHERE channel_id = %s "
                 "ORDER BY published_at DESC NULLS LAST LIMIT %s",
                 (ch_id, cfg.thumbnail_sample_count),
             )
@@ -101,6 +105,11 @@ def score_thumbnail_signals(state: dict) -> dict:
             try:
                 prompt = "Analyze these thumbnails:\n" + "\n".join(thumb_urls)
                 result = complete_tier("thumbnail_vision", prompt, SYSTEM_PROMPT)
+                usage = result.get("usage", {})
+                total_cost += result.get(
+                    "cost_usd",
+                    estimate_cost("thumbnail_vision", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
+                )
                 content = result.get("content", "")
                 parsed = json.loads(content) if isinstance(content, str) else content
                 if not isinstance(parsed, list):
@@ -125,7 +134,14 @@ def score_thumbnail_signals(state: dict) -> dict:
                 }
                 try:
                     persist_video_v3(conn, vid_id, v_fields)
-                except Exception:
+                except Exception as exc:
+                    conn.rollback()
+                    errors.append(ErrorRecord(
+                        node_name="score_thumbnail_signals",
+                        error_type=type(exc).__name__,
+                        message=f"video persist failed for {vid_id}: {exc}",
+                        recoverable=True,
+                    ).model_dump())
                     continue
 
             # Channel-level: face_status tally
@@ -144,6 +160,10 @@ def score_thumbnail_signals(state: dict) -> dict:
             scored += 1
 
         except Exception as exc:
+            # A failed statement anywhere above leaves the connection's
+            # transaction aborted, poisoning every remaining channel in this
+            # loop with InFailedSqlTransaction unless rolled back here.
+            conn.rollback()
             errors.append(ErrorRecord(
                 node_name="score_thumbnail_signals",
                 error_type=type(exc).__name__,
@@ -154,6 +174,7 @@ def score_thumbnail_signals(state: dict) -> dict:
 
     put_connection(conn)
     return {
-        "node_logs": _log({"scored": scored, "eligible": len(eligible)}),
+        "node_logs": _log({"scored": scored, "eligible": len(eligible), "cost_usd": round(total_cost, 6)}),
         "errors": errors,
+        "budget_spent_usd": total_cost,
     }

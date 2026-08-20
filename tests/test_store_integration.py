@@ -28,9 +28,11 @@ from src.tools.dedup import (
     fetch_videos_by_channels,
     persist_channel,
     persist_channel_signals,
+    persist_channel_v3,
     persist_edge,
     persist_edges,
     persist_video,
+    persist_video_v3,
 )
 
 try:  # pragma: no cover - environment dependent
@@ -198,3 +200,80 @@ class TestDiscoveryEdgesSQL:
              "edge_type": "featured_channel", "run_id": RUN},
         ]
         assert persist_edges(conn, edges) == 2
+
+
+class TestPersistChannelV3SQL:
+    """persist_channel_v3 is v3's own version of the same gap this file
+    exists for. A prior version built the INSERT column list from the
+    `p_`-prefixed *parameter* names instead of the real column names
+    (raised UndefinedColumn on every call), and separately — once that was
+    fixed — turned out to need `INSERT ... ON CONFLICT DO UPDATE`'s
+    candidate row to satisfy channels.title/discovery_method NOT NULL even
+    though every real call only ever updates a row persist_channel()
+    already created. Both were invisible to test_tools.py's MagicMock
+    cursor, which accepts any SQL string. Real Postgres is the only thing
+    that catches either.
+    """
+
+    def test_updates_an_existing_channel(self, conn):
+        persist_channel(conn, {"channel_id": CH1, "title": "T", "discovery_method": "keyword"})
+        persist_channel_v3(conn, CH1, RUN, {
+            "country_code": "US", "country_source": "inferred_language",
+            "evergreen_score": 72.5, "entertainment_score": 40.0,
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT country_code, country_source, evergreen_score, entertainment_score, "
+            "first_discovered_run_id, last_enriched_run_id "
+            "FROM channels WHERE channel_id = %s", (CH1,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row == ("US", "inferred_language", 72.5, 40.0, RUN, RUN)
+
+    def test_first_discovered_run_id_is_never_overwritten(self, conn):
+        persist_channel(conn, {"channel_id": CH1, "title": "T", "discovery_method": "keyword"})
+        persist_channel_v3(conn, CH1, "run-first", {"evergreen_score": 10.0})
+        persist_channel_v3(conn, CH1, "run-second", {"evergreen_score": 20.0})
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT evergreen_score, first_discovered_run_id, last_enriched_run_id "
+            "FROM channels WHERE channel_id = %s", (CH1,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row == (20.0, "run-first", "run-second")
+
+    def test_empty_fields_is_a_no_op_not_a_crash(self, conn):
+        persist_channel(conn, {"channel_id": CH1, "title": "T", "discovery_method": "keyword"})
+        persist_channel_v3(conn, CH1, RUN, {})  # must not raise
+        assert _count(conn, "channels", "WHERE channel_id = %s", (CH1,)) == 1
+
+    def test_a_channel_id_with_no_row_is_a_silent_no_op(self, conn):
+        """Never invents a half-populated row — a channel row is always
+        created by persist_channel() first."""
+        persist_channel_v3(conn, "UC_itest_nonexistent", RUN, {"evergreen_score": 5.0})
+        assert _count(conn, "channels", "WHERE channel_id = %s", ("UC_itest_nonexistent",)) == 0
+
+
+class TestPersistVideoV3SQL:
+    def test_updates_an_existing_video(self, conn):
+        persist_channel(conn, {"channel_id": CH1, "title": "T", "discovery_method": "keyword"})
+        persist_video(conn, {"video_id": "itest_v1", "channel_id": CH1, "title": "V1"})
+        persist_video_v3(conn, "itest_v1", {
+            "title_char_count": 14, "title_has_number": True, "is_short": False,
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT title_char_count, title_has_number, is_short "
+            "FROM videos WHERE video_id = %s", ("itest_v1",),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row == (14, True, False)
+
+    def test_empty_fields_is_a_no_op_not_a_crash(self, conn):
+        persist_channel(conn, {"channel_id": CH1, "title": "T", "discovery_method": "keyword"})
+        persist_video(conn, {"video_id": "itest_v1", "channel_id": CH1, "title": "V1"})
+        persist_video_v3(conn, "itest_v1", {})  # must not raise
+        assert _count(conn, "videos", "WHERE video_id = %s", ("itest_v1",)) == 1

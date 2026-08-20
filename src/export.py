@@ -54,46 +54,165 @@ def _fetch(sql: str, params: tuple) -> list[dict[str, Any]]:
         put_connection(conn)
 
 
-def fetch_run_channels(run_id: str) -> list[dict[str, Any]]:
-    """Channels tagged to this run, with their computed signals flattened."""
-    return _fetch(
-        """
-        SELECT DISTINCT c.channel_id, c.title, c.subscriber_count,
-               c.discovery_method, c.first_seen_at, c.description,
-               (c.extra->>'engagement_rate')::float AS engagement_rate,
-               (c.extra->>'cadence')::float        AS cadence,
-               (c.extra->>'velocity')::float       AS velocity
+def _floor() -> int:
+    """The hard subscriber floor the deliverable is scoped to.
+
+    Deliberately NOT `channels.meets_subscriber_floor`. That flag is TRUE
+    for sub-floor channels that tripped a breakout/thriving override in
+    compute_subscriber_floor — a useful internal signal for spotting small
+    channels worth watching, but it let a 13-subscriber channel into a
+    workbook whose stated rule is "only channels over 50k subs". The
+    client's rule is about the real count, so the export reads the real
+    count.
+    """
+    return int(get_config().harness.subscriber_floor)
+
+
+def fetch_run_channels(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+    """Channels tagged to this run, with the full v3 enrichment set flattened.
+
+    v1's `extra->>'engagement_rate'/'cadence'/'velocity'` JSONB reads are
+    gone — v3's score_signals/resolve_geo_language/classify_channel nodes
+    write real typed columns instead (evergreen_score, engagement_score,
+    uploads_per_week_avg, country/language, niche, entertainment_score,
+    ...), which is what the client's "classified, in distinguished columns"
+    requirement actually asks for.
+
+    Two filters, both client requirements rather than cosmetics:
+    meets_subscriber_floor ("only analyze channels over 50k subs"), and an
+    optional parent_category ("no unrelated channels"). Discovery
+    legitimately surfaces off-topic channels — a crime-keyword search
+    returns a lifestyle vlog named "True Crime PROFILE 2026" — and the
+    classifier correctly labels them; the category filter is what keeps
+    them out of a single-category deliverable.
+    """
+    sql = f"""
+        SELECT DISTINCT
+               c.channel_id, c.title, c.subscriber_count, c.description,
+               c.discovery_method, c.first_seen_at,
+               c.country_code, c.region,
+               c.primary_language_code, c.language_confidence,
+               c.face_status, c.dominant_format,
+               nt.parent_category AS category, nt.niche_name AS sub_niche,
+               nt.description AS niche_description,
+               c.entertainment_score, c.evergreen_score, c.engagement_score,
+               c.is_likely_news, c.uploads_per_week_avg, c.upload_consistency_score,
+               c.has_affiliate_signal, c.has_sponsor_signal, c.has_membership_signal,
+               c.data_completeness_score, c.missing_required_fields
         FROM channels c
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
+        LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
         WHERE t.run_id = %s
-        ORDER BY c.subscriber_count DESC NULLS LAST
-        """,
-        (run_id,),
-    )
+          AND c.subscriber_count >= {_floor()}
+    """
+    params: tuple = (run_id,)
+    if category:
+        sql += " AND nt.parent_category = %s"
+        params = (run_id, category)
+    sql += " ORDER BY c.subscriber_count DESC NULLS LAST"
+    return _fetch(sql, params)
 
 
-def fetch_run_videos(run_id: str, limit: int) -> list[dict[str, Any]]:
-    """This run's videos, highest outlier score first.
+def fetch_run_videos(run_id: str, limit: int, category: str | None = None) -> list[dict[str, Any]]:
+    """This run's videos, highest outlier score first, with v3's title
+    signal columns and evergreen/news flags flattened alongside them.
 
     Ordered by outlier score rather than views because the score is the point:
     a 200k-view video on a 5M-subscriber channel is unremarkable, while the
     same on a 20k channel is the signal the team is looking for.
+
+    Scoped to the same channels the Channels sheet carries — a video whose
+    channel was filtered out for being under the subscriber floor or in
+    another category must not survive here.
     """
-    return _fetch(
-        """
-        SELECT DISTINCT v.video_id, v.channel_id, c.title AS channel_title,
-               v.title, v.view_count, v.like_count, v.comment_count,
-               v.published_at, v.outlier_score
+    sql = f"""
+        SELECT DISTINCT
+               v.video_id, v.channel_id, c.title AS channel_title,
+               v.title, v.video_description, v.view_count, v.like_count, v.comment_count,
+               v.published_at, v.outlier_score,
+               v.duration_seconds, v.is_short, v.language_code,
+               v.evergreen_score, v.is_likely_news, v.views_per_day_since_publish,
+               v.title_word_count, v.title_has_number,
+               v.title_is_question, v.title_capitalization, v.title_emoji_count
         FROM videos v
         JOIN category_tags t
           ON t.entity_id = v.video_id AND t.entity_type = 'video'
-        LEFT JOIN channels c ON c.channel_id = v.channel_id
+        JOIN channels c ON c.channel_id = v.channel_id
+        LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
         WHERE t.run_id = %s
-        ORDER BY v.outlier_score DESC NULLS LAST
-        LIMIT %s
-        """,
-        (run_id, limit),
+          AND c.subscriber_count >= {_floor()}
+    """
+    params: tuple = (run_id, limit)
+    if category:
+        sql += " AND nt.parent_category = %s"
+        params = (run_id, category, limit)
+    sql += " ORDER BY v.outlier_score DESC NULLS LAST LIMIT %s"
+    return _fetch(sql, params)
+
+
+def fetch_run_niche_breakdown(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+    """One row per niche this run actually populated — category, sub-niche,
+    and how many of this run's channels landed in it. Feeds the Excel
+    Overview sheet and the Niches sheet."""
+    sql = f"""
+        SELECT nt.niche_id, nt.parent_category AS category, nt.niche_name AS sub_niche,
+               nt.description, nt.is_evergreen_prone,
+               COUNT(DISTINCT c.channel_id) AS channel_count
+        FROM niche_taxonomy nt
+        JOIN channels c ON c.primary_niche_id = nt.niche_id
+        JOIN category_tags t
+          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
+        WHERE t.run_id = %s
+          AND c.subscriber_count >= {_floor()}
+    """
+    params: tuple = (run_id,)
+    if category:
+        sql += " AND nt.parent_category = %s"
+        params = (run_id, category)
+    sql += (
+        " GROUP BY nt.niche_id, nt.parent_category, nt.niche_name, nt.description, nt.is_evergreen_prone"
+        " ORDER BY channel_count DESC"
+    )
+    return _fetch(sql, params)
+
+
+def _fetch_run_factors(table: str, taxonomy: str, run_id: str, category: str | None) -> list[dict[str, Any]]:
+    """Shared body for the success/failure factor sheets — identical shape,
+    identical filters, only the pair of table names differs. Both are
+    scoped to the same channels the Channels sheet carries."""
+    sql = f"""
+        SELECT f.channel_id, c.title AS channel_title, c.subscriber_count,
+               ft.factor_code, ft.factor_label, ft.factor_group,
+               f.evidence_grade, f.evidence_note, f.corroboration_count
+        FROM {table} f
+        JOIN {taxonomy} ft ON ft.factor_id = f.factor_id
+        JOIN channels c ON c.channel_id = f.channel_id
+        LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
+        WHERE f.extracted_by_run_id = %s
+          AND c.subscriber_count >= {_floor()}
+    """
+    params: tuple = (run_id,)
+    if category:
+        sql += " AND nt.parent_category = %s"
+        params = (run_id, category)
+    sql += " ORDER BY c.subscriber_count DESC NULLS LAST, f.evidence_grade"
+    return _fetch(sql, params)
+
+
+def fetch_run_success_factors(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+    """Channels' confirmed success factors for this run, joined to their
+    taxonomy label so the sheet reads without a code lookup."""
+    return _fetch_run_factors(
+        "channel_success_factors", "success_factor_taxonomy", run_id, category
+    )
+
+
+def fetch_run_failure_factors(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+    """Channels' confirmed failure factors for this run, joined to their
+    taxonomy label so the sheet reads without a code lookup."""
+    return _fetch_run_factors(
+        "channel_failure_factors", "failure_factor_taxonomy", run_id, category
     )
 
 
@@ -1318,6 +1437,215 @@ def _attribution_counts(channels: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+# === v3 Excel deliverable ==================================================
+#
+# The client does not want a narrative report — they want a workbook they can
+# filter, sort, and search themselves, and later build charts from. Every
+# data sheet below gets a bold frozen header, per-column widths, and a native
+# AutoFilter over the full used range so every column has a dropdown out of
+# the box; that's not cosmetic, it's the literal requirement ("can filter the
+# data columns, can sort, can search").
+
+_EXCEL_COLUMN_WIDTHS: dict[str, int] = {
+    "channel_id": 26, "video_id": 26, "title": 42, "channel_title": 32,
+    "description": 50, "niche_description": 42, "video_description": 46,
+    "subscriber_count": 16, "view_count": 14, "like_count": 12,
+    "comment_count": 14, "outlier_score": 14, "discovery_method": 16,
+    "first_seen_at": 20, "published_at": 20,
+    "country_code": 12, "region": 16,
+    "primary_language_code": 14, "language_confidence": 12,
+    "face_status": 12, "dominant_format": 20,
+    "category": 16, "sub_niche": 26,
+    "entertainment_score": 14, "evergreen_score": 14, "engagement_score": 14,
+    "is_likely_news": 12, "uploads_per_week_avg": 16, "upload_consistency_score": 16,
+    "has_affiliate_signal": 14, "has_sponsor_signal": 14, "has_membership_signal": 16,
+    "data_completeness_score": 16, "missing_required_fields": 30,
+    "duration_seconds": 14, "is_short": 10, "language_code": 12,
+    "views_per_day_since_publish": 20, "title_word_count": 14,
+    "title_has_number": 14, "title_is_question": 14, "title_capitalization": 16,
+    "title_emoji_count": 14,
+    "niche_id": 10, "channel_count": 12, "is_evergreen_prone": 14,
+    "factor_code": 26, "factor_label": 30, "factor_group": 14,
+    "evidence_grade": 14, "evidence_note": 46, "corroboration_count": 14,
+}
+
+
+def _excel_safe(value: Any) -> Any:
+    """openpyxl rejects tz-aware datetimes outright (Excel has no timezone
+    type) — Postgres TIMESTAMPTZ columns come back as tz-aware datetime
+    objects via psycopg, so every date column here needs this. It also
+    raises IllegalCharacterError on control characters in strings — real
+    YouTube channel descriptions carry them. Lists (missing_required_fields,
+    tags) get joined for a flat cell.
+    """
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    if isinstance(value, list):
+        value = "; ".join(str(v) for v in value)
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def _write_excel_sheet(ws, rows: list[dict[str, Any]]) -> None:
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    if not rows:
+        ws.append(["(no rows)"])
+        return
+    headers = list(rows[0].keys())
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for row in rows:
+        ws.append([_excel_safe(row.get(h)) for h in headers])
+    for i, h in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = _EXCEL_COLUMN_WIDTHS.get(h, 16)
+    # Native filter/sort dropdowns on every column — the client's explicit
+    # ask ("can filter the data columns, can sort, can search").
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+
+
+def build_excel_workbook_v3(
+    manifest: dict[str, Any],
+    channels: list[dict[str, Any]],
+    videos: list[dict[str, Any]],
+    niches: list[dict[str, Any]],
+    success_factors: list[dict[str, Any]],
+    failure_factors: list[dict[str, Any]],
+):
+    """The client deliverable: one workbook, six sheets, nothing narrative.
+
+    Overview (run stats + category/niche rollup), Channels (full v3
+    enrichment set), Videos (full title/thumbnail signal set), Niches
+    (category/sub-niche breakdown), Success Factors, Failure Factors — each
+    a filterable/sortable table a non-technical owner can explore directly,
+    and a flat enough shape to pivot or chart later.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+
+    ws = wb.active
+    ws.title = "Overview"
+    ws.append([manifest.get("niche", "Untitled"), "research data export"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([])
+    ws.append(["Channels", manifest.get("channels", 0)])
+    ws.append(["Videos", manifest.get("videos", 0)])
+    ws.append(["Niches covered", manifest.get("niches_covered", 0)])
+    ws.append(["Total cost (USD)", manifest.get("total_cost_usd", 0)])
+    ws.append(["Generated", manifest.get("exported_at", "")[:19]])
+    ws.append([])
+    if niches:
+        ws.append(["Category", "Sub-niche", "Channels"])
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+        for n in sorted(niches, key=lambda r: -r.get("channel_count", 0)):
+            ws.append([n.get("category", ""), n.get("sub_niche", ""), n.get("channel_count", 0)])
+    for col, width in (("A", 28), ("B", 28), ("C", 14)):
+        ws.column_dimensions[col].width = width
+
+    _write_excel_sheet(wb.create_sheet("Channels"), channels)
+    _write_excel_sheet(wb.create_sheet("Videos"), videos)
+    _write_excel_sheet(wb.create_sheet("Niches"), niches)
+    _write_excel_sheet(wb.create_sheet("Success Factors"), success_factors)
+    _write_excel_sheet(wb.create_sheet("Failure Factors"), failure_factors)
+
+    return wb
+
+
+def dominant_run_category(run_id: str) -> str | None:
+    """The parent_category most of this run's qualifying channels landed in.
+
+    A run seeded on one topic still discovers off-topic channels, and the
+    classifier labels them honestly — so "the category this run is about"
+    is a fact about the data, readable directly, rather than something the
+    caller has to remember and pass in.
+    """
+    rows = _fetch(
+        f"""
+        SELECT nt.parent_category, COUNT(*) AS n
+        FROM channels c
+        JOIN category_tags t
+          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
+        JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
+        WHERE t.run_id = %s AND c.subscriber_count >= {_floor()}
+        GROUP BY nt.parent_category
+        ORDER BY n DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    )
+    return rows[0]["parent_category"] if rows else None
+
+
+def export_excel(
+    run_id: str,
+    out_path: Path | None = None,
+    category: str | None = None,
+    all_categories: bool = False,
+) -> Path:
+    """Write the full v3 rich workbook for a run. This is the client
+    deliverable — filterable/sortable Excel, no AI-generated narrative.
+
+    Unlike v1's report-driven export, this reads nothing from a LangGraph
+    checkpoint: every column comes straight from the store, so it works
+    for any completed run regardless of whether its thread checkpoint is
+    still around.
+
+    Scoped by default to channels over the subscriber floor and in the
+    run's dominant category — both client requirements. Pass an explicit
+    `category` to override the auto-detected one, or all_categories=True
+    to keep every discovered channel.
+    """
+    if out_path is None:
+        out_path = export_dir(run_id) / f"{run_id}.xlsx"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if all_categories:
+        category = None
+    elif category is None:
+        category = dominant_run_category(run_id)
+
+    channels = fetch_run_channels(run_id, category)
+    videos = fetch_run_videos(run_id, get_config().harness.export_max_videos, category)
+    niches = fetch_run_niche_breakdown(run_id, category)
+    success_factors = fetch_run_success_factors(run_id, category)
+    failure_factors = fetch_run_failure_factors(run_id, category)
+
+    total_cost = 0.0
+    try:
+        rows = _fetch("SELECT total_cost_usd FROM harness_runs WHERE run_id = %s", (run_id,))
+        if rows:
+            total_cost = float(rows[0].get("total_cost_usd") or 0.0)
+    except Exception as exc:  # pragma: no cover - environment dependent
+        logger.warning("export_excel_run_cost_unavailable", run_id=run_id, error=str(exc))
+
+    manifest = {
+        "run_id": run_id,
+        "niche": ", ".join(sorted({n["category"] for n in niches})) or run_id,
+        "channels": len(channels),
+        "videos": len(videos),
+        "niches_covered": len(niches),
+        "total_cost_usd": round(total_cost, 4),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    wb = build_excel_workbook_v3(manifest, channels, videos, niches, success_factors, failure_factors)
+    wb.save(out_path)
+    logger.info(
+        "run_exported_excel", run_id=run_id, path=str(out_path),
+        channels=len(channels), videos=len(videos),
+    )
+    return out_path
+
+
 def main() -> None:
     import argparse
 
@@ -1327,12 +1655,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export a run's research output")
     parser.add_argument("run_id")
     parser.add_argument("--thread-id", default=None)
+    parser.add_argument(
+        "--excel", action="store_true",
+        help="Also write the v3 rich Excel workbook (channels/videos/niches/factors, filterable).",
+    )
     args = parser.parse_args()
 
     path = export_run(args.run_id, args.thread_id)
     print(f"Exported to {path}")
     for f in sorted(path.iterdir()):
         print(f"  {f.name}  ({f.stat().st_size:,} bytes)")
+
+    if args.excel:
+        xlsx_path = export_excel(args.run_id, path / f"{args.run_id}.xlsx")
+        print(f"Excel workbook: {xlsx_path}  ({xlsx_path.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
