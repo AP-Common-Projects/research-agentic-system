@@ -863,6 +863,47 @@ class TestScoreSignals:
         assert "next_action" in result
         assert result["next_action"] == "continue"
 
+    def test_engagement_score_uses_the_channels_real_upload_consistency(self):
+        """engagement_score's upload_consistency_score component read from a
+        local `signals` dict that only ever held engagement_rate/cadence/
+        velocity — it never gained an "upload_consistency_score" key, so
+        `signals.get("upload_consistency_score", 0)` always fell through to
+        0, silently zeroing 20% of engagement_score's weight for every
+        channel on every run. The real value is computed by
+        extract_metadata_signals (which runs immediately before this node)
+        and already sits in channels.upload_consistency_score — this must
+        read it from there, not from the unrelated local dict."""
+        cursor = MagicMock()
+        # The per-channel lookup: (subscriber_count, upload_consistency_score).
+        cursor.fetchone.return_value = (100_000, 0.9)
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+
+        video = {
+            "video_id": "v1", "channel_id": "ch_a", "view_count": 100_000,
+            "like_count": 100, "comment_count": 10,
+            "published_at": "2026-01-01T00:00:00Z",
+        }
+
+        with patch("src.db.connection.get_connection", return_value=conn), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.tools.dedup.fetch_videos_by_channels", return_value=[video]), \
+             patch("src.tools.dedup.persist_channel_signals"), \
+             patch("src.tools.dedup.persist_channel_v3") as mock_persist, \
+             patch("src.tools.dedup.persist_video_v3"):
+            score_signals({
+                "discovered_channel_ids": ["ch_a"],
+                "run_id": "run-1", "thread_id": "t-1",
+            })
+
+        v3_fields = mock_persist.call_args.args[3]
+        # 0.9 consistency at 20% weight contributes 18 points on its own —
+        # confirms the real value reached the composite, not a hardcoded 0.
+        assert v3_fields["engagement_score"] > 18.0, (
+            f"engagement_score={v3_fields['engagement_score']} — the "
+            f"upload_consistency_score component must not be silently 0"
+        )
+
 class TestDiscoveryAttribution:
     """Per-track attribution — master plan §1 requires proving the graph-walk
     track surfaced channels the keyword track missed, which is only checkable

@@ -196,6 +196,8 @@ MIGRATIONS: list[str] = [
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS evergreen_score NUMERIC(5,2)""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_likely_news BOOLEAN""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS engagement_score NUMERIC(5,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS entertainment_score NUMERIC(5,2)""",
+    """COMMENT ON COLUMN channels.entertainment_score IS 'LLM-classified 0-100: personality/drama/humor/story-driven vs pure information delivery. A documentary or true-crime channel can score high if narratively engaging, not just factual.'""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS engagement_components JSONB""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS priority_score NUMERIC(8,3)""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS has_affiliate_signal BOOLEAN""",
@@ -233,6 +235,8 @@ MIGRATIONS: list[str] = [
         CHECK (thumbnail_text_density IN ('none','low','medium','high'))""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS data_completeness_score NUMERIC(3,2)""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS missing_required_fields TEXT[] NOT NULL DEFAULT '{}'""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_description TEXT""",
+    """COMMENT ON COLUMN videos.video_description IS 'One-sentence LLM description of what the video is likely about, from its title — the video-level analogue of niche_taxonomy.description, meant for reading across many titles at once to spot success/failure patterns without watching each video.'""",
 
     # === v3 longitudinal + factor tables (plan §4.4-4.6) ===
     """CREATE TABLE IF NOT EXISTS channel_snapshots (
@@ -286,12 +290,28 @@ MIGRATIONS: list[str] = [
     """CREATE INDEX IF NOT EXISTS idx_channels_niche ON channels(primary_niche_id)""",
     """CREATE INDEX IF NOT EXISTS idx_channels_evergreen ON channels(evergreen_score)""",
     """CREATE INDEX IF NOT EXISTS idx_channels_engagement ON channels(engagement_score)""",
+    """CREATE INDEX IF NOT EXISTS idx_channels_entertainment ON channels(entertainment_score)""",
     """CREATE INDEX IF NOT EXISTS idx_channels_floor ON channels(meets_subscriber_floor) WHERE meets_subscriber_floor = TRUE""",
     """CREATE INDEX IF NOT EXISTS idx_videos_published ON videos(published_at)""",
     """CREATE INDEX IF NOT EXISTS idx_success_factors_channel ON channel_success_factors(channel_id)""",
     """CREATE INDEX IF NOT EXISTS idx_success_factors_factor ON channel_success_factors(factor_id)""",
     """CREATE INDEX IF NOT EXISTS idx_failure_factors_channel ON channel_failure_factors(channel_id)""",
     """CREATE INDEX IF NOT EXISTS idx_failure_factors_factor ON channel_failure_factors(factor_id)""",
+
+    # === category correction: the client's "Legal" category was a naming
+    # mistake — they mean Crime (True Crime, Body Cam, Interrogation), not
+    # legal education/court explainers. seed_taxonomies() only INSERTs
+    # ON CONFLICT DO NOTHING, so a category rename in seeds.py alone never
+    # touches rows a prior ensure_schema() call already wrote — this
+    # migration is what actually moves them. Idempotent: a no-op once
+    # every legal_crime row has already been renamed.
+    """UPDATE niche_taxonomy SET parent_category = 'crime' WHERE parent_category = 'legal_crime'""",
+    # legal_education doesn't fit the crime/entertainment framing the
+    # client actually asked for. Only ever removed if nothing real
+    # references it — never destroys a genuine classification.
+    """DELETE FROM niche_taxonomy
+       WHERE niche_name = 'legal_education'
+         AND NOT EXISTS (SELECT 1 FROM channel_niches WHERE niche_id = niche_taxonomy.niche_id)""",
 ]
 
 

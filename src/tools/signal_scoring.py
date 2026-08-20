@@ -71,13 +71,37 @@ def compute_velocity(videos: list[dict]) -> float:
 
 
 def compute_evergreen_score(video_published: Any, video_views: int) -> float:
+    """0-100: does this video keep getting watched long after publish, or
+    is it a spike that already died?
+
+    A prior version returned min(100, views/day) — raw, unscaled views per
+    day since publish. Two failures verified against real data: (1) linear
+    scaling saturates instantly — any video with ~100+ views/day (a low bar
+    for a 50k+ subscriber channel) hits the 100 ceiling, which pinned 32 of
+    60 channels in one real run to EXACTLY 100.00 and put 75% at >=99,
+    leaving almost no room to actually differentiate channels. (2) it
+    conflates virality with evergreen-ness — a video that got 10,000 views
+    in its first three days and has been dead since scores the same
+    (maxed-out) as a 3-year-old video still earning a steady trickle of
+    views, which is the literal opposite of what "evergreen" means. Fixed
+    two ways: log-scaling compresses the realistic 1-100,000+ views/day
+    range into a spread that actually separates channels instead of
+    saturating most of them, and an age-confidence ramp means a video only
+    days old cannot register as "evergreen" no matter how fast it's
+    currently climbing — durability hasn't had time to be tested yet.
+    """
     if not video_views or video_views <= 0:
         return 0.0
     pub = _parse_timestamp(video_published)
     if not pub:
         return 0.0
+    import math
+
     days = max(1, (datetime.now(timezone.utc) - pub).total_seconds() / 86400)
-    return round(min(100.0, max(0.0, video_views / days)), 2)
+    views_per_day = video_views / days
+    raw = min(100.0, max(0.0, math.log10(views_per_day + 1) * 20.0))
+    age_confidence = min(1.0, days / 30.0)
+    return round(raw * age_confidence, 2)
 
 
 def compute_engagement_score_components(channel_signals: dict, cfg) -> tuple[float, dict]:
@@ -205,14 +229,29 @@ def score_signals(state: dict) -> dict:
                     v3_vid_updates: dict[str, dict] = {}
 
                     # Look up channel metadata from store for subscriber count
+                    # and the real upload_consistency_score. extract_metadata_signals
+                    # runs right before this node and already computed and
+                    # persisted the real value — reading it here, not from
+                    # the local `signals` dict below (which only ever holds
+                    # engagement_rate/cadence/velocity and never actually
+                    # gained an "upload_consistency_score" key), is what
+                    # makes it real. `signals.get("upload_consistency_score", 0)`
+                    # always fell through to its 0 default, silently zeroing
+                    # 20% of every channel's engagement_score weight on
+                    # every run.
                     ch_subs = 0
+                    ch_upload_consistency = 0.0
                     try:
                         cur2 = conn.cursor()
-                        cur2.execute("SELECT subscriber_count FROM channels WHERE channel_id = %s", (ch_id,))
+                        cur2.execute(
+                            "SELECT subscriber_count, upload_consistency_score FROM channels WHERE channel_id = %s",
+                            (ch_id,),
+                        )
                         crow = cur2.fetchone()
                         cur2.close()
                         if crow:
                             ch_subs = int(crow[0] or 0)
+                            ch_upload_consistency = float(crow[1] or 0)
                     except Exception:
                         pass
 
@@ -242,7 +281,7 @@ def score_signals(state: dict) -> dict:
                         "views_per_sub_ratio": (sum(int(v.get("view_count") or 0) for v in vids) / max(1, len(vids))) / max(1, ch_subs),
                         "comment_rate": sum(int(v.get("comment_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
                         "like_rate": sum(int(v.get("like_count") or 0) for v in vids) / max(1, sum(int(v.get("view_count") or 0) for v in vids)),
-                        "upload_consistency_score": signals.get("upload_consistency_score", 0),
+                        "upload_consistency_score": ch_upload_consistency,
                     }
                     eng_score, eng_components = compute_engagement_score_components(sigs, cfg)
                     v3_fields["engagement_score"] = eng_score
@@ -267,8 +306,24 @@ def score_signals(state: dict) -> dict:
                         for vid_id, vf in v3_vid_updates.items():
                             if vid_id:
                                 persist_video_v3(conn, vid_id, vf)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # A silent `pass` here once hid a real bug (JSONB
+                        # adaptation failure) for engagement_components on
+                        # every single channel — evergreen_score,
+                        # engagement_score and meets_subscriber_floor never
+                        # persisted, and the floor gate downstream stayed
+                        # permanently closed, on every real run. `scored`
+                        # above only reflects the v1 persist_channel_signals
+                        # call, not this one — record the failure instead of
+                        # swallowing it.
+                        errors.append(
+                            ErrorRecord(
+                                node_name="score_signals",
+                                error_type=type(exc).__name__,
+                                message=f"v3 field persist failed for {ch_id}: {exc}",
+                                recoverable=True,
+                            ).model_dump()
+                        )
                 except Exception as exc:
                     errors.append(
                         ErrorRecord(

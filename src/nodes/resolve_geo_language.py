@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import re
 import time
+from typing import Any
 
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
-from src.state import NodeLog
+from src.state import NodeLog, ErrorRecord
 
 
 # Common English words that strongly indicate English-language content.
@@ -52,7 +53,8 @@ _COUNTRY_TO_REGION: dict[str, str] = {
     "IN": "Asia Pacific", "AU": "Asia Pacific", "NZ": "Asia Pacific",
     "SG": "Asia Pacific", "HK": "Asia Pacific", "TW": "Asia Pacific",
     "TH": "Asia Pacific", "VN": "Asia Pacific", "ID": "Asia Pacific",
-    "PH": "Asia Pacific", "MY": "Asia Pacific",
+    "PH": "Asia Pacific", "MY": "Asia Pacific", "PK": "Asia Pacific",
+    "BD": "Asia Pacific", "LK": "Asia Pacific", "NP": "Asia Pacific",
     "BR": "Latin America", "AR": "Latin America", "CL": "Latin America",
     "CO": "Latin America", "PE": "Latin America",
     "ZA": "Africa", "NG": "Africa", "KE": "Africa", "EG": "Africa",
@@ -89,6 +91,32 @@ def _build_region(country_code: str | None) -> str:
     return _COUNTRY_TO_REGION.get((country_code or "").upper(), "")
 
 
+def _modal_video_language(conn: Any, channel_id: str) -> str:
+    """The language most of this channel's videos are actually in.
+
+    YouTube reports defaultLanguage per video, and hydrate_metadata already
+    stores it — so this is a real self-reported signal, not inference.
+    Normalised to the base subtag ("en-US" -> "en") so it groups with the
+    channel-level codes.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT LOWER(SPLIT_PART(language_code, '-', 1)) AS lang, COUNT(*) AS n "
+            "FROM videos WHERE channel_id = %s AND language_code IS NOT NULL "
+            "AND language_code <> '' "
+            "GROUP BY 1 ORDER BY n DESC LIMIT 1",
+            (channel_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else ""
+    except Exception:
+        conn.rollback()
+        return ""
+    finally:
+        cur.close()
+
+
 def resolve_geo_language(state: dict) -> dict:
     """Deterministic geo/language enrichment for all hydrated channels."""
     thread_id = state.get("thread_id", "")
@@ -111,9 +139,20 @@ def resolve_geo_language(state: dict) -> dict:
 
     try:
         cur = conn.cursor()
+        # Scoped to country_source='unknown' before, which meant a channel
+        # whose country YouTube self-reports was skipped entirely — so it
+        # never got `region` derived (a pure deterministic function of
+        # country_code that has nothing to do with how the country was
+        # learned) and never got language detection either. 67 of this
+        # run's 81 channels had a country and no region for exactly that
+        # reason. Select anything still MISSING one of the three outputs;
+        # the country-inference step below is still gated on its own
+        # condition (no country_code), so a self-reported country is never
+        # overwritten.
         cur.execute(
             "SELECT channel_id, title, description, country_code, country_source, primary_language_code "
-            "FROM channels WHERE country_source = 'unknown'"
+            "FROM channels WHERE country_source = 'unknown' "
+            "   OR region IS NULL OR primary_language_code IS NULL"
         )
         unresolved = cur.fetchall()
         cur.close()
@@ -122,20 +161,34 @@ def resolve_geo_language(state: dict) -> dict:
         return {"node_logs": _log({"reason": "query failed", "resolved": 0})}
 
     resolved = 0
+    errors: list[dict] = []
     for row in unresolved:
         ch_id, title, desc, cc, cs, lang = row
         fields: dict = {}
 
-        # Language: prefer YouTube self-report, then text detection
+        # Language: YouTube's own per-video defaultLanguage first, then
+        # text detection on the channel's own copy.
+        #
+        # Text detection alone left 52 of 72 channels with no language at
+        # all — a marker-counting heuristic simply fails on a short or
+        # link-heavy channel description. Meanwhile every hydrated video
+        # carries a real language_code straight from the API, so the modal
+        # video language is both far more available and better evidence
+        # than guessing at the description.
         if not lang:
-            combined = f"{title or ''} {desc or ''}"
-            detected_lang, confidence = _detect_text_language(combined)
-            if detected_lang:
-                fields["primary_language_code"] = detected_lang
-                fields["language_confidence"] = round(confidence, 2)
-            elif _has_non_latin(combined):
-                fields["primary_language_code"] = "non-latin"
-                fields["language_confidence"] = 0.3
+            modal = _modal_video_language(conn, ch_id)
+            if modal:
+                fields["primary_language_code"] = modal
+                fields["language_confidence"] = 0.9
+            else:
+                combined = f"{title or ''} {desc or ''}"
+                detected_lang, confidence = _detect_text_language(combined)
+                if detected_lang:
+                    fields["primary_language_code"] = detected_lang
+                    fields["language_confidence"] = round(confidence, 2)
+                elif _has_non_latin(combined):
+                    fields["primary_language_code"] = "non-latin"
+                    fields["language_confidence"] = 0.3
 
         # Country: if still unknown, infer from language
         if not cc:
@@ -164,8 +217,23 @@ def resolve_geo_language(state: dict) -> dict:
                 from src.tools.dedup import persist_channel_v3
                 persist_channel_v3(conn, ch_id, run_id, fields)
                 resolved += 1
-            except Exception:
+            except Exception as exc:
+                # A failed statement leaves the connection's transaction
+                # aborted, poisoning every remaining channel in this loop
+                # with InFailedSqlTransaction unless rolled back — and a
+                # bare `except: continue` here previously discarded the
+                # failure with no record of it at all.
+                conn.rollback()
+                errors.append(ErrorRecord(
+                    node_name="resolve_geo_language",
+                    error_type=type(exc).__name__,
+                    message=f"persist failed for {ch_id}: {exc}",
+                    recoverable=True,
+                ).model_dump())
                 continue
 
     put_connection(conn)
-    return {"node_logs": _log({"resolved": resolved, "total": len(unresolved)})}
+    return {
+        "node_logs": _log({"resolved": resolved, "total": len(unresolved)}),
+        "errors": errors,
+    }

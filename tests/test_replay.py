@@ -148,6 +148,31 @@ class TestReplayEndToEnd:
             patch("src.nodes.taxonomy.complete_tier") as tax,
             patch("src.nodes.compact_branch.complete_tier") as comp,
             patch("src.nodes.synthesize.complete_tier") as syn,
+            # These three v3 nodes' eligibility queries carry no run_id
+            # scoping — against a shared dev DB that already has real
+            # floor-qualifying channels in it (from any live run), an
+            # unmocked complete_tier here means real, slow LLM calls and a
+            # multi-minute hang instead of a fast unit test.
+            patch("src.nodes.classify_channel.complete_tier") as classify,
+            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
+            patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
+            patch("src.nodes.describe_video_titles.complete_tier") as describe,
+            # These six nodes' own eligibility queries are unscoped SELECTs
+            # against the whole `channels` table — against a shared dev DB,
+            # a "harmless" replay test reads AND WRITES real production
+            # rows. Confirmed live: channel_success_factors/
+            # channel_failure_factors for real Crime-run channels
+            # accumulated 235 stray rows tagged "run-test"/"run-replay"
+            # from exactly this kind of test, corrupting a real
+            # deliverable's eligibility queries. Each node already has its
+            # own `except: return early` around get_connection() — raising
+            # here routes them through that existing path.
+            patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.tools.hydrate_metadata.YouTubeAPIClient") as yt,
             patch("src.nodes.compact_branch.get_store", return_value=store),
             patch("src.nodes.synthesize.get_store", return_value=store),
@@ -158,6 +183,10 @@ class TestReplayEndToEnd:
             _llm(tax)
             _llm(comp)
             _llm(syn)
+            _llm(classify)
+            _llm(thumb)
+            _llm(factors)
+            _llm(describe)
             yt_client = MagicMock()
             yt.return_value = yt_client
             yt_client.get_channels.return_value = []
@@ -172,8 +201,12 @@ class TestReplayEndToEnd:
             )
 
         assert final.get("selected_niche") == "Finance"
-        assert final.get("final_report") is not None, "a replay run must produce a report"
-        assert final["final_report"]["findings"], "report must carry graded findings"
+        # v3 is dataset-first (ADR-0008): synthesize()/final_report were
+        # retired in favor of finalize_dataset writing rollups straight to
+        # the store. A completed run is proven by finalize_dataset firing
+        # at the end of the graph, not by a report payload.
+        node_names = {log.get("node_name") for log in final.get("node_logs", [])}
+        assert "finalize_dataset" in node_names, "a replay run must reach finalize_dataset"
 
     @pytest.mark.asyncio
     async def test_run_terminates_on_a_stop_reason_not_the_recursion_limit(
@@ -191,6 +224,31 @@ class TestReplayEndToEnd:
             patch("src.nodes.taxonomy.complete_tier") as tax,
             patch("src.nodes.compact_branch.complete_tier") as comp,
             patch("src.nodes.synthesize.complete_tier") as syn,
+            # These three v3 nodes' eligibility queries carry no run_id
+            # scoping — against a shared dev DB that already has real
+            # floor-qualifying channels in it (from any live run), an
+            # unmocked complete_tier here means real, slow LLM calls and a
+            # multi-minute hang instead of a fast unit test.
+            patch("src.nodes.classify_channel.complete_tier") as classify,
+            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
+            patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
+            patch("src.nodes.describe_video_titles.complete_tier") as describe,
+            # These six nodes' own eligibility queries are unscoped SELECTs
+            # against the whole `channels` table — against a shared dev DB,
+            # a "harmless" replay test reads AND WRITES real production
+            # rows. Confirmed live: channel_success_factors/
+            # channel_failure_factors for real Crime-run channels
+            # accumulated 235 stray rows tagged "run-test"/"run-replay"
+            # from exactly this kind of test, corrupting a real
+            # deliverable's eligibility queries. Each node already has its
+            # own `except: return early` around get_connection() — raising
+            # here routes them through that existing path.
+            patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.tools.hydrate_metadata.YouTubeAPIClient") as yt,
             patch("src.nodes.compact_branch.get_store", return_value=store),
             patch("src.nodes.synthesize.get_store", return_value=store),
@@ -201,6 +259,10 @@ class TestReplayEndToEnd:
             _llm(tax)
             _llm(comp)
             _llm(syn)
+            _llm(classify)
+            _llm(thumb)
+            _llm(factors)
+            _llm(describe)
             yt_client = MagicMock()
             yt.return_value = yt_client
             yt_client.get_channels.return_value = []
@@ -237,6 +299,31 @@ class TestReplayEndToEnd:
             patch("src.nodes.taxonomy.complete_tier") as tax,
             patch("src.nodes.compact_branch.complete_tier") as comp,
             patch("src.nodes.synthesize.complete_tier") as syn,
+            # These three v3 nodes' eligibility queries carry no run_id
+            # scoping — against a shared dev DB that already has real
+            # floor-qualifying channels in it (from any live run), an
+            # unmocked complete_tier here means real, slow LLM calls and a
+            # multi-minute hang instead of a fast unit test.
+            patch("src.nodes.classify_channel.complete_tier") as classify,
+            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
+            patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
+            patch("src.nodes.describe_video_titles.complete_tier") as describe,
+            # These six nodes' own eligibility queries are unscoped SELECTs
+            # against the whole `channels` table — against a shared dev DB,
+            # a "harmless" replay test reads AND WRITES real production
+            # rows. Confirmed live: channel_success_factors/
+            # channel_failure_factors for real Crime-run channels
+            # accumulated 235 stray rows tagged "run-test"/"run-replay"
+            # from exactly this kind of test, corrupting a real
+            # deliverable's eligibility queries. Each node already has its
+            # own `except: return early` around get_connection() — raising
+            # here routes them through that existing path.
+            patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
+            patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.tools.hydrate_metadata.YouTubeAPIClient") as yt,
             patch("src.nodes.compact_branch.get_store", return_value=store),
             patch("src.nodes.synthesize.get_store", return_value=store),
@@ -247,6 +334,10 @@ class TestReplayEndToEnd:
             _llm(tax)
             _llm(comp)
             _llm(syn)
+            _llm(classify)
+            _llm(thumb)
+            _llm(factors)
+            _llm(describe)
             yt_client = MagicMock()
             yt.return_value = yt_client
             yt_client.get_channels.return_value = []

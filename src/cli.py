@@ -65,10 +65,12 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
     # never exported leaves its deliverable only in a checkpoint, and the
     # store gets cleared between runs.
     try:
-        from src.export import export_run
+        from src.export import export_run, export_excel
 
         path = export_run(export_run_id, thread_id)
         print(f"\nExported to {path}")
+        xlsx_path = export_excel(export_run_id, path / f"{export_run_id}.xlsx")
+        print(f"Excel workbook: {xlsx_path}")
     except Exception as exc:
         print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")
 
@@ -174,18 +176,22 @@ def main() -> None:
 
     final = asyncio.run(_run(args.niches, args.resume))
 
-    report = final.get("final_report")
     if args.json:
-        print(json.dumps(report, indent=2, default=str))
+        print(json.dumps(final, indent=2, default=str))
     else:
-        if report:
-            print(f"Niche: {report.get('niche')}")
-            print(f"Summary: {report.get('summary', '')[:500]}")
-            for f in report.get("findings", []):
-                print(f"  [{f.get('grade')}] {f.get('claim')}")
-        else:
-            print("No final report produced.")
-            for e in final.get("errors", []):
+        # v3 is dataset-first (ADR-0008): there is no narrative report to
+        # print — finalize_dataset writes rollups straight to harness_runs.
+        # A run's summary is "did it reach finalize_dataset", read off the
+        # node_logs this invocation just produced.
+        node_names = {log.get("node_name") for log in final.get("node_logs", [])}
+        reached_finalize = "finalize_dataset" in node_names
+        print(f"Niche: {final.get('selected_niche') or '(none selected)'}")
+        print(f"Reached finalize_dataset: {reached_finalize}")
+        print(f"Channels enriched this run: {final.get('channels_enriched_this_run', 0)}")
+        print(f"Budget spent (USD): {final.get('budget_spent_usd', 0.0):.4f}")
+        if final.get("errors"):
+            print(f"Errors ({len(final['errors'])}):")
+            for e in final["errors"][:10]:
                 print(f"  ERROR: {e.get('error_type')}: {e.get('message')}")
 
 

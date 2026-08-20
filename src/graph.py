@@ -10,6 +10,7 @@ flagging it in the run's logs (§0.2 item 4).
 from __future__ import annotations
 
 import inspect
+import json
 
 from langgraph.graph import StateGraph, START, END
 
@@ -31,6 +32,7 @@ from src.nodes.extract_metadata_signals import extract_metadata_signals
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
+from src.nodes.describe_video_titles import describe_video_titles
 
 
 def _logged(fn, name: str):
@@ -176,6 +178,7 @@ def build_graph() -> StateGraph:
     graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
     graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
+    graph.add_node("describe_video_titles", _logged(describe_video_titles, "describe_video_titles"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
     graph.add_edge(START, "scan_niches")
@@ -211,7 +214,8 @@ def build_graph() -> StateGraph:
         route_after_compaction,
         ["select_next_node", "extract_success_failure_factors", "finalize_dataset"],
     )
-    graph.add_edge("extract_success_failure_factors", "finalize_dataset")
+    graph.add_edge("extract_success_failure_factors", "describe_video_titles")
+    graph.add_edge("describe_video_titles", "finalize_dataset")
     graph.add_edge("finalize_dataset", END)
 
     return graph
@@ -313,9 +317,17 @@ async def run_pipeline(
             cur.close()
         finally:
             put_connection(conn)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Silent here once already hid an UnboundLocalError (json imported
+        # after use in this exact block) for the whole life of this
+        # feature — every run completed, but harness_runs never got a row.
+        # A warning, not a raise: a missing run-metadata row must not fail
+        # the run itself, but it must be visible somewhere.
+        import structlog
 
-    import json
+        structlog.get_logger(__name__).warning(
+            "harness_runs_insert_failed", run_id=run_id, error=str(exc)
+        )
+
     final = await app.ainvoke(initial, config=config)
     return migrate_state(final)
