@@ -252,6 +252,10 @@ class HarnessState(TypedDict, total=False):
 
     candidate_niches: Annotated[list[str], lambda a, b: b]
     selected_niche: str
+    # v3 multi-niche: the ranked queue of niches to process within one run.
+    selected_niches: list[str]
+    # Current position in the niche queue.
+    niche_index: int
     niche_scanner_evidence: dict
 
     tree: Annotated[dict[str, dict], _merge_tree_dict]
@@ -299,6 +303,12 @@ class HarnessState(TypedDict, total=False):
     # governor. Keyed by lineage_root_id.
     branch_lineage_spend: Annotated[dict[str, float], _merge_lineage_spend]
 
+    # Per-model spend tracking for harness_runs.cost_by_model
+    spend_by_model: Annotated[dict[str, float], _merge_lineage_spend]
+
+    # Count of channels that met the subscriber floor and were classified
+    channels_enriched_this_run: Annotated[int, _accumulate_int]
+
     # UC id -> canonical channel ref. The store has no ref column, so
     # without this there is no id<->ref link at cluster time: graph edges
     # name their source by id and the graph is keyed on refs, so every
@@ -334,6 +344,8 @@ def create_initial_state(
         "thread_id": thread_id,
         "candidate_niches": candidate_niches,
         "selected_niche": "",
+        "selected_niches": [],
+        "niche_index": 0,
         "niche_scanner_evidence": {},
         "tree": {},
         "active_node_id": None,
@@ -353,12 +365,14 @@ def create_initial_state(
         "youtube_quota_used": 0,
         "rounds_by_node": {},
         "branch_lineage_spend": {},
+        "spend_by_model": {},
+        "channels_enriched_this_run": 0,
         "channel_refs_by_id": {},
         "next_action": "start",
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 6,
+        "schema_version": 7,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -455,6 +469,21 @@ def migrate_state(state: dict) -> dict:
                         break
                     parent_id = parent.get("parent_id")
         version = 6
+
+    if version < 7:
+        # v3 dataset-first. Old checkpoints were single-niche; the multi-niche
+        # queue defaults to whatever niche was selected. No data was enriched
+        # pre-v3, so spend_by_model starts empty. Every v3 enrichment column
+        # gets the honest "not yet enriched" default — see the DDL for per-
+        # column defaults (country_source='unknown', face_status='unknown',
+        # meets_subscriber_floor=FALSE, missing_required_fields='{}').
+        state.setdefault("selected_niches", [])
+        if state.get("selected_niche") and state["selected_niche"] not in state["selected_niches"]:
+            state["selected_niches"].append(state["selected_niche"])
+        state.setdefault("spend_by_model", {})
+        state.setdefault("niche_index", 0)
+        state.setdefault("channels_enriched_this_run", 0)
+        version = 7
 
     state["schema_version"] = version
     return state

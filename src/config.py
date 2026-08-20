@@ -278,6 +278,40 @@ class HarnessConfig(BaseSettings):
     # governor as a new failure mode); on in bounded and full.
     branch_lineage_budget_enabled: bool = True
 
+    # --- v3 dataset-first enrichment ---
+    # Subscriber floor: channels below this skip expensive LLM/vision calls
+    # unless a thriving override fires (§6.4). Base default from v3 plan.
+    subscriber_floor: int = 50000
+    # A single video with views >= N * channel's subscriber count triggers
+    # the floor override — a breakout signal the sub count hasn't caught up to.
+    breakout_video_multiplier: int = 10
+    # Channels below the floor but with average views-per-video >= N * subs
+    # pass the thriving test — the content is working faster than subs show.
+    thriving_views_per_sub_multiplier: float = 5.0
+
+    # Evergreen scoring (§6.1-6.2)
+    # Threshold below which evergreen_score classifies a channel as news.
+    news_evergreen_threshold: float = 30.0
+    # Uploads per week above this threshold corroborates the news signal.
+    news_high_frequency_threshold: float = 7.0
+
+    # Engagement composite weights (§6.2). Must sum to 1.0 across the four
+    # active components; hidden likes/comment axes get redistributed pro-rata.
+    weight_views_per_sub: float = 0.40
+    weight_comment_rate: float = 0.20
+    weight_like_rate: float = 0.20
+    weight_upload_consistency: float = 0.20
+
+    # Priority-score weights for select_next_node's traversal order (§6.5)
+    priority_weight_cluster_distinctness: float = 0.35
+    priority_weight_evidence_richness: float = 0.25
+    priority_weight_us_market: float = 0.25
+    priority_weight_engagement_potential: float = 0.10
+    priority_weight_depth_penalty: float = 0.05
+
+    # Thumbnail-vision: how many recent thumbnails to sample per channel (§5.2)
+    thumbnail_sample_count: int = 5
+
     model_config = {"env_prefix": "", "extra": "allow"}
 
 

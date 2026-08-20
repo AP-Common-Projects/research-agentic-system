@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from src.tools.youtube_api import YouTubeAPIClient
 from src.tools.outlier_score import score_channel_videos
-from src.tools.dedup import persist_channel, persist_video
+from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, persist_channel_snapshot, persist_video_v3
 from src.state import NodeLog, ErrorRecord
 
 
@@ -103,10 +103,60 @@ def hydrate_metadata(state: dict) -> dict:
 
         conn = get_connection()
         try:
+            import json as _json
+
             for ch in channels:
                 persist_channel(conn, ch)
                 for vid in ch.get("_videos", []):
+                    if vid.get("thumbnails"):
+                        # persist_video only writes an explicit "extra" key
+                        # — the raw "thumbnails" dict from youtube_api.py
+                        # otherwise never reaches the DB at all, which is
+                        # what score_thumbnail_signals reads back out via
+                        # extra->'thumbnails'.
+                        vid = dict(vid)
+                        vid["extra"] = _json.dumps({"thumbnails": vid["thumbnails"]})
                     persist_video(conn, vid)
+                # v3: snapshot + enrichment provenance
+                run_id = state.get("run_id", "")
+                persist_channel_snapshot(
+                    conn, ch["channel_id"], run_id,
+                    ch.get("subscriber_count", 0),
+                    ch.get("view_count", 0),
+                    ch.get("video_count", 0),
+                )
+                v3_fields = {
+                    "first_discovered_run_id": run_id,
+                    "last_enriched_run_id": run_id,
+                }
+                if ch.get("country"):
+                    v3_fields["country_code"] = ch["country"]
+                    v3_fields["country_source"] = "self_reported"
+                if ch.get("default_language"):
+                    v3_fields["primary_language_code"] = ch["default_language"]
+                persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
+                for vid in ch.get("_videos", []):
+                    v3_vid = {}
+                    if vid.get("description"):
+                        v3_vid["description"] = vid["description"]
+                    if vid.get("tags"):
+                        v3_vid["tags"] = vid["tags"]
+                    if vid.get("duration_seconds") is not None:
+                        # _parse_duration_seconds returns None (not 0) when
+                        # YouTube reported no fixed-length duration at all —
+                        # livestreams and 24/7 rebroadcasts send "P0D"
+                        # rather than a real PT... value. A live/rebroadcast
+                        # video genuinely has no duration to record here;
+                        # leaving both fields unset keeps them blank in the
+                        # export instead of showing a misleading "0 seconds"
+                        # on a multi-hour or ongoing stream.
+                        dur = vid["duration_seconds"]
+                        v3_vid["duration_seconds"] = dur
+                        v3_vid["is_short"] = 0 < dur <= 60
+                    if vid.get("default_language"):
+                        v3_vid["language_code"] = vid["default_language"]
+                    if v3_vid:
+                        persist_video_v3(conn, vid["video_id"], v3_vid)
 
             # Membership, so this run's slice can be exported later without
             # run_id columns on the shared entity tables. This node is the only
