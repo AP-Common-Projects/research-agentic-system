@@ -115,3 +115,28 @@ named risk (the seed), one required-and-applied migration fix.
 6. Schema evolution — FIXED. schema_version 7 + migrate_state v7: pre-v3
    records get honest not-yet-enriched defaults (country_source='unknown',
    face_status='unknown', meets_subscriber_floor=FALSE).
+
+## v4 multi-vertical adjacency follow-up (29 Aug 2026)
+
+18-node graph. Six-point review against the v4 delta:
+
+1. State & reducers — PASS. niche_cluster_roles/niche_cluster_scores are
+   single-writer (expand_niche_adjacency only). run_mode is set once at
+   create_initial_state/create_augmented_state and never modified mid-run.
+   No new parallel-write hazard was introduced — the niche cluster loop is
+   explicitly sequential (ADR-0010).
+2. Idempotency — PASS. Every new write path resolves to an existing
+   idempotent primitive: channel_niches ON CONFLICT DO UPDATE,
+   niche_adjacency upsert, channel_snapshots/video_snapshots ON CONFLICT
+   DO NOTHING.
+3. Frontier discipline — PASS. augment mode's frontier pre-hydration
+   (§9.2) deliberately excludes discovered_channel_ids from pre-seeding
+   so novelty accounting stays scoped to what's genuinely new — the exact
+   same documented historical bug is prevented one call site over.
+4. Fan-out/fan-in — NOT APPLICABLE. Niche cluster processing is sequential
+   (ADR-0010). The one parallel step considered (Stage 2 Send probes) was
+   deferred to sequential implementation for this delta.
+5. Checkpointing — PASS. No new checkpointer, no change to checkpoint
+   granularity. Augment mode's pre-hydration runs before graph execution.
+6. Schema evolution — PASS. schema_version 7→8 with migrate_state block
+   defaulting new v4 fields to {} for pre-v8 checkpoints.

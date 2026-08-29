@@ -13,3 +13,4 @@
 | [0009](0009-ontology-adjacency.md) | Ontology-plus-empirical-validation for niche adjacency | Accepted | 2026-08-29 |
 | [0010](0010-sequential-cluster-processing.md) | Sequential niche-cluster processing over parallel Send fan-out | Accepted | 2026-08-29 |
 | [0011](0011-frontier-prehydration.md) | Frontier pre-hydration as the augmentation-mode mechanism | Accepted | 2026-08-29 |
+| [0012](0012-extension-tables.md) | Extension tables over a wide-table strategy for vertical-specific fields | Accepted | 2026-08-29 |
