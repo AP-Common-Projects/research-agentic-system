@@ -11,6 +11,7 @@ import time
 from src.config import get_config
 from src.state import NodeLog
 from src.tools.budget import priority_score
+from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
 
 
 def select_next_node(state: dict) -> dict:
@@ -123,6 +124,14 @@ def select_next_node(state: dict) -> dict:
             "tree": {next_id: updated},
             "active_node_id": next_id,
             "node_logs": _log({"decision": "next_pending", "node_id": next_id, "pending_count": len(pending)}),
+        }
+
+    # v4: if more niches in the cluster queue, advance instead of terminating
+    if has_more_niches(state):
+        return {
+            "next_action": "next_niche",
+            **advance_to_next_niche(state),
+            "node_logs": _log({"decision": "next_niche", "niche_index": state.get("niche_index", 0) + 1}),
         }
 
     return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}

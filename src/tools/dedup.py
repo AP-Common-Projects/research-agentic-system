@@ -417,3 +417,47 @@ def persist_channel_niche_membership(conn: Any, channel_id: str, niche_id: int,
         raise
     finally:
         cur.close()
+
+# ---------------------------------------------------------------------------
+# v4 controlled-vocabulary fuzzy matching (plan §6.5)
+# ---------------------------------------------------------------------------
+
+def match_or_create_controlled_term(
+    term, table_name, conn, term_column="term_name", threshold=0.7, extra=None
+):
+    from difflib import SequenceMatcher
+
+    term = (term or "").strip()
+    if not term:
+        return None
+    normalized = term.lower().replace(" ", "_")
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT id, {term_column} FROM {table_name}")
+        rows = cur.fetchall()
+        best_id, best_score = None, 0.0
+        for rid, existing in rows:
+            if (existing or "").lower().replace(" ", "_") == normalized:
+                return rid
+            score = SequenceMatcher(None, normalized, (existing or "").lower().replace(" ", "_")).ratio()
+            if score > best_score and score > threshold:
+                best_score = score
+                best_id = rid
+        if best_id is not None:
+            return best_id
+        cols = [term_column]
+        vals = [normalized]
+        if extra:
+            for k, v in extra.items():
+                cols.append(k)
+                vals.append(v)
+        placeholders = ", ".join(["%s"] * len(vals))
+        cur.execute(
+            f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",
+            vals,
+        )
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        return new_id
+    finally:
+        cur.close()

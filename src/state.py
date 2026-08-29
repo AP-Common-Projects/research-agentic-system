@@ -309,6 +309,13 @@ class HarnessState(TypedDict, total=False):
     # Count of channels that met the subscriber floor and were classified
     channels_enriched_this_run: Annotated[int, _accumulate_int]
 
+    # v4: which run mode this is (plan §9.1)
+    run_mode: Literal["cold_start", "augment", "snapshot_refresh"]
+
+    # v4: adjacency cluster bookkeeping (plan §7.1, §7.5)
+    niche_cluster_roles: dict[str, str]
+    niche_cluster_scores: dict[str, float]
+
     # UC id -> canonical channel ref. The store has no ref column, so
     # without this there is no id<->ref link at cluster time: graph edges
     # name their source by id and the graph is keyed on refs, so every
@@ -367,16 +374,64 @@ def create_initial_state(
         "branch_lineage_spend": {},
         "spend_by_model": {},
         "channels_enriched_this_run": 0,
+        "run_mode": "cold_start",
+        "niche_cluster_roles": {},
+        "niche_cluster_scores": {},
         "channel_refs_by_id": {},
         "next_action": "start",
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 7,
+        "schema_version": 8,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
     }
+
+
+def create_augmented_state(
+    run_id: str,
+    thread_id: str,
+    candidate_niches: list[str],
+    budget_limit_usd: float = 10.0,
+) -> dict:
+    """Plan §9.2: pre-load frontier exclusion sets from Postgres.
+
+    Like create_initial_state, except expanded_channel_refs,
+    visited_channel_ids, hydrated_channel_ids, and channel_refs_by_id
+    are pre-seeded from existing rows — so graph_walk/keyword_search
+    won't re-expand and re-pay for already-known channels. discovered_
+    channel_ids stays empty (novelty accounting must stay scoped to
+    what's genuinely new to THIS run).
+    """
+    base = create_initial_state(run_id, thread_id, candidate_niches, budget_limit_usd)
+    base["run_mode"] = "augment"
+    try:
+        from src.db.connection import get_connection, put_connection
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT channel_id FROM channels")
+            channel_ids = {r[0] for r in cur.fetchall() if r[0]}
+            cur.execute("SELECT source_channel_id, target_channel_ref FROM discovery_edges")
+            refs: set[str] = set()
+            id_to_ref: dict[str, str] = {}
+            for row in cur.fetchall():
+                sid, tref = row
+                if tref:
+                    refs.add(tref)
+                if sid:
+                    id_to_ref[sid] = f"https://www.youtube.com/channel/{sid}"
+            cur.close()
+            base["expanded_channel_refs"] = refs
+            base["visited_channel_ids"] = channel_ids
+            base["hydrated_channel_ids"] = channel_ids
+            base["channel_refs_by_id"] = id_to_ref
+        finally:
+            put_connection(conn)
+    except Exception:
+        pass
+    return base
 
 
 def migrate_state(state: dict) -> dict:
@@ -484,6 +539,14 @@ def migrate_state(state: dict) -> dict:
         state.setdefault("niche_index", 0)
         state.setdefault("channels_enriched_this_run", 0)
         version = 7
+
+    if version < 8:
+        # v4 multi-vertical adjacency. Pre-v8 checkpoints were single-niche
+        # runs and have no cluster bookkeeping — default honestly to empty.
+        state.setdefault("run_mode", "cold_start")
+        state.setdefault("niche_cluster_roles", {})
+        state.setdefault("niche_cluster_scores", {})
+        version = 8
 
     state["schema_version"] = version
     return state
