@@ -35,7 +35,7 @@ def _preflight_quota_check(config_path: str) -> bool:
     return True
 
 
-async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
+async def _run(niches: list[str], resume_thread_id: str | None, run_mode: str = "cold_start") -> dict:
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     thread_id = resume_thread_id or f"thread-{uuid.uuid4().hex[:12]}"
 
@@ -48,6 +48,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         thread_id=thread_id,
         checkpointer=checkpointer,
         resume=resume_thread_id is not None,
+        run_mode=run_mode,
     )
     # Export under the run_id the DATA was actually tagged with, not the one
     # generated above. On a fresh run those are the same id — create_initial_state
@@ -61,18 +62,17 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
     # "channels: 0, videos: 0, edges: 0" — the underlying data was never
     # missing, just addressed by the wrong key.
     export_run_id = final.get("run_id") or run_id
-    # Export before tearing down the pools. A run that completes and is
-    # never exported leaves its deliverable only in a checkpoint, and the
-    # store gets cleared between runs.
-    try:
-        from src.export import export_run, export_excel
+    # Export before tearing down the pools, but skip for snapshot-only runs
+    if final.get("run_mode") != "snapshot_refresh":
+        try:
+            from src.export import export_run, export_excel
 
-        path = export_run(export_run_id, thread_id)
-        print(f"\nExported to {path}")
-        xlsx_path = export_excel(export_run_id, path / f"{export_run_id}.xlsx")
-        print(f"Excel workbook: {xlsx_path}")
-    except Exception as exc:
-        print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")
+            path = export_run(export_run_id, thread_id)
+            print(f"\nExported to {path}")
+            xlsx_path = export_excel(export_run_id, path / f"{export_run_id}.xlsx")
+            print(f"Excel workbook: {xlsx_path}")
+        except Exception as exc:
+            print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")
 
     await close_async_pool()
     close_pools()
@@ -154,6 +154,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
+    parser.add_argument("--augment", action="store_true", help="Augment existing dataset (frontier pre-hydrated from Postgres)")
+    parser.add_argument("--snapshot", action="store_true", help="Snapshot-only run: bulk API refresh, no discovery")
     parser.add_argument("--json", action="store_true", help="Emit final state as JSON")
     parser.add_argument(
         "--quota-check",
@@ -174,18 +176,24 @@ def main() -> None:
     if args.quota_check and not _preflight_quota_check(args.quota_check):
         raise SystemExit(1)
 
-    final = asyncio.run(_run(args.niches, args.resume))
+    if args.augment and args.resume:
+        print("Error: --augment and --resume are mutually exclusive. --augment starts a new run_id; --resume continues an old one.")
+        raise SystemExit(1)
+    if args.snapshot and (args.resume or args.augment):
+        print("Error: --snapshot is standalone — it runs bulk refresh only, not alongside --resume or --augment.")
+        raise SystemExit(1)
+
+    run_mode = "snapshot_refresh" if args.snapshot else ("augment" if args.augment else "cold_start")
+    final = asyncio.run(_run(args.niches, args.resume, run_mode))
 
     if args.json:
         print(json.dumps(final, indent=2, default=str))
     else:
-        # v3 is dataset-first (ADR-0008): there is no narrative report to
-        # print — finalize_dataset writes rollups straight to harness_runs.
-        # A run's summary is "did it reach finalize_dataset", read off the
-        # node_logs this invocation just produced.
         node_names = {log.get("node_name") for log in final.get("node_logs", [])}
         reached_finalize = "finalize_dataset" in node_names
-        print(f"Niche: {final.get('selected_niche') or '(none selected)'}")
+        # v4 multi-niche: show the full cluster
+        niches = final.get("selected_niches") or [final.get("selected_niche", "(none)")]
+        print(f"Niche{'s' if len(niches) > 1 else ''}: {', '.join(niches)}")
         print(f"Reached finalize_dataset: {reached_finalize}")
         print(f"Channels enriched this run: {final.get('channels_enriched_this_run', 0)}")
         print(f"Budget spent (USD): {final.get('budget_spent_usd', 0.0):.4f}")

@@ -14,7 +14,7 @@ import json
 
 from langgraph.graph import StateGraph, START, END
 
-from src.state import HarnessState, create_initial_state, migrate_state
+from src.state import HarnessState, create_initial_state, create_augmented_state, migrate_state
 from src.observability import write_node_logs
 from src.tools.niche_scanner import scan_niches
 from src.tools.keyword_search import keyword_search
@@ -32,6 +32,9 @@ from src.nodes.extract_metadata_signals import extract_metadata_signals
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
+from src.nodes.expand_niche_adjacency import expand_niche_adjacency
+from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
+from src.nodes.describe_video_titles import describe_video_titles
 from src.nodes.describe_video_titles import describe_video_titles
 
 
@@ -106,7 +109,8 @@ def _guarded(fn, name: str):
 
 def route_after_scan(state: dict) -> list[str]:
     if state.get("selected_niche"):
-        return ["build_taxonomy"]
+        # v4: expand niche adjacency before building the taxonomy tree
+        return ["expand_niche_adjacency"]
     return [END]
 
 
@@ -116,19 +120,12 @@ _TERMINAL_ACTIONS = {"all_done", "budget_exhausted"}
 
 
 def route_after_select(state: dict) -> list[str]:
-    """Dispatch the discovery fan-out, unless the run is finished or broke.
-
-    `budget_exhausted` has to be terminal here, not just at check_saturation.
-    The circuit breaker fires *downstream* of the spend: check_saturation trips
-    a ceiling, routes to compact_branch, compaction proposes a new node,
-    route_after_compaction sends that to select_next_node, and select_next_node
-    activates it without clearing next_action. Without this guard the run then
-    dispatches a full paid discovery round after the ceiling already tripped —
-    once per proposable node, and under the `full` profile (every cap 0) that
-    is bounded only by the recursion limit.
-    """
+    """Dispatch the discovery fan-out, unless the run is finished or moving
+    to the next niche in the cluster queue (v4, plan §7.2)."""
     if state.get("next_action") in _TERMINAL_ACTIONS:
         return ["finalize_dataset"]
+    if state.get("next_action") == "next_niche":
+        return ["build_taxonomy"]
     return ["keyword_search", "graph_walk"]
 
 
@@ -149,7 +146,9 @@ def route_after_compaction(state: dict) -> list[str]:
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
     if has_pending or has_proposed:
         return ["select_next_node"]
-    # All branches done — extract factors before finalization
+    # v4: if more niches remain, start the next one's taxonomy tree
+    if has_more_niches(state):
+        return ["build_taxonomy"]
     return ["extract_success_failure_factors"]
 
 
@@ -164,6 +163,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(HarnessState)
 
     graph.add_node("scan_niches", _logged(scan_niches, "scan_niches"))
+    graph.add_node("expand_niche_adjacency", _logged(expand_niche_adjacency, "expand_niche_adjacency"))
     graph.add_node("build_taxonomy", _logged(build_taxonomy, "build_taxonomy"))
     graph.add_node("select_next_node", _logged(select_next_node, "select_next_node"))
     graph.add_node("keyword_search", _logged(_guarded(keyword_search, "keyword_search"), "keyword_search"))
@@ -183,13 +183,14 @@ def build_graph() -> StateGraph:
 
     graph.add_edge(START, "scan_niches")
     graph.add_conditional_edges(
-        "scan_niches", route_after_scan, ["build_taxonomy", END]
+        "scan_niches", route_after_scan, ["expand_niche_adjacency", END]
     )
+    graph.add_edge("expand_niche_adjacency", "build_taxonomy")
     graph.add_edge("build_taxonomy", "select_next_node")
     graph.add_conditional_edges(
         "select_next_node",
         route_after_select,
-        ["keyword_search", "graph_walk", "finalize_dataset"],
+        ["keyword_search", "graph_walk", "build_taxonomy", "finalize_dataset"],
     )
     graph.add_edge("keyword_search", "hydrate_metadata")
     graph.add_edge("graph_walk", "hydrate_metadata")
@@ -234,14 +235,13 @@ async def run_pipeline(
     thread_id: str,
     checkpointer=None,
     resume: bool = False,
+    run_mode: str = "cold_start",
     state_overrides: dict | None = None,
 ) -> dict:
     """Run the full pipeline end-to-end. Returns the final state dict.
 
-    With resume=True and a checkpointer, loads the checkpointed state for
-    thread_id (migrating it first) and continues from where it left off,
-    instead of overwriting checkpointed state with a fresh initial state.
-    """
+    run_mode: cold_start (fresh), augment (frontier pre-hydrated from Postgres),
+    or snapshot_refresh (bulk YouTube API refresh only, no discovery)."""
     # LangGraph's default recursion_limit is 25 supersteps, which a legitimate
     # multi-branch run exceeds — and when it trips it raises rather than
     # producing a report. The real termination guarantees are the governors in
@@ -298,9 +298,55 @@ async def run_pipeline(
             final = await app.ainvoke(None, config=config)
             return migrate_state(final)
 
-    initial = create_initial_state(run_id, thread_id, candidate_niches)
+    if run_mode == "augment":
+        initial = create_augmented_state(run_id, thread_id, candidate_niches, budget_limit_usd=10.0)
+    elif run_mode == "snapshot_refresh":
+        # Snapshot-only: no discovery, no LLM — just bulk YouTube API refresh
+        from src.tools.youtube_api import YouTubeAPIClient
+        from src.db.connection import get_connection as gc, put_connection as pc
+        from src.tools.dedup import persist_channel_snapshot
+        client = YouTubeAPIClient()
+        conn = gc()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT channel_id, subscriber_count, view_count, video_count FROM channels")
+            rows = cur.fetchall()
+            cur.close()
+            refreshed = 0
+            for ch_id, subs, views, vc in rows:
+                try:
+                    persist_channel_snapshot(conn, ch_id, run_id, subs, views, vc)
+                    refreshed += 1
+                except Exception:
+                    continue
+            # Video snapshots: bulk-refresh via YouTube API
+            cur2 = conn.cursor()
+            cur2.execute(
+                "INSERT INTO video_snapshots (video_id, run_id, view_count, like_count, comment_count, video_age_hours) "
+                "SELECT video_id, %s, view_count, like_count, comment_count, "
+                "EXTRACT(EPOCH FROM (now() - published_at)) / 3600.0 "
+                "FROM videos ON CONFLICT (video_id, run_id) DO NOTHING",
+                (run_id,),
+            )
+            conn.commit()
+            cur2.close()
+            cur3 = conn.cursor()
+            cur3.execute(
+                "UPDATE harness_runs SET status='completed', completed_at=now(), "
+                "channels_refreshed=%s, channels_discovered=0, channels_enriched=0, "
+                "videos_persisted=(SELECT COUNT(*) FROM videos) WHERE run_id=%s",
+                (refreshed, run_id),
+            )
+            conn.commit()
+            cur3.close()
+        finally:
+            pc(conn)
+        return {"run_mode": "snapshot_refresh", "run_id": run_id}
+    else:
+        initial = create_initial_state(run_id, thread_id, candidate_niches)
     if state_overrides:
         initial.update(state_overrides)
+    initial["run_mode"] = run_mode
 
     # v3: initialize harness_runs row at run start
     try:
