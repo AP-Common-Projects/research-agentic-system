@@ -248,3 +248,140 @@ def persist_category_tags(
     finally:
         cur.close()
     return written
+
+
+# ---------------------------------------------------------------------------
+# v3 dataset-first enrichment upserts
+# ---------------------------------------------------------------------------
+
+def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) -> None:
+    """Upsert v3 enrichment columns for a channel. Only writes the fields
+    actually provided — never clobbers existing data with NULL defaults."""
+    setters: list[str] = []
+    params: dict[str, Any] = {"channel_id": channel_id}
+    v3_cols = {
+        "country_code", "country_source", "country_confidence", "region",
+        "is_us_market", "primary_language_code", "audience_language_code",
+        "language_confidence", "face_status", "dominant_format",
+        "primary_niche_id", "meets_subscriber_floor", "floor_override_reason",
+        "evergreen_score", "is_likely_news", "engagement_score",
+        "engagement_components", "priority_score", "has_affiliate_signal",
+        "has_sponsor_signal", "has_membership_signal", "uploads_per_week_avg",
+        "upload_consistency_score", "data_completeness_score",
+        "missing_required_fields", "classifier_model", "classifier_version",
+        "first_discovered_run_id", "last_enriched_run_id",
+    }
+    for col in v3_cols:
+        if col in fields:
+            param_name = f"p_{col}"
+            setters.append(f"{col} = EXCLUDED.{col}")
+            params[param_name] = fields[col]
+    if not setters:
+        return
+    # Always update discovery/enrichment provenance and the timestamp.
+    params["p_run_id"] = run_id
+    sql = f"""
+        INSERT INTO channels (channel_id, {', '.join(p for p in params if p != 'channel_id')}, updated_at)
+        VALUES (%(channel_id)s, {', '.join(f'%({p})s' for p in params if p != 'channel_id')}, now())
+        ON CONFLICT (channel_id) DO UPDATE SET
+            {', '.join(setters)},
+            last_enriched_run_id = COALESCE(channels.last_enriched_run_id, EXCLUDED.last_enriched_run_id),
+            first_discovered_run_id = COALESCE(channels.first_discovered_run_id, EXCLUDED.first_discovered_run_id),
+            updated_at = now()
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_channel_snapshot(conn: Any, channel_id: str, run_id: str,
+                              subscriber_count: int, view_count: int, video_count: int) -> None:
+    """One row per channel per run — longitudinal tracking."""
+    sql = """
+        INSERT INTO channel_snapshots (channel_id, run_id, subscriber_count, total_view_count, total_video_count)
+        VALUES (%(channel_id)s, %(run_id)s, %(subs)s, %(views)s, %(vids)s)
+        ON CONFLICT (channel_id, run_id) DO NOTHING
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, {
+            "channel_id": channel_id,
+            "run_id": run_id,
+            "subs": subscriber_count or 0,
+            "views": view_count or 0,
+            "vids": video_count or 0,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_video_v3(conn: Any, video_id: str, fields: dict) -> None:
+    """Upsert v3 video enrichment columns."""
+    setters: list[str] = []
+    params: dict[str, Any] = {"video_id": video_id}
+    v3_cols = {
+        "hashtags", "duration_seconds", "is_short", "language_code",
+        "evergreen_score", "is_likely_news", "views_per_day_since_publish",
+        "title_char_count", "title_word_count", "title_has_number",
+        "title_is_question", "title_capitalization", "title_emoji_count",
+        "thumbnail_has_face", "thumbnail_text_density",
+        "data_completeness_score", "missing_required_fields",
+    }
+    for col in v3_cols:
+        if col in fields:
+            param_name = f"p_{col}"
+            setters.append(f"{col} = EXCLUDED.{col}")
+            params[param_name] = fields[col]
+    if not setters:
+        return
+    sql = f"""
+        INSERT INTO videos (video_id, {', '.join(p for p in params if p != 'video_id')})
+        VALUES (%(video_id)s, {', '.join(f'%({p})s' for p in params if p != 'video_id')})
+        ON CONFLICT (video_id) DO UPDATE SET
+            {', '.join(setters)}
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def persist_channel_niche_membership(conn: Any, channel_id: str, niche_id: int,
+                                      is_primary: bool = False, confidence: float | None = None) -> None:
+    """Record a channel's canonical niche membership."""
+    sql = """
+        INSERT INTO channel_niches (channel_id, niche_id, is_primary, confidence)
+        VALUES (%(channel_id)s, %(niche_id)s, %(primary)s, %(conf)s)
+        ON CONFLICT (channel_id, niche_id) DO UPDATE SET
+            is_primary = EXCLUDED.is_primary,
+            confidence = EXCLUDED.confidence
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, {
+            "channel_id": channel_id,
+            "niche_id": niche_id,
+            "primary": is_primary,
+            "conf": confidence,
+        })
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()

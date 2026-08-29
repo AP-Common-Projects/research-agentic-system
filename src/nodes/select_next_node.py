@@ -10,6 +10,7 @@ import time
 
 from src.config import get_config
 from src.state import NodeLog
+from src.tools.budget import priority_score
 
 
 def select_next_node(state: dict) -> dict:
@@ -112,7 +113,7 @@ def select_next_node(state: dict) -> dict:
     # every shallow branch before any rich branch can go deep spends the run
     # on mediocre siblings. Richer, more distinctly-split lineages get
     # explored first. Fully deterministic, no LLM, testable.
-    pending.sort(key=lambda item: _priority_key(item[1]))
+    pending.sort(key=lambda item: _priority_score(item[1], tree), reverse=True)
 
     if pending:
         next_id = pending[0][0]
@@ -127,26 +128,8 @@ def select_next_node(state: dict) -> dict:
     return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}
 
 
-def _priority_key(node: dict) -> tuple:
-    """Sort key: richer, more distinctly-split lineages first.
-
-    -cluster_distinctness_score: a node created from a graph-confirmed split
-    carries the parent's split quality — higher sorts earlier. Depth-1
-    LLM-seeded nodes carry None → 0.0, so real structure outranks taxonomy
-    guesses.
-    -evidence richness: more resolved refs sorts earlier.
-    depth: shallower first among equals (stability).
-    id: stable tiebreak so the sort is fully deterministic.
-    """
-    distinctness = node.get("cluster_distinctness_score")
-    distinctness = 0.0 if distinctness is None else float(distinctness)
-    lineage_richness = len(node.get("_kw_refs") or {}) + len(node.get("_gw_refs") or {})
-    return (
-        -float(distinctness),
-        -int(lineage_richness),
-        int(node.get("depth", 0)),
-        str(node.get("id", "")),
-    )
+def _priority_score(node: dict, tree: dict[str, dict]) -> float:
+    return priority_score(node, tree, get_config().harness)
 
 
 def proposed_id_hint(proposed: dict) -> str:

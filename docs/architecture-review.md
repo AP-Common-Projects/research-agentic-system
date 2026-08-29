@@ -93,3 +93,25 @@ change (ADR-0007), against actual code rather than the design:
 
 Two clean passes, two not-applicable, one conditional pass with a specific
 named risk (the seed), one required-and-applied migration fix.
+
+## v3 dataset-first follow-up (18 Aug 2026)
+
+16-node graph. Six-point review against the new enrichment nodes:
+
+1. State & reducers — PASS. All five new enrichment nodes write to Postgres
+   via upserts (same pattern hydrate_metadata uses). No new HarnessState
+   accumulators needed beyond spend_by_model. floor_gate_eligible is a
+   single-writer field set by score_signals.
+2. Idempotency — PASS with one conditional guard. classify_channel skips
+   the LLM call if classifier_model + classifier_version match the current
+   run — resume-safe. Without this, a resumed run re-bills every classified
+   channel.
+3. Frontier discipline — NOT APPLICABLE across all new nodes. None expand a
+   frontier; they process fixed batches of already-discovered channels.
+4. Fan-out/fan-in — NOT APPLICABLE. The floor gate is a simple conditional
+   edge, not a parallel branch. The new enrichment nodes are a sequential
+   chain.
+5. Checkpointing — PASS. Every node returns through the standard dict path.
+6. Schema evolution — FIXED. schema_version 7 + migrate_state v7: pre-v3
+   records get honest not-yet-enriched defaults (country_source='unknown',
+   face_status='unknown', meets_subscriber_floor=FALSE).

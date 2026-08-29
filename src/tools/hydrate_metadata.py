@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from src.tools.youtube_api import YouTubeAPIClient
 from src.tools.outlier_score import score_channel_videos
-from src.tools.dedup import persist_channel, persist_video
+from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, persist_channel_snapshot, persist_video_v3
 from src.state import NodeLog, ErrorRecord
 
 
@@ -107,6 +107,37 @@ def hydrate_metadata(state: dict) -> dict:
                 persist_channel(conn, ch)
                 for vid in ch.get("_videos", []):
                     persist_video(conn, vid)
+                # v3: snapshot + enrichment provenance
+                run_id = state.get("run_id", "")
+                persist_channel_snapshot(
+                    conn, ch["channel_id"], run_id,
+                    ch.get("subscriber_count", 0),
+                    ch.get("view_count", 0),
+                    ch.get("video_count", 0),
+                )
+                v3_fields = {
+                    "first_discovered_run_id": run_id,
+                    "last_enriched_run_id": run_id,
+                }
+                if ch.get("country"):
+                    v3_fields["country_code"] = ch["country"]
+                    v3_fields["country_source"] = "self_reported"
+                if ch.get("default_language"):
+                    v3_fields["primary_language_code"] = ch["default_language"]
+                persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
+                for vid in ch.get("_videos", []):
+                    v3_vid = {}
+                    if vid.get("description"):
+                        v3_vid["description"] = vid["description"]
+                    if vid.get("tags"):
+                        v3_vid["tags"] = vid["tags"]
+                    if vid.get("duration_seconds"):
+                        v3_vid["duration_seconds"] = vid["duration_seconds"]
+                        v3_vid["is_short"] = vid["duration_seconds"] <= 60
+                    if vid.get("default_language"):
+                        v3_vid["language_code"] = vid["default_language"]
+                    if v3_vid:
+                        persist_video_v3(conn, vid["video_id"], v3_vid)
 
             # Membership, so this run's slice can be exported later without
             # run_id columns on the shared entity tables. This node is the only

@@ -227,11 +227,16 @@ def test_graph_compiles_and_has_expected_nodes():
         "keyword_search",
         "graph_walk",
         "hydrate_metadata",
+        "resolve_geo_language",
+        "extract_metadata_signals",
         "score_signals",
+        "score_thumbnail_signals",
+        "classify_channel",
         "check_saturation",
         "cluster_branch",
         "compact_branch",
-        "synthesize",
+        "extract_success_failure_factors",
+        "finalize_dataset",
     }
     assert expected <= set(nodes)
     assert "analyze_deep" not in nodes
