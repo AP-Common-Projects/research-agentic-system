@@ -10,3 +10,6 @@
 | [0006](0006-cost-governors-and-two-tier-walk.md) | Cost governors and a two-tier graph walk | Accepted | 2026-08-14 |
 | [0007](0007-adaptive-depth.md) | Graph-driven, evidence-gated adaptive depth | Accepted | 2026-08-14 |
 | [0008](0008-dataset-first-output.md) | Dataset-first — remove report generation, expand the structured store as the sole deliverable | Accepted | 2026-08-18 |
+| [0009](0009-ontology-adjacency.md) | Ontology-plus-empirical-validation for niche adjacency | Accepted | 2026-08-29 |
+| [0010](0010-sequential-cluster-processing.md) | Sequential niche-cluster processing over parallel Send fan-out | Accepted | 2026-08-29 |
+| [0011](0011-frontier-prehydration.md) | Frontier pre-hydration as the augmentation-mode mechanism | Accepted | 2026-08-29 |
