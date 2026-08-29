@@ -98,6 +98,43 @@ def finalize_dataset(state: dict) -> dict:
         )
         conn.commit()
 
+        # -- v4 non-English comparison pool and stratification -------------------
+        # Mark non-English channels for isolation (not exclusion — plan §10)
+        cur.execute(
+            "UPDATE channels SET is_comparison_pool = TRUE "
+            "WHERE primary_language_code IS NOT NULL "
+            "AND primary_language_code != 'en' "
+            "AND primary_language_code != '' "
+            "AND first_discovered_run_id = %s", (run_id,)
+        )
+        conn.commit()
+
+        # Subscriber-size bucket distribution — actual vs. target
+        targets = {
+            "sub_0_100k": 0.25,
+            "sub_100k_500k": 0.35,
+            "sub_500k_2m": 0.25,
+            "sub_2m_plus": 0.15,
+        }
+        buckets = {}
+        for label, low, high in [
+            ("sub_0_100k", 0, 100000),
+            ("sub_100k_500k", 100000, 500000),
+            ("sub_500k_2m", 500000, 2000000),
+            ("sub_2m_plus", 2000000, None),
+        ]:
+            if high:
+                cur.execute(
+                    "SELECT COUNT(*) FROM channels WHERE subscriber_count >= %s AND subscriber_count < %s",
+                    (low, high),
+                )
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM channels WHERE subscriber_count >= %s", (low,),
+                )
+            count = cur.fetchone()[0]
+            buckets[label] = {"count": count, "target": targets.get(label, 0)}
+
         # -- harness_runs update -------------------------------------------------
         cost_by_model = state.get("spend_by_model", {})
         total_cost = state.get("budget_spent_usd", 0.0)
