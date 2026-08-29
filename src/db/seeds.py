@@ -225,9 +225,105 @@ def seed_taxonomies(conn) -> int:
             if cur.rowcount:
                 inserted += 1
         conn.commit()
+
+        # --- v4 seed data: primary niche groups, adjacency, cohorts ---
+        inserted += _seed_v4(conn, cur)
     except Exception:
         conn.rollback()
         raise
     finally:
         cur.close()
+    return inserted
+
+
+def _seed_v4(conn, cur) -> int:
+    """V4 seed: primary niche groups, niche adjacency candidates, cohort definitions."""
+    inserted = 0
+
+    # Crime primary niche groups (plan §5.1)
+    crime_groups = [
+        ("Bodycam / Police Incidents", "crime", "Body-camera footage, police incident breakdowns, and real-time law enforcement encounters"),
+        ("Police Investigation Documentary", "crime", "Long-form documentary coverage of police investigations and criminal cases"),
+        ("Interrogation / Criminal Psychology", "crime", "Interrogation footage, suspect interviews, and criminal psychology analysis"),
+        ("Cold Case / Unsolved", "crime", "Cold case revisitations, unsolved mysteries, and historical crime investigation"),
+        ("Digital Evidence / Internet Crime", "crime", "Digital forensics, internet crime investigations, and cybercrime analysis"),
+    ]
+    for label, vertical, desc in crime_groups:
+        cur.execute(
+            "INSERT INTO primary_niche_groups (vertical, group_label, description) VALUES (%s, %s, %s) ON CONFLICT (vertical, group_label) DO NOTHING",
+            (vertical, label, desc),
+        )
+        if cur.rowcount:
+            inserted += 1
+
+    # Finance primary niche groups (plan §5.1, §12 Finance item 2)
+    finance_groups = [
+        ("Core / Storytelling", "finance", "Financial news explainers, market narrative content, and economic documentary"),
+        ("Investing / Markets", "finance", "Stock market analysis, ETF, dividend, options, and portfolio strategy"),
+        ("Personal Finance", "finance", "Budgeting, debt management, credit, tax education, and personal financial literacy"),
+        ("Emerging / Audience-Specific", "finance", "Finance for Gen Z, women, ethnic communities, and other underserved audiences"),
+    ]
+    for label, vertical, desc in finance_groups:
+        cur.execute(
+            "INSERT INTO primary_niche_groups (vertical, group_label, description) VALUES (%s, %s, %s) ON CONFLICT (vertical, group_label) DO NOTHING",
+            (vertical, label, desc),
+        )
+        if cur.rowcount:
+            inserted += 1
+
+    # Niche adjacency candidates — Crime sibling_overlap cluster (plan §5.4, §6.1)
+    crime_niches = [
+        "bodycam_footage",
+        "police_investigation_documentary",
+        "interrogation_criminal_psychology",
+        "cold_case_unsolved",
+        "digital_evidence_internet_crime",
+    ]
+    rationales = {
+        ("bodycam_footage", "police_investigation_documentary"): "Same underlying incident/investigation subject matter, documentary vs. raw-footage framing",
+        ("bodycam_footage", "interrogation_criminal_psychology"): "Interrogation often follows the incident a bodycam captured — procedural chain",
+        ("bodycam_footage", "cold_case_unsolved"): "Cold-case channels frequently open episodes with original responding-officer bodycam footage",
+        ("bodycam_footage", "digital_evidence_internet_crime"): "Different subject matter, similar procedural/evidence-driven format — worth checking",
+        ("police_investigation_documentary", "interrogation_criminal_psychology"): "Investigation documentaries frequently include interrogation footage segments",
+        ("police_investigation_documentary", "cold_case_unsolved"): "Both are long-form documentary formats over investigative subject matter",
+        ("police_investigation_documentary", "digital_evidence_internet_crime"): "Investigative methodology crosses between physical and digital casework",
+        ("interrogation_criminal_psychology", "cold_case_unsolved"): "Cold cases often feature archival interrogation footage as primary evidence",
+        ("interrogation_criminal_psychology", "digital_evidence_internet_crime"): "Digital evidence increasingly features in interrogation case studies",
+        ("cold_case_unsolved", "digital_evidence_internet_crime"): "Modern cold-case investigations increasingly incorporate digital forensic angles",
+    }
+    for i in range(len(crime_niches)):
+        for j in range(i + 1, len(crime_niches)):
+            a, b = crime_niches[i], crime_niches[j]
+            adj_type = "sibling_overlap"
+            rationale = rationales.get((a, b), rationales.get((b, a), f"Investigate potential overlap between {a} and {b}"))
+            cur.execute(
+                """INSERT INTO niche_adjacency (vertical, niche_a, niche_b, adjacency_type, rationale, source)
+                   VALUES (%s, %s, %s, %s, %s, 'curated')
+                   ON CONFLICT (vertical, niche_a, niche_b, adjacency_type) DO NOTHING""",
+                ("crime", a, b, adj_type, rationale),
+            )
+            if cur.rowcount:
+                inserted += 1
+
+    conn.commit()
+
+    # Cohort definitions (plan §5.10)
+    cohorts = [
+        ("market_benchmark", "crime", "crime_lifecycle", "Market Benchmark", "Top-performing, established channels in the niche — the ceiling"),
+        ("growth_competitor", "crime", "crime_lifecycle", "Growth Competitor", "Channels showing strong recent growth but not yet market leaders"),
+        ("new_entrant_breakout", "crime", "crime_lifecycle", "New Entrant Breakout", "Channels created 2024-2026 with early breakout signals"),
+        ("underperformer", "crime", "crime_lifecycle", "Underperformer", "Channels with consistent low engagement or declining viewership"),
+        ("is_new_channel", "finance", None, "New Channel Cohort", "Channel created or began Finance content 2024-2026"),
+        ("new_winner", "finance", "finance_winner_loser", "New Winner", "New channel with above-median outlier performance"),
+        ("new_loser", "finance", "finance_winner_loser", "New Loser", "New channel with below-median outlier performance or stagnation"),
+    ]
+    for code, vertical, excl_group, label, desc in cohorts:
+        cur.execute(
+            "INSERT INTO cohort_definitions (cohort_code, vertical, exclusive_group, label, description) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (cohort_code) DO NOTHING",
+            (code, vertical, excl_group, label, desc),
+        )
+        if cur.rowcount:
+            inserted += 1
+    conn.commit()
+
     return inserted
