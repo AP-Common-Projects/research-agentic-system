@@ -35,7 +35,7 @@ def _preflight_quota_check(config_path: str) -> bool:
     return True
 
 
-async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
+async def _run(niches: list[str], resume_thread_id: str | None, run_mode: str = "cold_start") -> dict:
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     thread_id = resume_thread_id or f"thread-{uuid.uuid4().hex[:12]}"
 
@@ -48,6 +48,7 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
         thread_id=thread_id,
         checkpointer=checkpointer,
         resume=resume_thread_id is not None,
+        run_mode=run_mode,
     )
     # Export under the run_id the DATA was actually tagged with, not the one
     # generated above. On a fresh run those are the same id — create_initial_state
@@ -152,6 +153,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
+    parser.add_argument("--augment", action="store_true", help="Run in augment mode — extend existing dataset, don't rebuild")
     parser.add_argument("--json", action="store_true", help="Emit final state as JSON")
     parser.add_argument(
         "--quota-check",
@@ -164,6 +166,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.augment and args.resume:
+        print("Error: --augment and --resume are mutually exclusive. --augment starts a new run on existing data; --resume continues an incomplete run.")
+        raise SystemExit(1)
+
+    run_mode = "augment" if args.augment else "cold_start"
+
     # Parsed before the account-budget check so a resume can be recognised —
     # the check needs --resume to look up what this thread has already spent.
     if not _preflight_account_budget(args.resume):
@@ -172,7 +180,7 @@ def main() -> None:
     if args.quota_check and not _preflight_quota_check(args.quota_check):
         raise SystemExit(1)
 
-    final = asyncio.run(_run(args.niches, args.resume))
+    final = asyncio.run(_run(args.niches, args.resume, run_mode))
 
     report = final.get("final_report")
     if args.json:

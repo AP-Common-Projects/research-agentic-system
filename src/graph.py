@@ -31,6 +31,8 @@ from src.nodes.extract_metadata_signals import extract_metadata_signals
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
+from src.nodes.expand_niche_adjacency import expand_niche_adjacency
+from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
 
 
 def _logged(fn, name: str):
@@ -127,6 +129,9 @@ def route_after_select(state: dict) -> list[str]:
     """
     if state.get("next_action") in _TERMINAL_ACTIONS:
         return ["finalize_dataset"]
+    # v4: next_niche routing for cluster-wide traversal
+    if state.get("next_action") == "next_niche":
+        return ["build_taxonomy"]
     return ["keyword_search", "graph_walk"]
 
 
@@ -147,7 +152,9 @@ def route_after_compaction(state: dict) -> list[str]:
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
     if has_pending or has_proposed:
         return ["select_next_node"]
-    # All branches done — extract factors before finalization
+    # v4: check for more niches before finalization
+    if has_more_niches(state):
+        return ["select_next_node"]  # select_next_node will emit next_niche
     return ["extract_success_failure_factors"]
 
 
@@ -162,6 +169,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(HarnessState)
 
     graph.add_node("scan_niches", _logged(scan_niches, "scan_niches"))
+    graph.add_node("expand_niche_adjacency", _logged(expand_niche_adjacency, "expand_niche_adjacency"))
     graph.add_node("build_taxonomy", _logged(build_taxonomy, "build_taxonomy"))
     graph.add_node("select_next_node", _logged(select_next_node, "select_next_node"))
     graph.add_node("keyword_search", _logged(_guarded(keyword_search, "keyword_search"), "keyword_search"))
@@ -179,10 +187,8 @@ def build_graph() -> StateGraph:
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
     graph.add_edge(START, "scan_niches")
-    graph.add_conditional_edges(
-        "scan_niches", route_after_scan, ["build_taxonomy", END]
-    )
-    graph.add_edge("build_taxonomy", "select_next_node")
+    graph.add_edge("scan_niches", "expand_niche_adjacency")
+    graph.add_edge("expand_niche_adjacency", "build_taxonomy")
     graph.add_conditional_edges(
         "select_next_node",
         route_after_select,
@@ -230,6 +236,7 @@ async def run_pipeline(
     thread_id: str,
     checkpointer=None,
     resume: bool = False,
+    run_mode: str = "cold_start",
     state_overrides: dict | None = None,
 ) -> dict:
     """Run the full pipeline end-to-end. Returns the final state dict.
@@ -295,6 +302,10 @@ async def run_pipeline(
             return migrate_state(final)
 
     initial = create_initial_state(run_id, thread_id, candidate_niches)
+    if run_mode == "augment":
+        from src.state import create_augmented_state
+        initial = create_augmented_state(run_id, thread_id, candidate_niches)
+    initial.setdefault("run_mode", run_mode)
     if state_overrides:
         initial.update(state_overrides)
 

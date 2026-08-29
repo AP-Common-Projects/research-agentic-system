@@ -309,6 +309,14 @@ class HarnessState(TypedDict, total=False):
     # Count of channels that met the subscriber floor and were classified
     channels_enriched_this_run: Annotated[int, _accumulate_int]
 
+    # v4: which run mode (cold_start / augment / snapshot_refresh)
+    run_mode: str
+
+    # v4: adjacency cluster bookkeeping
+    niche_cluster_roles: dict[str, str]
+    niche_cluster_scores: dict[str, float]
+    adjacency_probe_results: Annotated[list[dict], lambda a, b: a + b]
+
     # UC id -> canonical channel ref. The store has no ref column, so
     # without this there is no id<->ref link at cluster time: graph edges
     # name their source by id and the graph is keyed on refs, so every
@@ -367,16 +375,64 @@ def create_initial_state(
         "branch_lineage_spend": {},
         "spend_by_model": {},
         "channels_enriched_this_run": 0,
+        "run_mode": "cold_start",
+        "niche_cluster_roles": {},
+        "niche_cluster_scores": {},
+        "adjacency_probe_results": [],
         "channel_refs_by_id": {},
         "next_action": "start",
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 7,
+        "schema_version": 8,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
     }
+
+
+def create_augmented_state(
+    run_id: str,
+    thread_id: str,
+    candidate_niches: list[str],
+    budget_limit_usd: float = 10.0,
+) -> dict:
+    """Factory for an augment run — pre-loads frontier exclusion sets from
+    Postgres so known channels aren't re-walked and re-billed (plan §9.2).
+
+    Deliberately does NOT pre-populate discovered_channel_ids — that field
+    drives novelty-rate accounting and must stay scoped to what's genuinely
+    new in THIS run, or the exact documented historical bug (novelty-rate
+    collapse from cumulative re-scan) reproduces here.
+    """
+    base = create_initial_state(run_id, thread_id, candidate_niches, budget_limit_usd)
+    base["run_mode"] = "augment"
+    try:
+        from src.db.connection import get_connection, put_connection
+
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT channel_id FROM channels")
+            known_channels = [{"channel_id": r[0]} for r in cur.fetchall()]
+            cur.close()
+            base["visited_channel_ids"] = {c["channel_id"] for c in known_channels}
+            base["hydrated_channel_ids"] = {c["channel_id"] for c in known_channels}
+            base["expanded_channel_refs"] = {
+                f"https://www.youtube.com/channel/{c['channel_id']}"
+                for c in known_channels
+                if c["channel_id"]
+            }
+            base["channel_refs_by_id"] = {
+                c["channel_id"]: f"https://www.youtube.com/channel/{c['channel_id']}"
+                for c in known_channels
+                if c["channel_id"]
+            }
+        finally:
+            put_connection(conn)
+    except Exception:
+        pass
+    return base
 
 
 def migrate_state(state: dict) -> dict:
@@ -484,6 +540,16 @@ def migrate_state(state: dict) -> dict:
         state.setdefault("niche_index", 0)
         state.setdefault("channels_enriched_this_run", 0)
         version = 7
+
+    if version < 8:
+        # v4 multi-vertical adjacency + augmentation. Pre-v8 checkpoints get
+        # honest defaults — no cluster means empty role/score dicts, no
+        # augmentation mode means cold_start, no probes were ever dispatched.
+        state.setdefault("run_mode", "cold_start")
+        state.setdefault("niche_cluster_roles", {})
+        state.setdefault("niche_cluster_scores", {})
+        state.setdefault("adjacency_probe_results", [])
+        version = 8
 
     state["schema_version"] = version
     return state

@@ -127,6 +127,14 @@ def select_next_node(state: dict) -> dict:
 
     return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}
 
+    # v4: check for more niches before declaring the run done
+    from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
+    if has_more_niches(state):
+        delta = advance_to_next_niche(state)
+        delta["node_logs"] = _log({"decision": "next_niche", "niche_index": state.get("niche_index", 0) + 1})
+        return delta
+    return {"next_action": "all_done", "node_logs": _log({"decision": "all_done"})}
+
 
 def _priority_score(node: dict, tree: dict[str, dict]) -> float:
     return priority_score(node, tree, get_config().harness)

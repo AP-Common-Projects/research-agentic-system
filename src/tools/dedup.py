@@ -385,3 +385,56 @@ def persist_channel_niche_membership(conn: Any, channel_id: str, niche_id: int,
         raise
     finally:
         cur.close()
+
+
+# ---------------------------------------------------------------------------
+# v4: generalized controlled-vocabulary matching (plan §6.5)
+# ---------------------------------------------------------------------------
+
+from difflib import SequenceMatcher
+
+
+def match_or_create_controlled_term(
+    term: str, table_name: str, conn: Any, threshold: float = 0.7
+) -> int | None:
+    """Fuzzy-match a proposed term against a controlled-vocabulary table.
+
+    Returns the existing row's id if a match is found, inserts a new row
+    if no match clears the threshold, or returns None for unworkable input.
+    """
+    if not term or not term.strip():
+        return None
+    normalized = term.lower().strip().replace(" ", "_")
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT id FROM {table_name} WHERE LOWER(name) = %s", (normalized,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        cur.execute(f"SELECT id, name FROM {table_name}")
+        rows = cur.fetchall()
+        best_id, best_score = None, 0.0
+        for rid, name in rows:
+            name_norm = (name or "").lower().strip().replace(" ", "_")
+            if name_norm == normalized:
+                return rid
+            score = SequenceMatcher(None, normalized, name_norm).ratio()
+            if score > best_score and score > threshold:
+                best_score = score
+                best_id = rid
+        if best_id:
+            return best_id
+        cur.execute(
+            f"INSERT INTO {table_name} (name) VALUES (%s) RETURNING id",
+            (term.strip(),),
+        )
+        new_id = cur.fetchone()
+        if new_id:
+            conn.commit()
+            return new_id[0]
+        return None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        cur.close()

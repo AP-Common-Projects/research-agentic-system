@@ -312,6 +312,20 @@ class HarnessConfig(BaseSettings):
     # Thumbnail-vision: how many recent thumbnails to sample per channel (§5.2)
     thumbnail_sample_count: int = 5
 
+    # --- v4 adjacency + augmentation (plan §6-§9) ---
+    # Stage 2 cross-niche edge density floor — an adjacency pair must clear
+    # this to be confirmed. Calibrated in Phase 0, placeholder until then.
+    adjacency_floor: float = 0.15
+    # Stage 3 per-channel content-overlap floor for cross-niche admission
+    cross_niche_admission_floor: float = 0.30
+    # Snapshot refresh cadence in hours (24 = daily)
+    snapshot_refresh_hours: int = 24
+    # Per-niche underperformer discovery quota
+    underperformer_quota: int = 35
+    # New-entrant discovery window (channels created within these years)
+    new_entrant_start_year: int = 2024
+    new_entrant_end_year: int = 2026
+
     model_config = {"env_prefix": "", "extra": "allow"}
 
 

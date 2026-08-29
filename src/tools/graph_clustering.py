@@ -361,3 +361,86 @@ async def cluster_branch(state: dict) -> dict:
             "best_distinctness": best_distinctness,
         }),
     }
+
+
+# ---------------------------------------------------------------------------
+# v4: cross-niche adjacency scoring
+# ---------------------------------------------------------------------------
+
+
+def score_niche_adjacency(
+    niche_a_refs: set[str],
+    niche_b_refs: set[str],
+    channels: list[dict[str, Any]],
+    discovery_edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Score a candidate niche pair for real graph overlap (plan §6.2).
+
+    Reuses build_similarity_graph over the UNION of both niches' refs,
+    then computes cross-edge density: total weight of edges connecting
+    set A to set B, divided by total edge weight of the combined graph.
+
+    Returns {score, status, edge_count, cross_edges, ...} for the caller
+    to record against niche_adjacency.
+    """
+    all_refs = sorted(niche_a_refs | niche_b_refs)
+    if len(all_refs) < 4:
+        return {"score": 0.0, "status": "insufficient_data", "cross_edges": 0, "total_edges": 0}
+
+    G = build_similarity_graph(all_refs, channels, discovery_edges)
+
+    total_weight = sum(d.get("weight", 0.0) for _, _, d in G.edges(data=True))
+    if total_weight == 0:
+        return {"score": 0.0, "status": "no_edges", "cross_edges": 0, "total_edges": 0}
+
+    cross_weight = 0.0
+    cross_count = 0
+    for u in niche_a_refs:
+        for v in niche_b_refs:
+            d = G.get_edge_data(u, v)
+            if d:
+                cross_weight += d.get("weight", 0.0)
+                cross_count += 1
+
+    score = cross_weight / total_weight if total_weight > 0 else 0.0
+    status = "confirmed" if score >= get_config().harness.adjacency_floor else "unvalidated"
+    return {
+        "score": round(score, 4),
+        "status": status,
+        "cross_edges": cross_count,
+        "total_edges": G.number_of_edges(),
+        "total_weight": round(total_weight, 2),
+        "cross_weight": round(cross_weight, 2),
+    }
+
+
+async def score_adjacency_candidate(state: dict) -> dict:
+    """Single probe dispatched by expand_niche_adjacency via Send (plan §7.1).
+
+    Reads the niche pair from state (set by the dispatcher), queries the
+    store for both niches' channel refs and their discovery_edges, scores
+    them, and returns a single result dict to be accumulated into
+    adjacency_probe_results.
+    """
+    niche_a = state.get("_probe_niche_a", "")
+    niche_b = state.get("_probe_niche_b", "")
+
+    if not niche_a or not niche_b:
+        return {"adjacency_probe_results": [{"niche_a": niche_a, "niche_b": niche_b, "score": 0.0, "status": "error", "error": "missing niche names"}]}
+
+    from src.nodes.store import get_store
+
+    store = get_store()
+    try:
+        # Get channels for both niches
+        a_channels = await store.get_channels_by_ids([])  # stub — need real query
+        b_channels = await store.get_channels_by_ids([])  # stub
+        edges = await store.get_discovery_edges_for_channels([])  # stub
+        result = score_niche_adjacency(
+            set(), set(),
+            a_channels + b_channels,
+            edges,
+        )
+        return {"adjacency_probe_results": [{"niche_a": niche_a, "niche_b": niche_b, **result}]}
+    except Exception as exc:
+        return {"adjacency_probe_results": [{"niche_a": niche_a, "niche_b": niche_b, "score": 0.0, "status": "error", "error": str(exc)}]}

@@ -222,6 +222,7 @@ def test_graph_compiles_and_has_expected_nodes():
     nodes = graph.nodes
     expected = {
         "scan_niches",
+        "expand_niche_adjacency",
         "build_taxonomy",
         "select_next_node",
         "keyword_search",

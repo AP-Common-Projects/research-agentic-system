@@ -115,7 +115,10 @@ def _parse_tree_json(raw: str, niche_name: str) -> dict[str, dict]:
 
 
 async def build_taxonomy(state: dict) -> dict:
-    niche_name = state.get("selected_niche", "unknown")
+    niche_name = (
+        (state.get("selected_niches") or [None])[state.get("niche_index", 0)]
+        or state.get("selected_niche", "unknown")
+    )
     scanner_evidence = state.get("niche_scanner_evidence", {})
     thread_id = state.get("thread_id", "")
     max_branches = get_config().harness.max_branches
