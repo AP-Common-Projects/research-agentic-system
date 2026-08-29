@@ -312,6 +312,180 @@ MIGRATIONS: list[str] = [
     """DELETE FROM niche_taxonomy
        WHERE niche_name = 'legal_education'
          AND NOT EXISTS (SELECT 1 FROM channel_niches WHERE niche_id = niche_taxonomy.niche_id)""",
+
+    # === v4 multi-vertical adjacency — primary_niche_groups (plan §5.1) ===
+    """CREATE TABLE IF NOT EXISTS primary_niche_groups (
+        group_id     SERIAL PRIMARY KEY,
+        vertical     TEXT NOT NULL,
+        group_label  TEXT NOT NULL,
+        description  TEXT NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (vertical, group_label)
+    )""",
+    """COMMENT ON TABLE primary_niche_groups IS 'Crime brief Primary_Niche tier. Multiple niche_taxonomy rows share one group — the merge-semantically-overlapping-categories mechanism.'""",
+    """ALTER TABLE niche_taxonomy ADD COLUMN IF NOT EXISTS primary_niche_group_id INT""",
+
+    # === v4 raw label preservation (plan §5.2) ===
+    """ALTER TABLE channel_niches ADD COLUMN IF NOT EXISTS raw_niche_label TEXT""",
+    """COMMENT ON COLUMN channel_niches.raw_niche_label IS 'What classify_channel proposed before _match_niche fuzzy-matched or canonicalized it. Never overwritten once set.'""",
+
+    # === v4 cross-niche membership evidence (plan §5.3) ===
+    """ALTER TABLE channel_niches ADD COLUMN IF NOT EXISTS evidence_type TEXT
+        CHECK (evidence_type IN (
+            'primary_classification','content_overlap','graph_adjacency','ontology_seed'
+        ))""",
+    """ALTER TABLE channel_niches ADD COLUMN IF NOT EXISTS admitted_by_run_id TEXT""",
+    """ALTER TABLE channel_niches ADD COLUMN IF NOT EXISTS admitted_at TIMESTAMPTZ NOT NULL DEFAULT now()""",
+
+    # === v4 niche adjacency ontology (plan §5.4) ===
+    """CREATE TABLE IF NOT EXISTS niche_adjacency (
+        id                     SERIAL PRIMARY KEY,
+        vertical               TEXT NOT NULL,
+        niche_a                TEXT NOT NULL,
+        niche_b                TEXT NOT NULL,
+        adjacency_type         TEXT NOT NULL CHECK (adjacency_type IN
+                                ('sibling_overlap','parent_child','format_shared','audience_shared')),
+        rationale              TEXT NOT NULL,
+        source                 TEXT NOT NULL DEFAULT 'curated'
+                                CHECK (source IN ('curated','llm_proposed','empirically_confirmed')),
+        empirical_score        NUMERIC(6,4),
+        empirical_status       TEXT NOT NULL DEFAULT 'unvalidated'
+                                CHECK (empirical_status IN ('unvalidated','confirmed','demoted','rejected')),
+        last_validated_run_id  TEXT,
+        last_validated_at      TIMESTAMPTZ,
+        created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (vertical, niche_a, niche_b, adjacency_type)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_niche_adjacency_lookup ON niche_adjacency(vertical, niche_a)""",
+
+    # === v4 video snapshots (plan §5.5) ===
+    """CREATE TABLE IF NOT EXISTS video_snapshots (
+        snapshot_id      BIGSERIAL PRIMARY KEY,
+        video_id         TEXT NOT NULL,
+        run_id           TEXT NOT NULL,
+        snapshot_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        view_count       BIGINT,
+        like_count       BIGINT,
+        comment_count    BIGINT,
+        video_age_hours  NUMERIC(12,2),
+        UNIQUE (video_id, run_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_video_snapshots_age ON video_snapshots(video_id, video_age_hours)""",
+    """CREATE INDEX IF NOT EXISTS idx_video_snapshots_run ON video_snapshots(run_id)""",
+
+    # === v4 harness_runs mode (plan §5.5) ===
+    """ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS run_mode TEXT NOT NULL DEFAULT 'cold_start'
+        CHECK (run_mode IN ('cold_start','augment','snapshot_refresh'))""",
+    """ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS git_commit_sha TEXT""",
+    """ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS channels_refreshed INT NOT NULL DEFAULT 0""",
+
+    # === v4 run_niche_cluster (plan §7.1) ===
+    """CREATE TABLE IF NOT EXISTS run_niche_cluster (
+        id               SERIAL PRIMARY KEY,
+        run_id           TEXT NOT NULL,
+        niche_name       TEXT NOT NULL,
+        role             TEXT NOT NULL CHECK (role IN ('target','adjacent_admitted','adjacent_rejected')),
+        adjacency_score  NUMERIC(6,4),
+        rejected_reason  TEXT,
+        UNIQUE (run_id, niche_name)
+    )""",
+
+    # === v4 crime vertical extension (plan §5.7) ===
+    """CREATE TABLE IF NOT EXISTS crime_case_metadata (
+        video_id               TEXT PRIMARY KEY REFERENCES videos(video_id) ON DELETE CASCADE,
+        crime_type             TEXT,
+        victim_type            TEXT,
+        suspect_relationship   TEXT,
+        investigation_type     TEXT,
+        evidence_type_primary  TEXT,
+        case_status            TEXT CHECK (case_status IN
+                                ('solved','unsolved','ongoing','cold_case','unknown')),
+        case_fame_level        TEXT CHECK (case_fame_level IN
+                                ('nationally_known','regionally_known','locally_known','obscure','unknown')),
+        case_country           TEXT,
+        case_year              INT,
+        classifier_model       TEXT,
+        classifier_version     TEXT,
+        classified_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""",
+    """CREATE TABLE IF NOT EXISTS video_reveal_mechanisms (
+        video_id    TEXT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
+        mechanism   TEXT NOT NULL CHECK (mechanism IN (
+            'interrogation_confession','suspect_mistake','cctv','phone_device_data',
+            'dna','call_911','witness','social_media','financial_records',
+            'location_data','other'
+        )),
+        PRIMARY KEY (video_id, mechanism)
+    )""",
+    """CREATE TABLE IF NOT EXISTS video_comments_sample (
+        id             BIGSERIAL PRIMARY KEY,
+        video_id       TEXT NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
+        comment_text   TEXT NOT NULL,
+        comment_date   TIMESTAMPTZ,
+        likes          INT DEFAULT 0,
+        reply_count    INT DEFAULT 0,
+        sample_reason  TEXT CHECK (sample_reason IN ('breakout','typical','outlier')),
+        run_id         TEXT NOT NULL,
+        collected_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_comments_sample_video ON video_comments_sample(video_id)""",
+
+    # === v4 shared finance/crime fields (plan §5.8) ===
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS search_browse_estimate TEXT
+        CHECK (search_browse_estimate IN
+               ('search_driven','browse_driven','news_driven','mixed','unclear'))""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sponsor_status TEXT
+        CHECK (sponsor_status IN ('sponsored','not_clearly_sponsored'))
+        DEFAULT 'not_clearly_sponsored'""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sponsor_category TEXT
+        CHECK (sponsor_category IN (
+            'finance_investing','banking','credit_cards','insurance','software',
+            'vpn','education','other'
+        ))""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sponsor_name TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS creator_authority TEXT
+        CHECK (creator_authority IN (
+            'financial_professional','economist','accountant','trader','investor',
+            'academic','entrepreneur','media_personality','general_creator',
+            'anonymous_brand','unknown'
+        )) DEFAULT 'unknown'""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS creator_authority_evidence TEXT""",
+    """ALTER TABLE niche_taxonomy ADD COLUMN IF NOT EXISTS commercial_intent TEXT
+        CHECK (commercial_intent IN ('low','medium','high'))""",
+
+    # === v4 channel age (plan §5.9) ===
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS channel_creation_date DATE""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS vertical_start_date DATE""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS vertical_start_date_confidence NUMERIC(3,2)""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS vertical_start_date_basis TEXT
+        CHECK (vertical_start_date_basis IN (
+            'first_vertical_video_observed','channel_creation_date','self_reported','unknown'
+        ))""",
+
+    # === v4 unified cohorts (plan §5.10) ===
+    """CREATE TABLE IF NOT EXISTS cohort_definitions (
+        cohort_code      TEXT PRIMARY KEY,
+        vertical         TEXT NOT NULL,
+        exclusive_group  TEXT,
+        label            TEXT NOT NULL,
+        description      TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS channel_cohorts (
+        id                  BIGSERIAL PRIMARY KEY,
+        channel_id          TEXT NOT NULL,
+        vertical            TEXT NOT NULL,
+        cohort_code         TEXT NOT NULL REFERENCES cohort_definitions(cohort_code),
+        criteria_snapshot   JSONB NOT NULL,
+        assigned_by_run_id  TEXT NOT NULL,
+        assigned_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (channel_id, vertical, cohort_code)
+    )""",
+    """CREATE INDEX IF NOT EXISTS idx_channel_cohorts_channel ON channel_cohorts(channel_id)""",
+
+    # === v4 video sample_reason + is_comparison_pool (plan §10, §12) ===
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sample_reason TEXT
+        CHECK (sample_reason IN ('latest','top_lifetime'))""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_comparison_pool BOOLEAN NOT NULL DEFAULT FALSE""",
 ]
 
 
