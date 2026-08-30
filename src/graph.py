@@ -37,6 +37,8 @@ from src.nodes.classify_channel import classify_channel
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 from src.nodes.populate_shared_fields import populate_shared_fields
 from src.nodes.assign_cohorts import assign_cohorts
+from src.nodes.populate_taxonomy_dimensions import populate_taxonomy_dimensions
+from src.nodes.populate_crime_metadata import populate_crime_metadata
 from src.nodes.expand_niche_adjacency import expand_niche_adjacency
 from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
 from src.nodes.describe_video_titles import describe_video_titles
@@ -189,6 +191,8 @@ def build_graph() -> StateGraph:
     graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
     graph.add_node("describe_video_titles", _logged(describe_video_titles, "describe_video_titles"))
     graph.add_node("populate_shared_fields", _logged(populate_shared_fields, "populate_shared_fields"))
+    graph.add_node("populate_taxonomy_dimensions", _logged(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"))
+    graph.add_node("populate_crime_metadata", _logged(populate_crime_metadata, "populate_crime_metadata"))
     graph.add_node("assign_cohorts", _logged(assign_cohorts, "assign_cohorts"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
@@ -231,7 +235,9 @@ def build_graph() -> StateGraph:
         ["select_next_node", "extract_success_failure_factors", "finalize_dataset"],
     )
     graph.add_edge("extract_success_failure_factors", "describe_video_titles")
-    graph.add_edge("describe_video_titles", "populate_shared_fields")
+    graph.add_edge("describe_video_titles", "populate_taxonomy_dimensions")
+    graph.add_edge("populate_taxonomy_dimensions", "populate_crime_metadata")
+    graph.add_edge("populate_crime_metadata", "populate_shared_fields")
     graph.add_edge("populate_shared_fields", "assign_cohorts")
     graph.add_edge("assign_cohorts", "finalize_dataset")
     graph.add_edge("finalize_dataset", END)

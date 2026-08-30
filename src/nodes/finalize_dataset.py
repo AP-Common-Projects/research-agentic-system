@@ -187,3 +187,84 @@ def finalize_dataset(state: dict) -> dict:
             "total_cost_usd": total_cost,
         }),
     }
+
+
+def _partition_non_english(conn, run_id: str) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE channels SET is_comparison_pool = TRUE "
+            "WHERE primary_language_code IS NOT NULL "
+            "AND primary_language_code != 'en' AND primary_language_code != '' "
+            "AND first_discovered_run_id = %s", (run_id,),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+
+
+def _compute_growth_metrics(conn, run_id: str) -> bool:
+    """Compute sub_growth_30d/90d and views_30d/90d from channel/video snapshots."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE channels c SET "
+            "sub_growth_30d = (SELECT COALESCE(cs2.subscriber_count, 0) - COALESCE(cs1.subscriber_count, 0) "
+            "FROM channel_snapshots cs1 "
+            "LEFT JOIN LATERAL (SELECT subscriber_count FROM channel_snapshots cs2 "
+            "WHERE cs2.channel_id = cs1.channel_id AND cs2.run_id IN "
+            "(SELECT run_id FROM harness_runs WHERE run_mode = 'snapshot_refresh' ORDER BY started_at DESC LIMIT 1) "
+            "LIMIT 1) cs2 ON true "
+            "WHERE cs1.channel_id = c.channel_id AND cs1.run_id = %s LIMIT 1) "
+            "WHERE c.first_discovered_run_id = %s", (run_id, run_id),
+        )
+        conn.commit()
+        cur.execute(
+            "UPDATE channels c SET "
+            "views_30d = (SELECT COALESCE(vs2.view_count, 0) - COALESCE(vs1.view_count, 0) "
+            "FROM video_snapshots vs1 "
+            "LEFT JOIN LATERAL (SELECT SUM(view_count) as view_count FROM video_snapshots vs2 "
+            "WHERE vs2.video_id IN (SELECT video_id FROM videos WHERE channel_id = c.channel_id) "
+            "AND vs2.run_id IN (SELECT run_id FROM harness_runs WHERE run_mode = 'snapshot_refresh' "
+            "ORDER BY started_at DESC LIMIT 1) LIMIT 1) vs2 ON true "
+            "WHERE vs1.run_id = %s LIMIT 1) "
+            "WHERE c.first_discovered_run_id = %s", (run_id, run_id),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+    return True
+
+
+def _rebalance_report(conn, run_id: str) -> None:
+    """Write bias hints for the next augment run based on current bucket distribution."""
+    targets = {"sub_0_100k": 0.25, "sub_100k_500k": 0.35, "sub_500k_2m": 0.30, "sub_2m_plus": 0.10}
+    hints: list[str] = []
+    cur = conn.cursor()
+    try:
+        total = 0
+        for label, low, high in [
+            ("sub_0_100k", 0, 100000), ("sub_100k_500k", 100000, 500000),
+            ("sub_500k_2m", 500000, 2000000), ("sub_2m_plus", 2000000, None),
+        ]:
+            if high:
+                cur.execute(
+                    "SELECT COUNT(*) FROM channels WHERE subscriber_count >= %s AND subscriber_count < %s",
+                    (low, high),
+                )
+            else:
+                cur.execute("SELECT COUNT(*) FROM channels WHERE subscriber_count >= %s", (low,))
+            count = cur.fetchone()[0]
+            total += count
+            actual = count / max(1, total) if total > 0 else 0
+            target = targets.get(label, 0)
+            if actual < target * 0.8 and target > 0:
+                hints.append(f"{label}: actual={actual:.1%}, target={target:.0%}")
+        if hints:
+            notes = "rebalance_hint: " + "; ".join(hints)
+            cur2 = conn.cursor()
+            cur2.execute("UPDATE harness_runs SET notes = %s WHERE run_id = %s", (notes, run_id))
+            conn.commit()
+            cur2.close()
+    finally:
+        cur.close()

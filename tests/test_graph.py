@@ -317,6 +317,8 @@ def test_graph_compiles_and_has_expected_nodes():
         "compact_branch",
         "extract_success_failure_factors",
         "describe_video_titles",
+        "populate_taxonomy_dimensions",
+        "populate_crime_metadata",
         "populate_shared_fields",
         "assign_cohorts",
         "finalize_dataset",
