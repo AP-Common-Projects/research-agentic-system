@@ -488,6 +488,20 @@ MIGRATIONS: list[str] = [
         CHECK (vertical_start_date_basis IN (
             'first_vertical_video_observed','channel_creation_date','self_reported','unknown'
         ))""",
+    # 'earliest_observed_video_lower_bound' distinguishes a date we actually
+    # observed from one that is merely an upper bound because the catalogue
+    # walk was truncated — the honest reading when we hold 50 of a channel's
+    # 2,761 videos. ADD COLUMN IF NOT EXISTS above is a no-op on an existing
+    # table, so the constraint it carries never gets revised; a database
+    # created before this rejected every write carrying the new value, which
+    # aborted the whole channel-persist loop mid-batch and left 166 of 178
+    # channels with no videos.
+    """ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_vertical_start_date_basis_check""",
+    """ALTER TABLE channels ADD CONSTRAINT channels_vertical_start_date_basis_check
+        CHECK (vertical_start_date_basis IS NULL OR vertical_start_date_basis IN (
+            'first_vertical_video_observed','earliest_observed_video_lower_bound',
+            'channel_creation_date','self_reported','unknown'
+        ))""",
 
     # === v4 unified cohorts (plan §5.10) ===
     """CREATE TABLE IF NOT EXISTS cohort_definitions (
