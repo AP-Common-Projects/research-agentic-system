@@ -289,6 +289,7 @@ def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) ->
         "has_sponsor_signal", "has_membership_signal", "uploads_per_week_avg",
         "upload_consistency_score", "data_completeness_score",
         "missing_required_fields", "classifier_model", "classifier_version",
+        "first_video_published_at",
     }
     for col in v3_cols:
         if col in fields:
@@ -328,11 +329,22 @@ def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) ->
 
 
 def persist_channel_snapshot(conn: Any, channel_id: str, run_id: str,
-                              subscriber_count: int, view_count: int, video_count: int) -> None:
-    """One row per channel per run — longitudinal tracking."""
+                              subscriber_count: int, view_count: int, video_count: int,
+                              long_video_count: int | None = None,
+                              shorts_count: int | None = None,
+                              live_stream_count: int | None = None) -> None:
+    """One row per channel per run — longitudinal tracking.
+
+    The three breakdown counts are optional because they cost 4 extra
+    quota units per channel; a caller that skipped the lookup passes None
+    and the columns stay NULL, which reads as "not looked up" rather than
+    a misleading zero.
+    """
     sql = """
-        INSERT INTO channel_snapshots (channel_id, run_id, subscriber_count, total_view_count, total_video_count)
-        VALUES (%(channel_id)s, %(run_id)s, %(subs)s, %(views)s, %(vids)s)
+        INSERT INTO channel_snapshots (channel_id, run_id, subscriber_count, total_view_count,
+                                       total_video_count, long_video_count, shorts_count, live_stream_count)
+        VALUES (%(channel_id)s, %(run_id)s, %(subs)s, %(views)s, %(vids)s,
+                %(long)s, %(shorts)s, %(live)s)
         ON CONFLICT (channel_id, run_id) DO NOTHING
     """
     cur = conn.cursor()
@@ -343,6 +355,9 @@ def persist_channel_snapshot(conn: Any, channel_id: str, run_id: str,
             "subs": subscriber_count or 0,
             "views": view_count or 0,
             "vids": video_count or 0,
+            "long": long_video_count,
+            "shorts": shorts_count,
+            "live": live_stream_count,
         })
         conn.commit()
     except Exception:

@@ -198,6 +198,57 @@ class TestExportExcel:
         assert ch.call_args.args[1] is None
         dominant.assert_not_called()
 
+    def test_all_channels_drops_the_subscriber_floor_and_video_cap(self, tmp_path):
+        """The big-run deliverable's own ask: every discovered channel, no
+        50k floor, and every tagged video with no export_max_videos cap.
+        Implies all_categories too — a sub-floor channel let back in by
+        min_subscribers=0 must not then get dropped by the category filter
+        instead."""
+        out_path = tmp_path / "all_channels.xlsx"
+        with (
+            patch("src.export.fetch_run_channels", return_value=[]) as ch,
+            patch("src.export.fetch_run_videos", return_value=[]) as vid,
+            patch("src.export.fetch_run_niche_breakdown", return_value=[]) as nic,
+            patch("src.export.fetch_run_success_factors", return_value=[]) as suc,
+            patch("src.export.fetch_run_failure_factors", return_value=[]) as fail,
+            patch("src.export.dominant_run_category") as dominant,
+            patch("src.export._fetch", return_value=[]),
+        ):
+            export_excel("run-x", out_path, all_channels=True)
+
+        assert ch.call_args.args[1] is None, "all_channels must imply all_categories"
+        assert ch.call_args.args[2] == 0, "min_subscribers=0 — no floor"
+        assert vid.call_args.args[1] is None, "no export_max_videos cap"
+        assert vid.call_args.args[3] == 0
+        for mock in (nic, suc, fail):
+            assert mock.call_args.args[2] == 0
+        dominant.assert_not_called()
+
+    def test_video_cap_and_channel_scope_are_independent(self, tmp_path):
+        """The 50k floor and category filter are the client's scope
+        requirement and stay on by default. The Videos row cap is a
+        SEPARATE, independent knob (cap_videos) — dropping the cap must
+        not silently drop the floor/category scope, and keeping the scope
+        must not silently reimpose the cap. Regression for conflating the
+        two: an earlier version only offered all_channels, which coupled
+        'no video cap' to 'no floor, no category filter' as one flag."""
+        out_path = tmp_path / "scoped_uncapped.xlsx"
+        with (
+            patch("src.export.fetch_run_channels", return_value=[]) as ch,
+            patch("src.export.fetch_run_videos", return_value=[]) as vid,
+            patch("src.export.fetch_run_niche_breakdown", return_value=[]),
+            patch("src.export.fetch_run_success_factors", return_value=[]),
+            patch("src.export.fetch_run_failure_factors", return_value=[]),
+            patch("src.export.dominant_run_category", return_value="finance"),
+            patch("src.export._fetch", return_value=[]),
+        ):
+            export_excel("run-x", out_path)  # every default: no flags passed
+
+        assert ch.call_args.args[1] == "finance", "category scope must stay on by default"
+        assert ch.call_args.args[2] is None, "50k floor (via _floor()) must stay on by default"
+        assert vid.call_args.args[1] is None, "no row cap by default — cap_videos defaults False"
+        assert vid.call_args.args[2] == "finance", "videos share the channels' category scope"
+
     def test_defaults_output_path_under_export_dir(self, tmp_path):
         with (
             patch("src.export.export_dir", return_value=tmp_path),

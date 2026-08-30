@@ -24,10 +24,12 @@ from __future__ import annotations
 import pytest
 
 from src.db.schema import ensure_schema
+from src.export import fetch_run_channels, fetch_run_videos
 from src.tools.dedup import (
     fetch_videos_by_channels,
     persist_channel,
     persist_channel_signals,
+    persist_channel_snapshot,
     persist_channel_v3,
     persist_edge,
     persist_edges,
@@ -64,6 +66,14 @@ def conn():
 def _cleanup(connection):
     cur = connection.cursor()
     cur.execute("DELETE FROM discovery_edges WHERE run_id = %s", (RUN,))
+    # category_tags has no FK to channels/videos (entity_id is a plain TEXT
+    # column), so deleting the channel below does not cascade into it — an
+    # explicit delete is required or rows accumulate across test runs.
+    cur.execute("DELETE FROM category_tags WHERE run_id = %s", (RUN,))
+    # Same gap: channel_snapshots has no FK/cascade to channels either, so a
+    # snapshot row from one test leaks into the next test's total_video_count
+    # assertion (both use CH1 + RUN) unless deleted explicitly here too.
+    cur.execute("DELETE FROM channel_snapshots WHERE run_id = %s", (RUN,))
     cur.execute("DELETE FROM channels WHERE channel_id LIKE 'UC\\_itest\\_%'")
     connection.commit()
     cur.close()
@@ -277,3 +287,167 @@ class TestPersistVideoV3SQL:
         persist_video(conn, {"video_id": "itest_v1", "channel_id": CH1, "title": "V1"})
         persist_video_v3(conn, "itest_v1", {})  # must not raise
         assert _count(conn, "videos", "WHERE video_id = %s", ("itest_v1",)) == 1
+
+
+class TestFetchRunVideosSQL:
+    """The client's added ask, after reviewing the sample file: a
+    days_since_published column on the Videos sheet. Computed in SQL
+    (NOW() - published_at) rather than stored, since it's a pure function
+    of a value already on the row and would go stale the moment it was
+    persisted."""
+
+    def test_days_since_published_is_computed_from_published_at(self, conn):
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000,
+        })
+        persist_video(conn, {
+            "video_id": "itest_v1", "channel_id": CH1, "title": "V1",
+            "published_at": "2026-01-01T00:00:00Z",
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('video', %s, 'root', %s)", ("itest_v1", RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_videos(RUN, 10)
+        assert len(rows) == 1
+        assert rows[0]["days_since_published"] is not None
+        assert rows[0]["days_since_published"] > 0, (
+            "a video published in the past must show a positive day count"
+        )
+
+    def test_null_published_at_leaves_days_since_published_null(self, conn):
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000,
+        })
+        persist_video(conn, {"video_id": "itest_v1", "channel_id": CH1, "title": "V1"})
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('video', %s, 'root', %s)", ("itest_v1", RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_videos(RUN, 10)
+        assert len(rows) == 1
+        assert rows[0]["days_since_published"] is None
+
+
+class TestFetchRunChannelsSQL:
+    """first_video_published_at is read straight from channels (persisted
+    by resolve_first_video_date, which paginates the uploads playlist to
+    its real last page) — NOT derived from MIN(videos.published_at), which
+    would only ever reflect hydrate_metadata's 50-most-recent-videos
+    sample. last_video_published_at has no such problem: the newest video
+    in the sample genuinely IS the channel's most recent upload, so it's
+    still read straight from the videos table. "Channel Creation Date" is
+    a deliberately human-readable alias for channels.first_seen_at."""
+
+    def test_first_video_published_at_comes_from_the_persisted_column(self, conn):
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000, "first_seen_at": "2020-05-01T00:00:00Z",
+        })
+        persist_channel_v3(conn, CH1, RUN, {
+            "first_video_published_at": "2013-09-12T00:00:00Z",
+        })
+        persist_video(conn, {
+            "video_id": "itest_v1", "channel_id": CH1, "title": "Newest",
+            "published_at": "2026-06-01T00:00:00Z",
+        })
+        # A video older than the persisted first_video_published_at must
+        # NOT leak in via last_video_published_at's MAX() — the two columns
+        # come from different sources and must not cross-contaminate.
+        persist_video(conn, {
+            "video_id": "itest_v2", "channel_id": CH1, "title": "Older sample video",
+            "published_at": "2024-01-01T00:00:00Z",
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('channel', %s, 'root', %s)", (CH1, RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_channels(RUN)
+        assert len(rows) == 1
+        assert rows[0]["first_video_published_at"].year == 2013, (
+            "must be the persisted true-first-video date, not MIN(videos.published_at)"
+        )
+        assert rows[0]["last_video_published_at"].year == 2026, "must be the latest sampled video's date"
+        assert rows[0]["Channel Creation Date"].year == 2020, 'first_seen_at aliased to "Channel Creation Date"'
+
+    def test_unresolved_first_video_date_is_null_not_a_crash(self, conn):
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000,
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('channel', %s, 'root', %s)", (CH1, RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_channels(RUN)
+        assert len(rows) == 1
+        assert rows[0]["first_video_published_at"] is None
+        assert rows[0]["last_video_published_at"] is None
+
+    def test_total_video_count_comes_from_the_snapshot_not_the_sample(self, conn):
+        """channel_snapshots.total_video_count is YouTube's real
+        statistics.videoCount, persisted every run. The videos table only
+        ever holds hydrate_metadata's capped sample (<=50 most recent
+        uploads) — a channel with hundreds of real uploads but 2 hydrated
+        sample rows must still report the real total, not 2."""
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000,
+        })
+        persist_channel_snapshot(conn, CH1, RUN, 100000, 5_000_000, 743)
+        persist_video(conn, {
+            "video_id": "itest_v1", "channel_id": CH1, "title": "Sample video 1",
+            "published_at": "2026-06-01T00:00:00Z",
+        })
+        persist_video(conn, {
+            "video_id": "itest_v2", "channel_id": CH1, "title": "Sample video 2",
+            "published_at": "2024-01-01T00:00:00Z",
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('channel', %s, 'root', %s)", (CH1, RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_channels(RUN)
+        assert len(rows) == 1
+        assert rows[0]["total_video_count"] == 743, (
+            "must be the real YouTube total from channel_snapshots, not COUNT(videos)=2"
+        )
+
+    def test_missing_snapshot_gives_null_total_video_count_not_a_crash(self, conn):
+        persist_channel(conn, {
+            "channel_id": CH1, "title": "T", "discovery_method": "keyword",
+            "subscriber_count": 100000,
+        })
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO category_tags (entity_type, entity_id, tree_node_id, run_id) "
+            "VALUES ('channel', %s, 'root', %s)", (CH1, RUN),
+        )
+        conn.commit()
+        cur.close()
+
+        rows = fetch_run_channels(RUN)
+        assert len(rows) == 1
+        assert rows[0]["total_video_count"] is None

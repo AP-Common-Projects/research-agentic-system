@@ -20,6 +20,12 @@ from src.tools.outlier_score import score_channel_videos
 from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, persist_channel_snapshot, persist_video_v3
 from src.state import NodeLog, ErrorRecord
 
+# YouTube raised the Shorts ceiling from 60s to 3 minutes in Oct 2024.
+# Being under it is necessary but not sufficient — the upload also has to
+# be vertical — so this only narrows the candidate set; UUSH membership
+# decides.
+SHORTS_MAX_SECONDS = 180
+
 
 def _attribute(channel_id: str, kw_found: set[str], gw_found: set[str]) -> str:
     """Which discovery track(s) found this channel.
@@ -77,7 +83,12 @@ def hydrate_metadata(state: dict) -> dict:
     errors: list[dict] = []
     for ch in channels:
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
-        ch["first_seen_at"] = ch.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
+        # YouTube's own channels.list snippet.publishedAt — the channel's
+        # real creation date — was already being fetched into ch["published_at"]
+        # by _parse_channel, then silently discarded here: this line read a
+        # "first_seen_at" key that dict never had, so it always fell through
+        # to "now" instead. Real, better data was sitting right there unused.
+        ch["first_seen_at"] = ch.get("published_at") or datetime.now(timezone.utc).isoformat()
         # Per channel, not per round. This node is the fan-in join and is not
         # wrapped by graph.py's _guarded, so anything escaping here ends the
         # run — and by this point the round's Bright Data records are already
@@ -119,11 +130,43 @@ def hydrate_metadata(state: dict) -> dict:
                     persist_video(conn, vid)
                 # v3: snapshot + enrichment provenance
                 run_id = state.get("run_id", "")
+                # 4 quota units for the long/Shorts/live split of the
+                # lifetime total, plus up to a few more for the Shorts ID
+                # set that settles is_short below. Cheap next to the ~100
+                # units this node already spends hydrating the channel, and
+                # the only way to answer "how many of these are Shorts?" —
+                # statistics.videoCount carries no type breakdown.
+                breakdown = {}
+                shorts_ids: set[str] = set()
+                try:
+                    breakdown = client.get_channel_upload_breakdown(ch["channel_id"])
+                    oldest_sampled = min(
+                        (v.get("published_at") for v in ch.get("_videos", [])
+                         if v.get("published_at")),
+                        default=None,
+                    )
+                    shorts_ids = client.get_channel_shorts_ids(
+                        ch["channel_id"], published_after=oldest_sampled
+                    )
+                except Exception as exc:
+                    # Never fail hydration over the breakdown: the counts
+                    # stay NULL ("not looked up") and is_short falls back to
+                    # the duration bound, which is what the whole pipeline
+                    # did before this existed.
+                    errors.append(ErrorRecord(
+                        node_name="hydrate_metadata",
+                        error_type=type(exc).__name__,
+                        message=f"upload breakdown failed for {ch['channel_id']}: {exc}",
+                        recoverable=True,
+                    ).model_dump())
                 persist_channel_snapshot(
                     conn, ch["channel_id"], run_id,
                     ch.get("subscriber_count", 0),
                     ch.get("view_count", 0),
                     ch.get("video_count", 0),
+                    long_video_count=breakdown.get("long"),
+                    shorts_count=breakdown.get("shorts"),
+                    live_stream_count=breakdown.get("live"),
                 )
                 v3_fields = {
                     "first_discovered_run_id": run_id,
@@ -152,7 +195,26 @@ def hydrate_metadata(state: dict) -> dict:
                         # on a multi-hour or ongoing stream.
                         dur = vid["duration_seconds"]
                         v3_vid["duration_seconds"] = dur
-                        v3_vid["is_short"] = 0 < dur <= 60
+                        # Duration alone can only ever narrow the field, not
+                        # decide it: YouTube's Shorts ceiling is 3 minutes
+                        # (raised from 60s in Oct 2024), and being under it
+                        # is necessary but not sufficient — a brief
+                        # LANDSCAPE upload is not a Short. The old
+                        # `0 < dur <= 60` rule was wrong in both
+                        # directions, filing 61-180s vertical Shorts as
+                        # long-form and short landscape videos as Shorts.
+                        # This is the provisional value; the authoritative
+                        # one is membership in the channel's UUSH
+                        # auto-playlist, applied just below.
+                        v3_vid["is_short"] = 0 < dur <= SHORTS_MAX_SECONDS
+                    if shorts_ids:
+                        # YouTube's own answer wins over any duration rule.
+                        # Only trusted when the lookup actually returned
+                        # something — an empty set can equally mean "no
+                        # Shorts" or "the call failed", and overwriting
+                        # every flag to False on a failed call would be
+                        # worse than the heuristic.
+                        v3_vid["is_short"] = vid["video_id"] in shorts_ids
                     if vid.get("default_language"):
                         v3_vid["language_code"] = vid["default_language"]
                     if v3_vid:

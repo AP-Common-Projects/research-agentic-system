@@ -31,6 +31,7 @@ from src.nodes.resolve_geo_language import resolve_geo_language
 from src.nodes.extract_metadata_signals import extract_metadata_signals
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
+from src.nodes.resolve_first_video_date import resolve_first_video_date
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 from src.nodes.describe_video_titles import describe_video_titles
 
@@ -174,6 +175,7 @@ def build_graph() -> StateGraph:
     graph.add_node("score_signals", _logged(score_signals, "score_signals"))
     graph.add_node("score_thumbnail_signals", _logged(score_thumbnail_signals, "score_thumbnail_signals"))
     graph.add_node("classify_channel", _logged(classify_channel, "classify_channel"))
+    graph.add_node("resolve_first_video_date", _logged(resolve_first_video_date, "resolve_first_video_date"))
     graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
     graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
@@ -202,7 +204,8 @@ def build_graph() -> StateGraph:
         ["score_thumbnail_signals", "check_saturation"],
     )
     graph.add_edge("score_thumbnail_signals", "classify_channel")
-    graph.add_edge("classify_channel", "check_saturation")
+    graph.add_edge("classify_channel", "resolve_first_video_date")
+    graph.add_edge("resolve_first_video_date", "check_saturation")
     graph.add_conditional_edges(
         "check_saturation",
         route_after_saturation,
