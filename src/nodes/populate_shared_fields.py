@@ -140,13 +140,21 @@ def populate_shared_fields(state: dict) -> dict:
         conn.rollback()
 
     # -- LLM: creator_authority + search_browse (floor-qualifying only) ---
+    # See populate_taxonomy_dimensions: optional, default-global scoping so a
+    # backfill can skip channels no deliverable contains.
+    scope = state.get("scope_channel_ids")
+    scope_sql = "AND channel_id = ANY(%s) " if scope else ""
+    scope_params: tuple = (list(scope),) if scope else ()
+
     classified = 0
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT channel_id, title, description, subscriber_count, engagement_score, is_likely_news, "
             "evergreen_score FROM channels WHERE creator_authority = 'unknown' "
-            "AND (meets_subscriber_floor = TRUE OR subscriber_count >= 10000) LIMIT 50"
+            "AND (meets_subscriber_floor = TRUE OR subscriber_count >= 10000) "
+            + scope_sql + "LIMIT 50",
+            scope_params,
         )
         eligible = cur.fetchall()
         cur.close()

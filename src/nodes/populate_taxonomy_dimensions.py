@@ -85,6 +85,19 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
     except Exception:
         return {"node_logs": _log({"reason": "store unreachable", "populated": 0})}
 
+    # Optional restriction to the channels a deliverable actually contains.
+    # The default stays global, so normal runs are unaffected; a backfill can
+    # pass scope_channel_ids to avoid paying for channels no workbook will
+    # ever show. Unscoped, one backfill had 3,415 channels queued at ~2.8/min
+    # -- 20 hours and roughly $8 -- to populate ~780 that mattered.
+    scope = state.get("scope_channel_ids")
+    if scope:
+        scope_sql = "AND c.channel_id = ANY(%s) "
+        scope_params: tuple = (list(scope),)
+    else:
+        scope_sql = ""
+        scope_params = ()
+
     # Find floor-qualifying channels without taxonomy dimensions yet
     try:
         cur = conn.cursor()
@@ -95,7 +108,9 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
             "LEFT JOIN channel_niches cn ON c.channel_id = cn.channel_id AND cn.is_primary = TRUE "
             "LEFT JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
             "WHERE c.meets_subscriber_floor = TRUE "
-            "AND c.primary_topic IS NULL LIMIT 50"
+            "AND c.primary_topic IS NULL "
+            + scope_sql + "LIMIT 50",
+            scope_params,
         )
         eligible = cur.fetchall()
         cur.close()
