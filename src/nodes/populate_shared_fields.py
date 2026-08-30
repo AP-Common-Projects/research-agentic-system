@@ -162,11 +162,17 @@ def populate_shared_fields(state: dict) -> dict:
                 elif eg and float(eg or 0) > 70:
                     sb_est = "search_driven"
 
+                # engagement_score is a NUMERIC column, so psycopg hands
+                # back Decimal, which json.dumps cannot serialize. Without
+                # the cast every channel raised TypeError and was skipped,
+                # which is why creator_authority read 'unknown' across the
+                # whole table. Same bug already fixed in classify_channel.py
+                # and extract_success_failure_factors.py.
                 prompt = json.dumps({
                     "channel_title": title or "",
                     "description": (desc or "")[:500],
-                    "subscriber_count": subs or 0,
-                    "engagement_score": eng or 0,
+                    "subscriber_count": int(subs or 0),
+                    "engagement_score": float(eng or 0),
                     "is_likely_news": bool(news),
                 })
 

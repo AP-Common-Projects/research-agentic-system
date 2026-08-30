@@ -28,6 +28,16 @@ RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 _SHORTS_SAMPLE_LIMIT = 50
 
 
+class YouTubeQuotaExhausted(httpx.HTTPStatusError):
+    """Every configured key has spent its project's daily allowance.
+
+    Subclasses HTTPStatusError so callers that already handle transport
+    failures keep working unchanged; the separate type only exists so a
+    long driver loop can distinguish "no quota anywhere until the ~10:00
+    reset" from a per-channel error worth continuing past.
+    """
+
+
 def _is_quota_exceeded(response: httpx.Response) -> bool:
     """A 403 that specifically means the daily allowance is spent.
 
@@ -181,6 +191,15 @@ class YouTubeAPIClient:
                     continue
                 logger.error("youtube_all_keys_exhausted",
                              keys=len(self._api_keys))
+                # Distinct type so a driver can stop instead of marching
+                # through the rest of its work on failing calls. A run once
+                # reported "165/165 hydrated" in 454s while writing videos
+                # for 61 channels, because every call after exhaustion
+                # failed fast and looked like completed work.
+                raise YouTubeQuotaExhausted(
+                    f"all {len(self._api_keys)} YouTube API keys are quota-exhausted",
+                    request=response.request, response=response,
+                )
             response.raise_for_status()
             return response.json()
 
