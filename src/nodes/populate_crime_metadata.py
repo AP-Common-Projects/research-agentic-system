@@ -21,11 +21,15 @@ from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
 
-SYSTEM_PROMPT = """You analyze a true-crime video to extract structured case metadata.
+SYSTEM_PROMPT = """You analyze true-crime videos to extract structured case metadata.
 
-Input: video title, description, channel information.
+Input: a JSON array of videos, each with a title, description and channel.
 
-Output:
+Return a JSON array of the SAME length, in the SAME order — one object per
+input video. Analyse each video independently; do not let one video's case
+influence another's.
+
+For each video, output:
 1. crime_type: the type of crime depicted.
    Propose a concise label (e.g. "homicide", "missing_person", "fraud", "robbery", "domestic_violence",
    "kidnapping", "terrorism", "cybercrime", "drug_crime", "other").
@@ -61,20 +65,32 @@ Rules:
 - reveal_mechanisms MUST be from the exact listed values.
 - Allow multiple reveal mechanisms per video.
 - NEVER fabricate. If the video doesn't clearly indicate something, use "unknown".
+- Preserve the exact order and count of the input videos.
 
-Respond with ONLY a JSON object:
-{
-  "crime_type": "...",
-  "victim_type": "...",
-  "suspect_relationship": "...",
-  "investigation_type": "...",
-  "evidence_type_primary": "...",
-  "case_status": "...",
-  "case_fame_level": "...",
-  "case_country": "...",
-  "case_year": null,
-  "reveal_mechanisms": ["dna", "witness"]
-}"""
+Respond with ONLY a JSON array, one object per input video, in order:
+[
+  {
+    "crime_type": "...",
+    "victim_type": "...",
+    "suspect_relationship": "...",
+    "investigation_type": "...",
+    "evidence_type_primary": "...",
+    "case_status": "...",
+    "case_fame_level": "...",
+    "case_country": "...",
+    "case_year": null,
+    "reveal_mechanisms": ["dna", "witness"]
+  }
+]"""
+
+# One mid-tier call per video cost ~$0.003 and, at ~94 videos across 240
+# channels, would have run to roughly $67 for Crime alone — about seventeen
+# times everything else in the pipeline combined, purely from the call
+# pattern rather than the work. Batching matches what describe_video_titles
+# and the factor extractor already do; 20 is deliberately below their 30
+# because each item here carries a 600-char description and returns ten
+# fields, so the response is far larger per item.
+CRIME_METADATA_BATCH_SIZE = 20
 
 
 def _safe_str(val: Any) -> str:
@@ -128,88 +144,118 @@ def populate_crime_metadata(state: dict) -> dict:
         put_connection(conn)
         return {"node_logs": _log({"reason": "query failed", "populated": 0})}
 
-    populated = 0
-    for vid_id, vtitle, vdesc, ch_id, chtitle in eligible:
+    _VALID_MECHANISMS = {
+        "interrogation_confession", "suspect_mistake", "cctv",
+        "phone_device_data", "dna", "call_911", "witness",
+        "social_media", "financial_records", "location_data", "other",
+    }
+
+    def _persist(row, parsed) -> bool:
+        """Write one video's case metadata and reveal mechanisms."""
+        vid_id = row[0]
+        cur2 = conn.cursor()
         try:
-            prompt = json.dumps({
-                "video_title": _safe_str(vtitle),
-                "description": _safe_str(vdesc)[:600],
-                "channel": _safe_str(chtitle),
-            }, indent=2)
+            cur2.execute(
+                """INSERT INTO crime_case_metadata (video_id, crime_type, victim_type,
+                   suspect_relationship, investigation_type, evidence_type_primary,
+                   case_status, case_fame_level, case_country, case_year,
+                   classifier_model, classifier_version)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (video_id) DO UPDATE SET
+                   crime_type = EXCLUDED.crime_type,
+                   case_status = EXCLUDED.case_status,
+                   case_fame_level = EXCLUDED.case_fame_level,
+                   classifier_model = EXCLUDED.classifier_model,
+                   classified_at = now()""",
+                (vid_id,
+                 _safe_str(parsed.get("crime_type")),
+                 _safe_str(parsed.get("victim_type")),
+                 _safe_str(parsed.get("suspect_relationship")),
+                 _safe_str(parsed.get("investigation_type")),
+                 _safe_str(parsed.get("evidence_type_primary")),
+                 _safe_str(parsed.get("case_status", "unknown")),
+                 _safe_str(parsed.get("case_fame_level", "unknown")),
+                 _safe_str(parsed.get("case_country")),
+                 parsed.get("case_year"),
+                 "deepseek-v4-pro", "v4.0"),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            return False
+        finally:
+            cur2.close()
 
-            result = complete_tier("mid", prompt, SYSTEM_PROMPT)
-            content = result.get("content", "")
-            cleaned = content.strip()
-            m = re.search(r"\{[\s\S]*\}", cleaned)
-            if not m:
-                continue
-            parsed = json.loads(m.group(0))
+        mechanisms = parsed.get("reveal_mechanisms", [])
+        if isinstance(mechanisms, list):
+            for mech in mechanisms:
+                mech_str = _safe_str(mech).lower().replace(" ", "_").replace("/", "_")
+                if mech_str not in _VALID_MECHANISMS:
+                    continue
+                cur3 = conn.cursor()
+                try:
+                    cur3.execute(
+                        "INSERT INTO video_reveal_mechanisms (video_id, mechanism) "
+                        "VALUES (%s, %s) ON CONFLICT (video_id, mechanism) DO NOTHING",
+                        (vid_id, mech_str),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                finally:
+                    cur3.close()
+        return True
 
-            # Write crime_case_metadata
-            cur2 = conn.cursor()
-            try:
-                cur2.execute(
-                    """INSERT INTO crime_case_metadata (video_id, crime_type, victim_type,
-                       suspect_relationship, investigation_type, evidence_type_primary,
-                       case_status, case_fame_level, case_country, case_year,
-                       classifier_model, classifier_version)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (video_id) DO UPDATE SET
-                       crime_type = EXCLUDED.crime_type,
-                       case_status = EXCLUDED.case_status,
-                       case_fame_level = EXCLUDED.case_fame_level,
-                       classifier_model = EXCLUDED.classifier_model,
-                       classified_at = now()""",
-                    (vid_id,
-                     _safe_str(parsed.get("crime_type")),
-                     _safe_str(parsed.get("victim_type")),
-                     _safe_str(parsed.get("suspect_relationship")),
-                     _safe_str(parsed.get("investigation_type")),
-                     _safe_str(parsed.get("evidence_type_primary")),
-                     _safe_str(parsed.get("case_status", "unknown")),
-                     _safe_str(parsed.get("case_fame_level", "unknown")),
-                     _safe_str(parsed.get("case_country")),
-                     parsed.get("case_year"),
-                     "deepseek-v4-pro", "v4.0"),
+    def _classify(rows) -> int:
+        """One LLM call for a batch of videos, splitting on parse failure.
+
+        A batch whose JSON comes back malformed is halved and retried, down
+        to single items, so one bad response costs its own item rather than
+        the other nineteen. Same recovery the video-description backfill
+        needed: batching is what makes this node affordable, and without the
+        split a single failure would silently drop a whole batch.
+        """
+        if not rows:
+            return 0
+        payload = [
+            {
+                "video_title": _safe_str(r[1]),
+                "description": _safe_str(r[2])[:600],
+                "channel": _safe_str(r[4]),
+            }
+            for r in rows
+        ]
+        try:
+            result = complete_tier("mid", json.dumps(payload, indent=2), SYSTEM_PROMPT)
+            content = (result.get("content") or "").strip()
+            m = re.search(r"\[[\s\S]*\]", content)
+            parsed = json.loads(m.group(0)) if m else None
+            if not isinstance(parsed, list) or len(parsed) != len(rows):
+                raise ValueError(
+                    f"expected {len(rows)} objects, got "
+                    f"{len(parsed) if isinstance(parsed, list) else type(parsed).__name__}"
                 )
-                conn.commit()
-                cur2.close()
-            except Exception:
-                conn.rollback()
-                cur2.close()
-                continue
-
-            # Write reveal_mechanisms
-            mechanisms = parsed.get("reveal_mechanisms", [])
-            if isinstance(mechanisms, list):
-                valid = {
-                    "interrogation_confession", "suspect_mistake", "cctv",
-                    "phone_device_data", "dna", "call_911", "witness",
-                    "social_media", "financial_records", "location_data", "other",
-                }
-                for mech in mechanisms:
-                    mech_str = _safe_str(mech).lower().replace(" ", "_").replace("/", "_")
-                    if mech_str in valid:
-                        try:
-                            cur3 = conn.cursor()
-                            cur3.execute(
-                                "INSERT INTO video_reveal_mechanisms (video_id, mechanism) "
-                                "VALUES (%s, %s) ON CONFLICT (video_id, mechanism) DO NOTHING",
-                                (vid_id, mech_str),
-                            )
-                            conn.commit()
-                            cur3.close()
-                        except Exception:
-                            conn.rollback()
-
-            populated += 1
         except Exception as exc:
-            errors.append(ErrorRecord(
-                node_name="populate_crime_metadata",
-                error_type=type(exc).__name__,
-                message=str(exc),
-                recoverable=True,
-            ).model_dump())
+            if len(rows) == 1:
+                errors.append(ErrorRecord(
+                    node_name="populate_crime_metadata",
+                    error_type=type(exc).__name__,
+                    message=f"unrecoverable for {rows[0][0]}: {exc}",
+                    recoverable=True,
+                ).model_dump())
+                return 0
+            mid = len(rows) // 2
+            return _classify(rows[:mid]) + _classify(rows[mid:])
+
+        done = 0
+        for row, obj in zip(rows, parsed):
+            if isinstance(obj, dict) and _persist(row, obj):
+                done += 1
+        return done
+
+    populated = 0
+    for i in range(0, len(eligible), CRIME_METADATA_BATCH_SIZE):
+        populated += _classify(eligible[i : i + CRIME_METADATA_BATCH_SIZE])
 
     put_connection(conn)
     return {
