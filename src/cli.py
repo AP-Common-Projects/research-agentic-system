@@ -69,6 +69,12 @@ async def _run(niches: list[str], resume_thread_id: str | None) -> dict:
 
         path = export_run(export_run_id, thread_id)
         print(f"\nExported to {path}")
+        # Curated scope, same as every prior run: 50k subscriber floor,
+        # auto-detected dominant category. cap_videos defaults to False —
+        # every qualifying video, not a top-500-by-outlier-score preview;
+        # the big runs' own ask. all_channels=True (dropping the floor
+        # itself) is available directly for a full-dump export if ever
+        # needed, opt-in only.
         xlsx_path = export_excel(export_run_id, path / f"{export_run_id}.xlsx")
         print(f"Excel workbook: {xlsx_path}")
     except Exception as exc:

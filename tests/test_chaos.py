@@ -293,6 +293,42 @@ def test_hydrate_metadata_db_unavailable():
     assert any(l.get("node_name") == "hydrate_metadata" for l in result.get("node_logs", []))
 
 
+def test_hydrate_metadata_uses_the_channels_real_creation_date():
+    """_parse_channel already fetches YouTube's real snippet.publishedAt
+    (the channel's actual creation date) into ch["published_at"] — a prior
+    version read a "first_seen_at" key that dict never had, so it always
+    fell through to "now" and silently discarded the real value."""
+    state = {"discovered_channel_ids": ["ch1"], "thread_id": "t", "run_id": "r"}
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+
+    with (
+        patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
+        patch("src.db.connection.get_connection", return_value=conn),
+        patch("src.db.connection.put_connection"),
+        patch("src.tools.hydrate_metadata.persist_channel") as mock_persist_channel,
+        patch("src.tools.hydrate_metadata.persist_video"),
+        patch("src.tools.hydrate_metadata.persist_channel_v3"),
+        patch("src.tools.hydrate_metadata.persist_channel_snapshot"),
+        patch("src.tools.hydrate_metadata.persist_video_v3"),
+        patch("src.tools.dedup.persist_category_tags"),
+    ):
+        client = MagicMock()
+        client.get_channels.return_value = [{
+            "channel_id": "ch1", "title": "C1", "subscriber_count": 100,
+            "published_at": "2019-03-14T00:00:00Z",  # real YouTube channel creation date
+        }]
+        client.get_channel_videos.return_value = []
+        client.get_quota_used.return_value = 0
+        mock_yt.return_value = client
+
+        hydrate_metadata(state)
+
+    assert mock_persist_channel.call_count == 1
+    persisted_channel = mock_persist_channel.call_args.args[1]
+    assert persisted_channel["first_seen_at"] == "2019-03-14T00:00:00Z"
+
+
 def _brightdata_config():
     """Config double for the Bright Data client.
 

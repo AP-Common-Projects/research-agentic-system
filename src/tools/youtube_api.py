@@ -238,6 +238,176 @@ class YouTubeAPIClient:
                 results.append(self._parse_video(item))
         return results
 
+    def get_channel_first_video_published_at(
+        self, channel_id: str, max_pages: int = 200
+    ) -> str | None:
+        """The channel's TRUE first-ever upload's publish date.
+
+        get_channel_videos only ever fetches one page (<=50 items) of the
+        uploads playlist, which the API returns newest-first with no
+        "oldest first" sort available — so that one page is the channel's
+        most recent uploads, not its earliest. For any channel with more
+        than 50 videos ever, the "first video" derived from that one page is
+        actually just the oldest video in a RECENT window, sometimes off by
+        over a decade (verified live: a channel active since 2013 showed a
+        "first video" from 2025, because it has hundreds of uploads and only
+        the newest 50 were ever fetched).
+
+        The only way to get the real answer is to paginate the uploads
+        playlist all the way to its last page — playlistItems.list costs
+        just 1 quota unit per call regardless of page size, so this is cheap
+        even for a channel with a few thousand videos. max_pages is a safety
+        ceiling (200 pages = up to 10,000 videos) so a pathological channel
+        can't turn one channel's lookup into an unbounded call sequence.
+        """
+        if not self.check_quota(1):
+            return None
+        channels_data = self._get("channels", {"part": "contentDetails", "id": channel_id})
+        self._track_quota(1)
+        items = channels_data.get("items", [])
+        if not items:
+            return None
+        uploads_playlist = (
+            items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
+        )
+        if not uploads_playlist:
+            return None
+
+        oldest_published_at: str | None = None
+        page_token: str | None = None
+        for _ in range(max_pages):
+            if not self.check_quota(1):
+                logger.warning("quota_ceiling_hit_mid_pagination", channel_id=channel_id)
+                break
+            params = {"part": "snippet", "playlistId": uploads_playlist, "maxResults": 50}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                page = self._get("playlistItems", params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 404):
+                    logger.warning(
+                        "youtube_uploads_playlist_unavailable",
+                        channel_id=channel_id, status=exc.response.status_code,
+                    )
+                    break
+                raise
+            self._track_quota(1)
+            page_items = page.get("items", [])
+            if page_items:
+                last_snippet = page_items[-1].get("snippet", {})
+                published = last_snippet.get("publishedAt")
+                if published:
+                    oldest_published_at = published
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+        return oldest_published_at
+
+    def get_channel_upload_breakdown(self, channel_id: str) -> dict[str, int | None]:
+        """How many of the channel's uploads are long-form vs Shorts vs live.
+
+        statistics.videoCount is a single lifetime total with no type
+        breakdown, and the API exposes no other endpoint that splits it.
+        YouTube does, however, auto-generate one playlist per upload type,
+        addressed by swapping the uploads playlist's `UU` prefix:
+
+            UU<suffix>    every upload      (== statistics.videoCount)
+            UULF<suffix>  long-form only
+            UUSH<suffix>  Shorts only
+            UULV<suffix>  live stream VODs only
+
+        playlistItems.list reports a playlist's size in
+        pageInfo.totalResults for 1 quota unit, so the whole breakdown
+        costs 4 units per channel — versus paginating every upload, which
+        for an 11k-video channel would be ~460 units and blow the daily
+        ceiling across a full run.
+
+        Verified on real channels: UULF + UUSH + UULV == UU exactly. A 404
+        means the channel has none of that type (never posted a Short,
+        never went live), which is a real zero rather than an error.
+
+        Returns keys total/long/shorts/live; a value is None only when the
+        lookup genuinely failed, so callers can tell "no Shorts" (0) from
+        "we don't know" (None) instead of persisting a wrong zero.
+        """
+        suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        out: dict[str, int | None] = {}
+        for key, prefix in (("total", "UU"), ("long", "UULF"),
+                            ("shorts", "UUSH"), ("live", "UULV")):
+            if not self.check_quota(1):
+                logger.warning("quota_ceiling_hit_breakdown", channel_id=channel_id)
+                out[key] = None
+                continue
+            try:
+                page = self._get(
+                    "playlistItems",
+                    {"part": "id", "playlistId": prefix + suffix, "maxResults": 1},
+                )
+                self._track_quota(1)
+                out[key] = page.get("pageInfo", {}).get("totalResults", 0)
+            except httpx.HTTPStatusError as exc:
+                self._track_quota(1)
+                if exc.response.status_code == 404:
+                    out[key] = 0
+                else:
+                    logger.warning(
+                        "youtube_breakdown_playlist_failed",
+                        channel_id=channel_id, playlist_type=key,
+                        status=exc.response.status_code,
+                    )
+                    out[key] = None
+        return out
+
+    def get_channel_shorts_ids(
+        self, channel_id: str, published_after: str | None = None, max_pages: int = 40
+    ) -> set[str]:
+        """Video IDs YouTube itself files under this channel's Shorts.
+
+        The duration heuristic this replaces is wrong in both directions:
+        YouTube's Shorts ceiling is 3 minutes, not 60 seconds (so a 61s
+        vertical Short reads as long-form), and a brief LANDSCAPE upload is
+        not a Short at all (so it reads as one). Membership in the UUSH
+        playlist is YouTube's own answer to the question.
+
+        UUSH is ordered newest-first, so `published_after` lets a caller
+        that only sampled a channel's recent uploads stop paginating as
+        soon as the playlist runs older than anything it holds.
+        """
+        suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        playlist_id = "UUSH" + suffix
+        ids: set[str] = set()
+        page_token: str | None = None
+        for _ in range(max_pages):
+            if not self.check_quota(1):
+                logger.warning("quota_ceiling_hit_shorts_ids", channel_id=channel_id)
+                break
+            params = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 50}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                page = self._get("playlistItems", params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 404):
+                    # No Shorts playlist at all — the channel has never
+                    # posted one. An empty set is the correct answer.
+                    break
+                raise
+            self._track_quota(1)
+            passed_window = False
+            for item in page.get("items", []):
+                details = item.get("contentDetails", {})
+                video_id = details.get("videoId")
+                if video_id:
+                    ids.add(video_id)
+                published = details.get("videoPublishedAt")
+                if published_after and published and published < published_after:
+                    passed_window = True
+            page_token = page.get("nextPageToken")
+            if passed_window or not page_token:
+                break
+        return ids
+
     def _parse_channel(self, item: dict) -> dict:
         snippet = item.get("snippet", {})
         stats = item.get("statistics", {})

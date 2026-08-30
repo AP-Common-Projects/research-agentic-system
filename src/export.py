@@ -68,7 +68,9 @@ def _floor() -> int:
     return int(get_config().harness.subscriber_floor)
 
 
-def fetch_run_channels(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+def fetch_run_channels(
+    run_id: str, category: str | None = None, min_subscribers: int | None = None
+) -> list[dict[str, Any]]:
     """Channels tagged to this run, with the full v3 enrichment set flattened.
 
     v1's `extra->>'engagement_rate'/'cadence'/'velocity'` JSONB reads are
@@ -85,11 +87,59 @@ def fetch_run_channels(run_id: str, category: str | None = None) -> list[dict[st
     returns a lifestyle vlog named "True Crime PROFILE 2026" — and the
     classifier correctly labels them; the category filter is what keeps
     them out of a single-category deliverable.
+
+    first_video_published_at is the channel's real first-ever upload date,
+    resolved by resolve_first_video_date paginating the uploads playlist to
+    its actual last page — NOT derived from MIN(videos.published_at). That
+    would only reflect hydrate_metadata's 50-most-recent-videos sample
+    (the API returns newest-first, no oldest-first sort exists), which for
+    any channel with more than 50 uploads ever is the oldest video in a
+    RECENT window, not the true first one — verified off by over a decade
+    on a real channel. last_video_published_at doesn't have this problem:
+    the newest video in the sample IS genuinely the channel's most recent
+    upload, so it's still read straight from the videos table.
+
+    total_video_count is the channel's real total upload count, straight
+    from YouTube's channels.list statistics.videoCount (persisted every run
+    into channel_snapshots by hydrate_metadata) — NOT COUNT(videos), which
+    would only ever be hydrate_metadata's capped sample (<=50 most recent
+    uploads), the exact same trap first_video_published_at had to be fixed
+    for.
+
+    total_long_video_count / total_shorts_count / total_live_stream_count
+    break that single total down by upload type, and satisfy
+    long + shorts + live = total exactly. statistics.videoCount carries no
+    type split, so these come from YouTube's auto-generated per-type
+    playlists (UULF/UUSH/UULV) — see
+    YouTubeAPIClient.get_channel_upload_breakdown. They are NOT derived by
+    counting the Videos/Shorts sheets: those hold only the <=50-video
+    sample, so their ratio says nothing about a channel with 11k uploads.
+    NULL means the breakdown was never looked up for that run, which is
+    deliberately distinct from a real 0.
+
+    min_subscribers overrides the client's 50k floor — pass 0 for "every
+    discovered channel, no floor", the big-run deliverable's own ask.
     """
+    floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
         SELECT DISTINCT
                c.channel_id, c.title, c.subscriber_count, c.description,
-               c.discovery_method, c.first_seen_at,
+               c.discovery_method, c.first_seen_at AS "Channel Creation Date",
+               c.first_video_published_at,
+               (SELECT MAX(v.published_at) FROM videos v WHERE v.channel_id = c.channel_id)
+                   AS last_video_published_at,
+               (SELECT cs.total_video_count FROM channel_snapshots cs
+                    WHERE cs.channel_id = c.channel_id AND cs.run_id = t.run_id)
+                   AS total_video_count,
+               (SELECT cs.long_video_count FROM channel_snapshots cs
+                    WHERE cs.channel_id = c.channel_id AND cs.run_id = t.run_id)
+                   AS total_long_video_count,
+               (SELECT cs.shorts_count FROM channel_snapshots cs
+                    WHERE cs.channel_id = c.channel_id AND cs.run_id = t.run_id)
+                   AS total_shorts_count,
+               (SELECT cs.live_stream_count FROM channel_snapshots cs
+                    WHERE cs.channel_id = c.channel_id AND cs.run_id = t.run_id)
+                   AS total_live_stream_count,
                c.country_code, c.region,
                c.primary_language_code, c.language_confidence,
                c.face_status, c.dominant_format,
@@ -104,7 +154,7 @@ def fetch_run_channels(run_id: str, category: str | None = None) -> list[dict[st
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
         WHERE t.run_id = %s
-          AND c.subscriber_count >= {_floor()}
+          AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
     if category:
@@ -114,7 +164,12 @@ def fetch_run_channels(run_id: str, category: str | None = None) -> list[dict[st
     return _fetch(sql, params)
 
 
-def fetch_run_videos(run_id: str, limit: int, category: str | None = None) -> list[dict[str, Any]]:
+def fetch_run_videos(
+    run_id: str,
+    limit: int | None,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+) -> list[dict[str, Any]]:
     """This run's videos, highest outlier score first, with v3's title
     signal columns and evergreen/news flags flattened alongside them.
 
@@ -124,13 +179,21 @@ def fetch_run_videos(run_id: str, limit: int, category: str | None = None) -> li
 
     Scoped to the same channels the Channels sheet carries — a video whose
     channel was filtered out for being under the subscriber floor or in
-    another category must not survive here.
+    another category must not survive here. Pass limit=None for every
+    tagged video with no cap — the big-run deliverable's own ask — and
+    min_subscribers=0 alongside it so the floor doesn't quietly re-exclude
+    everything limit=None just stopped capping.
     """
+    floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
         SELECT DISTINCT
                v.video_id, v.channel_id, c.title AS channel_title,
                v.title, v.video_description, v.view_count, v.like_count, v.comment_count,
-               v.published_at, v.outlier_score,
+               v.published_at,
+               CASE WHEN v.published_at IS NOT NULL
+                    THEN ROUND(EXTRACT(EPOCH FROM (NOW() - v.published_at)) / 86400)
+               END AS days_since_published,
+               v.outlier_score,
                v.duration_seconds, v.is_short, v.language_code,
                v.evergreen_score, v.is_likely_news, v.views_per_day_since_publish,
                v.title_word_count, v.title_has_number,
@@ -141,20 +204,26 @@ def fetch_run_videos(run_id: str, limit: int, category: str | None = None) -> li
         JOIN channels c ON c.channel_id = v.channel_id
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
         WHERE t.run_id = %s
-          AND c.subscriber_count >= {_floor()}
+          AND c.subscriber_count >= {floor}
     """
-    params: tuple = (run_id, limit)
+    params: tuple = (run_id,)
     if category:
         sql += " AND nt.parent_category = %s"
-        params = (run_id, category, limit)
-    sql += " ORDER BY v.outlier_score DESC NULLS LAST LIMIT %s"
+        params = params + (category,)
+    sql += " ORDER BY v.outlier_score DESC NULLS LAST"
+    if limit is not None:
+        sql += " LIMIT %s"
+        params = params + (limit,)
     return _fetch(sql, params)
 
 
-def fetch_run_niche_breakdown(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+def fetch_run_niche_breakdown(
+    run_id: str, category: str | None = None, min_subscribers: int | None = None
+) -> list[dict[str, Any]]:
     """One row per niche this run actually populated — category, sub-niche,
     and how many of this run's channels landed in it. Feeds the Excel
     Overview sheet and the Niches sheet."""
+    floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
         SELECT nt.niche_id, nt.parent_category AS category, nt.niche_name AS sub_niche,
                nt.description, nt.is_evergreen_prone,
@@ -164,7 +233,7 @@ def fetch_run_niche_breakdown(run_id: str, category: str | None = None) -> list[
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         WHERE t.run_id = %s
-          AND c.subscriber_count >= {_floor()}
+          AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
     if category:
@@ -177,10 +246,13 @@ def fetch_run_niche_breakdown(run_id: str, category: str | None = None) -> list[
     return _fetch(sql, params)
 
 
-def _fetch_run_factors(table: str, taxonomy: str, run_id: str, category: str | None) -> list[dict[str, Any]]:
+def _fetch_run_factors(
+    table: str, taxonomy: str, run_id: str, category: str | None, min_subscribers: int | None = None
+) -> list[dict[str, Any]]:
     """Shared body for the success/failure factor sheets — identical shape,
     identical filters, only the pair of table names differs. Both are
     scoped to the same channels the Channels sheet carries."""
+    floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
         SELECT f.channel_id, c.title AS channel_title, c.subscriber_count,
                ft.factor_code, ft.factor_label, ft.factor_group,
@@ -190,7 +262,7 @@ def _fetch_run_factors(table: str, taxonomy: str, run_id: str, category: str | N
         JOIN channels c ON c.channel_id = f.channel_id
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
         WHERE f.extracted_by_run_id = %s
-          AND c.subscriber_count >= {_floor()}
+          AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
     if category:
@@ -200,19 +272,23 @@ def _fetch_run_factors(table: str, taxonomy: str, run_id: str, category: str | N
     return _fetch(sql, params)
 
 
-def fetch_run_success_factors(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+def fetch_run_success_factors(
+    run_id: str, category: str | None = None, min_subscribers: int | None = None
+) -> list[dict[str, Any]]:
     """Channels' confirmed success factors for this run, joined to their
     taxonomy label so the sheet reads without a code lookup."""
     return _fetch_run_factors(
-        "channel_success_factors", "success_factor_taxonomy", run_id, category
+        "channel_success_factors", "success_factor_taxonomy", run_id, category, min_subscribers
     )
 
 
-def fetch_run_failure_factors(run_id: str, category: str | None = None) -> list[dict[str, Any]]:
+def fetch_run_failure_factors(
+    run_id: str, category: str | None = None, min_subscribers: int | None = None
+) -> list[dict[str, Any]]:
     """Channels' confirmed failure factors for this run, joined to their
     taxonomy label so the sheet reads without a code lookup."""
     return _fetch_run_factors(
-        "channel_failure_factors", "failure_factor_taxonomy", run_id, category
+        "channel_failure_factors", "failure_factor_taxonomy", run_id, category, min_subscribers
     )
 
 
@@ -1451,7 +1527,11 @@ _EXCEL_COLUMN_WIDTHS: dict[str, int] = {
     "description": 50, "niche_description": 42, "video_description": 46,
     "subscriber_count": 16, "view_count": 14, "like_count": 12,
     "comment_count": 14, "outlier_score": 14, "discovery_method": 16,
-    "first_seen_at": 20, "published_at": 20,
+    "Channel Creation Date": 22, "first_video_published_at": 22, "last_video_published_at": 22,
+    "total_video_count": 18,
+    "total_long_video_count": 22, "total_shorts_count": 18,
+    "total_live_stream_count": 22,
+    "published_at": 20,
     "country_code": 12, "region": 16,
     "primary_language_code": 14, "language_confidence": 12,
     "face_status": 12, "dominant_format": 20,
@@ -1461,7 +1541,7 @@ _EXCEL_COLUMN_WIDTHS: dict[str, int] = {
     "has_affiliate_signal": 14, "has_sponsor_signal": 14, "has_membership_signal": 16,
     "data_completeness_score": 16, "missing_required_fields": 30,
     "duration_seconds": 14, "is_short": 10, "language_code": 12,
-    "views_per_day_since_publish": 20, "title_word_count": 14,
+    "views_per_day_since_publish": 20, "days_since_published": 18, "title_word_count": 14,
     "title_has_number": 14, "title_is_question": 14, "title_capitalization": 16,
     "title_emoji_count": 14,
     "niche_id": 10, "channel_count": 12, "is_evergreen_prone": 14,
@@ -1590,6 +1670,8 @@ def export_excel(
     out_path: Path | None = None,
     category: str | None = None,
     all_categories: bool = False,
+    all_channels: bool = False,
+    cap_videos: bool = False,
 ) -> Path:
     """Write the full v3 rich workbook for a run. This is the client
     deliverable — filterable/sortable Excel, no AI-generated narrative.
@@ -1602,22 +1684,42 @@ def export_excel(
     Scoped by default to channels over the subscriber floor and in the
     run's dominant category — both client requirements. Pass an explicit
     `category` to override the auto-detected one, or all_categories=True
-    to keep every discovered channel.
+    to keep every discovered channel regardless of niche.
+
+    all_channels=True additionally drops the subscriber floor itself —
+    every discovered channel regardless of subscriber count. Implies
+    all_categories too: a channel kept in purely because the floor no
+    longer excludes it would otherwise still get dropped by the category
+    filter. This is NOT the default for the big-run deliverable — the
+    client's 50k floor and category scoping stand; only the row CAP on
+    the Videos sheet is what the big runs asked to drop.
+
+    cap_videos controls that separately: whether the Videos sheet is
+    truncated to export_max_videos (top-N by outlier score, "the
+    actionable slice, not the dump") or includes every video that
+    qualifies under whatever channel scope was already applied above.
+    Scope (floor/category) and row cap are independent — dropping one
+    must never silently drop the other.
     """
     if out_path is None:
         out_path = export_dir(run_id) / f"{run_id}.xlsx"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if all_channels:
+        all_categories = True
     if all_categories:
         category = None
     elif category is None:
         category = dominant_run_category(run_id)
 
-    channels = fetch_run_channels(run_id, category)
-    videos = fetch_run_videos(run_id, get_config().harness.export_max_videos, category)
-    niches = fetch_run_niche_breakdown(run_id, category)
-    success_factors = fetch_run_success_factors(run_id, category)
-    failure_factors = fetch_run_failure_factors(run_id, category)
+    min_subscribers = 0 if all_channels else None
+    video_limit = get_config().harness.export_max_videos if cap_videos else None
+
+    channels = fetch_run_channels(run_id, category, min_subscribers)
+    videos = fetch_run_videos(run_id, video_limit, category, min_subscribers)
+    niches = fetch_run_niche_breakdown(run_id, category, min_subscribers)
+    success_factors = fetch_run_success_factors(run_id, category, min_subscribers)
+    failure_factors = fetch_run_failure_factors(run_id, category, min_subscribers)
 
     total_cost = 0.0
     try:
@@ -1659,6 +1761,17 @@ def main() -> None:
         "--excel", action="store_true",
         help="Also write the v3 rich Excel workbook (channels/videos/niches/factors, filterable).",
     )
+    parser.add_argument(
+        "--all-channels", action="store_true",
+        help="Every discovered channel regardless of subscriber count, and "
+             "no category filter. The 50k floor and category scoping stay "
+             "on by default — this drops them too.",
+    )
+    parser.add_argument(
+        "--cap-videos", action="store_true",
+        help="Truncate the Videos sheet to the top export_max_videos by "
+             "outlier score. Off by default: every qualifying video ships.",
+    )
     args = parser.parse_args()
 
     path = export_run(args.run_id, args.thread_id)
@@ -1667,7 +1780,10 @@ def main() -> None:
         print(f"  {f.name}  ({f.stat().st_size:,} bytes)")
 
     if args.excel:
-        xlsx_path = export_excel(args.run_id, path / f"{args.run_id}.xlsx")
+        xlsx_path = export_excel(
+            args.run_id, path / f"{args.run_id}.xlsx",
+            all_channels=args.all_channels, cap_videos=args.cap_videos,
+        )
         print(f"Excel workbook: {xlsx_path}  ({xlsx_path.stat().st_size:,} bytes)")
 
 

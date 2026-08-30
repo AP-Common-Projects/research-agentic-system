@@ -18,6 +18,7 @@ from src.nodes.classify_channel import classify_channel
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 from src.nodes.describe_video_titles import describe_video_titles
+from src.nodes.resolve_first_video_date import resolve_first_video_date
 
 
 def _mock_conn(cursor: MagicMock) -> MagicMock:
@@ -582,3 +583,65 @@ class TestDescribeVideoTitles:
 
         mock_complete.assert_not_called()
         assert result["node_logs"][0]["input_summary"]["described"] == 0
+
+
+class TestResolveFirstVideoDate:
+    """first_video_published_at must come from paginating the uploads
+    playlist to its real last page (see test_youtube_api.py) — this class
+    covers the node's own eligibility/persistence wiring, not the
+    pagination logic itself."""
+
+    def test_persists_the_resolved_date_for_each_eligible_channel(self):
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [[("ch1",), ("ch2",)]]
+        conn = _mock_conn(cursor)
+
+        with patch("src.nodes.resolve_first_video_date.get_connection", return_value=conn), \
+             patch("src.nodes.resolve_first_video_date.put_connection"), \
+             patch("src.tools.youtube_api.YouTubeAPIClient") as mock_client_cls, \
+             patch("src.tools.dedup.persist_channel_v3") as mock_persist:
+            mock_client = MagicMock()
+            mock_client.get_channel_first_video_published_at.side_effect = [
+                "2013-09-12T00:00:00Z", "2019-01-01T00:00:00Z",
+            ]
+            mock_client_cls.return_value = mock_client
+            result = resolve_first_video_date({"run_id": "run-1", "thread_id": "t-1"})
+
+        assert mock_persist.call_count == 2
+        assert mock_persist.call_args_list[0].args[1] == "ch1"
+        assert mock_persist.call_args_list[0].args[2] == "run-1"
+        assert mock_persist.call_args_list[0].args[3] == {
+            "first_video_published_at": "2013-09-12T00:00:00Z"
+        }
+        assert result["node_logs"][0]["input_summary"]["resolved"] == 2
+        assert result["errors"] == []
+
+    def test_a_channel_the_api_cant_resolve_is_skipped_not_a_crash(self):
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [[("ch1",)]]
+        conn = _mock_conn(cursor)
+
+        with patch("src.nodes.resolve_first_video_date.get_connection", return_value=conn), \
+             patch("src.nodes.resolve_first_video_date.put_connection"), \
+             patch("src.tools.youtube_api.YouTubeAPIClient") as mock_client_cls, \
+             patch("src.tools.dedup.persist_channel_v3") as mock_persist:
+            mock_client = MagicMock()
+            mock_client.get_channel_first_video_published_at.return_value = None
+            mock_client_cls.return_value = mock_client
+            result = resolve_first_video_date({"run_id": "run-1", "thread_id": "t-1"})
+
+        mock_persist.assert_not_called()
+        assert result["node_logs"][0]["input_summary"]["resolved"] == 0
+
+    def test_no_eligible_channels_is_a_clean_no_op(self):
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [[]]
+        conn = _mock_conn(cursor)
+
+        with patch("src.nodes.resolve_first_video_date.get_connection", return_value=conn), \
+             patch("src.nodes.resolve_first_video_date.put_connection"), \
+             patch("src.tools.youtube_api.YouTubeAPIClient"):
+            result = resolve_first_video_date({"run_id": "run-1", "thread_id": "t-1"})
+
+        assert result["node_logs"][0]["input_summary"]["resolved"] == 0
+        assert result["errors"] == []

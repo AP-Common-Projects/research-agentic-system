@@ -237,6 +237,9 @@ MIGRATIONS: list[str] = [
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS missing_required_fields TEXT[] NOT NULL DEFAULT '{}'""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS video_description TEXT""",
     """COMMENT ON COLUMN videos.video_description IS 'One-sentence LLM description of what the video is likely about, from its title — the video-level analogue of niche_taxonomy.description, meant for reading across many titles at once to spot success/failure patterns without watching each video.'""",
+    """COMMENT ON COLUMN channels.first_seen_at IS 'The CHANNEL''s real creation date, from YouTube channels.list snippet.publishedAt — not when this pipeline first discovered it. A prior version silently discarded the real value and stamped every channel with the moment it was hydrated instead; falls back to that only if YouTube genuinely returns none.'""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS first_video_published_at TIMESTAMPTZ""",
+    """COMMENT ON COLUMN channels.first_video_published_at IS 'Publish date of the channel''s TRUE first-ever upload, found by paginating the uploads playlist to its last page. NOT derivable from the videos table alone: hydrate_metadata only ever fetches a channel''s 50 most recent uploads (the API returns newest-first, no oldest-first sort exists), so MIN(videos.published_at) for a channel with more than 50 uploads is just the oldest video in that recent window, not the real first one — verified off by over a decade on a real channel.'""",
 
     # === v3 longitudinal + factor tables (plan §4.4-4.6) ===
     """CREATE TABLE IF NOT EXISTS channel_snapshots (
@@ -250,6 +253,17 @@ MIGRATIONS: list[str] = [
         UNIQUE (channel_id, run_id)
     )""",
     """COMMENT ON TABLE channel_snapshots IS 'One row per channel per run. Growth-rate detection and true evergreen measurement both need history a single run cannot produce.'""",
+    # total_video_count is a single lifetime number from statistics.videoCount
+    # with no type breakdown. These three come from YouTube's auto-generated
+    # per-type playlists (UULF/UUSH/UULV) and satisfy
+    # long + shorts + live = total exactly. NULL means "not looked up",
+    # which is deliberately distinct from a real 0 ("channel has none").
+    """ALTER TABLE channel_snapshots ADD COLUMN IF NOT EXISTS long_video_count INT""",
+    """ALTER TABLE channel_snapshots ADD COLUMN IF NOT EXISTS shorts_count INT""",
+    """ALTER TABLE channel_snapshots ADD COLUMN IF NOT EXISTS live_stream_count INT""",
+    """COMMENT ON COLUMN channel_snapshots.long_video_count IS 'Long-form uploads only, from the UULF auto-playlist. Excludes Shorts and live VODs.'""",
+    """COMMENT ON COLUMN channel_snapshots.shorts_count IS 'Shorts only, from the UUSH auto-playlist — YouTube''s own classification, not a duration guess.'""",
+    """COMMENT ON COLUMN channel_snapshots.live_stream_count IS 'Past live stream VODs only, from the UULV auto-playlist.'""",
     """CREATE TABLE IF NOT EXISTS channel_success_factors (
         id                   BIGSERIAL PRIMARY KEY,
         channel_id            TEXT NOT NULL,
