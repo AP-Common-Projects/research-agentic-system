@@ -126,7 +126,15 @@ def populate_crime_metadata(state: dict) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT v.video_id, v.title, v.description, v.channel_id, "
+            # COALESCE because raw descriptions were silently dropped on
+            # write for the whole life of the dataset (see persist_video_v3):
+            # every existing row has description NULL. video_description is
+            # the LLM's one-line gloss of the title and is present for most
+            # videos, so it keeps the classifier working on the data we
+            # actually hold rather than blocking on a re-hydration.
+            "SELECT v.video_id, v.title, "
+            "COALESCE(NULLIF(v.description, ''), v.video_description) AS description, "
+            "v.channel_id, "
             "c.title as channel_title FROM videos v "
             "JOIN channels c ON v.channel_id = c.channel_id "
             "LEFT JOIN crime_case_metadata ccm ON v.video_id = ccm.video_id "
@@ -135,7 +143,9 @@ def populate_crime_metadata(state: dict) -> dict:
             "WHERE nt.parent_category = 'crime' "
             "AND c.meets_subscriber_floor = TRUE "
             "AND ccm.video_id IS NULL "
-            "AND v.description IS NOT NULL AND v.description != '' "
+            # Either source of text will do; a bare title is too thin to
+            # classify a case from, so those are left for a later pass.
+            "AND COALESCE(NULLIF(v.description, ''), v.video_description) IS NOT NULL "
             "ORDER BY v.outlier_score DESC NULLS LAST LIMIT 50"
         )
         eligible = cur.fetchall()

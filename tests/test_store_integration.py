@@ -451,3 +451,57 @@ class TestFetchRunChannelsSQL:
         rows = fetch_run_channels(RUN)
         assert len(rows) == 1
         assert rows[0]["total_video_count"] is None
+
+
+class TestV3ColumnAllowlistsCoverWhatCallersWrite:
+    """persist_channel_v3 and persist_video_v3 filter writes through a
+    hardcoded column allowlist. A column missing from it is dropped in
+    silence — the caller computes a value, the function reports success,
+    and nothing lands. That is exactly how the entire v4 channel
+    enrichment layer became a no-op: creator_authority read 'unknown'
+    across all 8,493 channels because the column default was never
+    overwritten, not because anything classified them.
+
+    These tests read the real schema so a newly added column that nothing
+    can write fails here rather than after a paid run.
+    """
+
+    def _schema_columns(self, table: str) -> set[str]:
+        import re
+        from pathlib import Path
+
+        ddl = Path("src/db/schema.py").read_text()
+        return set(re.findall(
+            rf"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ([a-z0-9_]+)", ddl))
+
+    def _allowlist(self, func_name: str) -> set[str]:
+        import inspect
+        import re
+
+        from src.tools import dedup
+
+        src = inspect.getsource(getattr(dedup, func_name))
+        block = re.search(r"v3_cols = \{(.*?)\}", src, re.S)
+        assert block, f"could not find v3_cols in {func_name}"
+        return set(re.findall(r'"([a-z0-9_]+)"', block.group(1)))
+
+    def test_every_v4_channel_column_is_writable(self):
+        missing = self._schema_columns("channels") - self._allowlist(
+            "persist_channel_v3")
+        # Columns written by other paths (plain UPDATEs) are legitimately absent.
+        written_elsewhere = {
+            "updated_at", "first_discovered_run_id", "last_enriched_run_id",
+            "primary_niche_group_id", "is_us_market",
+        }
+        assert not (missing - written_elsewhere), (
+            "channels columns nothing can write via persist_channel_v3: "
+            f"{sorted(missing - written_elsewhere)}"
+        )
+
+    def test_video_description_and_raw_description_are_both_writable(self):
+        """They are different fields — `description` is the channel's own
+        text from the API, `video_description` the LLM's title gloss — and
+        the raw one was dropped for the whole life of the dataset."""
+        allow = self._allowlist("persist_video_v3")
+        assert "description" in allow
+        assert "video_description" in allow
