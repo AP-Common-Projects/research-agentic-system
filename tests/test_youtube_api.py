@@ -417,3 +417,105 @@ class TestDeepScanGating:
             with patch.object(c2, "_get", side_effect=counting(deep)):
                 c2.get_channel_videos("UCabc", max_results=3000, deep_scan=True)
         assert len(shallow) < len(deep)
+
+
+class TestApiKeyRotation:
+    """The 10,000 units/day ceiling is per Google Cloud project. Keys from
+    separate projects therefore carry separate allowances, and an exhausted
+    one should hand over rather than end the run — an exhausted key has
+    already killed a run mid-flight once, and produced 3,025 consecutive
+    403s on another occasion."""
+
+    def _client_with(self, keys):
+        from src.tools.youtube_api import YouTubeAPIClient
+
+        c = YouTubeAPIClient()
+        c._api_keys = list(keys)
+        c._key_index = 0
+        c._quota_used = 0
+        return c
+
+    def _resp(self, status, body):
+        import httpx
+
+        return httpx.Response(
+            status, json=body, request=httpx.Request("GET", "http://x")
+        )
+
+    def test_rotates_to_the_next_key_on_quota_exhaustion(self):
+        import httpx
+
+        c = self._client_with(["spent", "fresh"])
+        used = []
+
+        def fake(url, params=None, timeout=None):
+            used.append(params["key"])
+            if params["key"] == "spent":
+                return self._resp(403, {"error": {"errors": [
+                    {"reason": "quotaExceeded"}]}})
+            return self._resp(200, {"items": [{"id": "x"}]})
+
+        with patch("httpx.get", side_effect=fake):
+            out = c._get("channels", {})
+
+        assert used == ["spent", "fresh"]
+        assert out == {"items": [{"id": "x"}]}
+
+    def test_quota_counter_resets_so_the_new_allowance_is_usable(self):
+        """Carrying the spent key's counter over would make check_quota
+        refuse work the fresh key can happily do."""
+        c = self._client_with(["spent", "fresh"])
+        c._quota_used = 9_999
+        assert c._rotate_key() is True
+        assert c._quota_used == 0
+
+    def test_other_403s_do_not_burn_a_key(self):
+        """A disabled API or bad referrer fails identically on every key —
+        rotating would just spend them all to reach the same error."""
+        import httpx
+
+        c = self._client_with(["one", "two"])
+
+        def fake(url, params=None, timeout=None):
+            return self._resp(403, {"error": {"errors": [
+                {"reason": "accessNotConfigured"}]}})
+
+        with patch("httpx.get", side_effect=fake):
+            try:
+                c._get("channels", {})
+            except httpx.HTTPStatusError:
+                pass
+        assert c._key_index == 0, "must not rotate on a non-quota 403"
+
+    def test_last_key_exhausted_raises_rather_than_looping(self):
+        import httpx
+
+        c = self._client_with(["only"])
+
+        def fake(url, params=None, timeout=None):
+            return self._resp(403, {"error": {"errors": [
+                {"reason": "quotaExceeded"}]}})
+
+        with patch("httpx.get", side_effect=fake):
+            raised = False
+            try:
+                c._get("channels", {})
+            except httpx.HTTPStatusError:
+                raised = True
+        assert raised
+
+
+class TestApiKeysConfig:
+    def test_primary_first_then_fallbacks_deduped(self):
+        from src.config import YouTubeConfig
+
+        cfg = YouTubeConfig(api_key="A", fallback_api_keys="B, C ,A,")
+        assert cfg.api_keys == ["A", "B", "C"]
+
+    def test_no_fallbacks_is_just_the_primary(self):
+        """fallback_api_keys is passed explicitly: BaseSettings otherwise
+        reads YOUTUBE_FALLBACK_API_KEYS from the developer's real .env, and
+        the assertion would pass or fail depending on whose machine ran it."""
+        from src.config import YouTubeConfig
+
+        assert YouTubeConfig(api_key="A", fallback_api_keys="").api_keys == ["A"]

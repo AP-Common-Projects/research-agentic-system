@@ -28,6 +28,25 @@ RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 _SHORTS_SAMPLE_LIMIT = 50
 
 
+def _is_quota_exceeded(response: httpx.Response) -> bool:
+    """A 403 that specifically means the daily allowance is spent.
+
+    Distinguished from other 403s (bad key, API not enabled, referrer
+    restriction) because only this one is fixed by switching projects —
+    the others would fail identically on every key.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    for err in body.get("error", {}).get("errors", []):
+        if err.get("reason") == "quotaExceeded":
+            return True
+    return False
+
+
 def _is_retryable(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
         code = exception.response.status_code
@@ -87,8 +106,36 @@ class YouTubeAPIClient:
 
     def __init__(self) -> None:
         cfg = get_config()
-        self._api_key = cfg.youtube.api_key
+        # Each key belongs to a different Google Cloud project, so each
+        # carries its own 10,000-unit daily allowance. When one is spent the
+        # client moves to the next rather than failing the run — an
+        # exhausted key previously ended a run mid-flight, and on another
+        # occasion produced 3,025 consecutive 403s before anyone noticed.
+        self._api_keys = cfg.youtube.api_keys or [cfg.youtube.api_key]
+        self._key_index = 0
         self._quota_used: int = 0
+
+    @property
+    def _api_key(self) -> str:
+        return self._api_keys[self._key_index]
+
+    def _rotate_key(self) -> bool:
+        """Switch to the next unexhausted key. False when none remain.
+
+        The instance quota counter resets: it tracks spend against ONE
+        project's ceiling, and the next key starts with its own full
+        allowance. Leaving it high would make check_quota refuse work the
+        new key can perfectly well do.
+        """
+        if self._key_index + 1 >= len(self._api_keys):
+            return False
+        self._key_index += 1
+        self._quota_used = 0
+        logger.warning(
+            "youtube_key_rotated",
+            key_index=self._key_index, keys_available=len(self._api_keys),
+        )
+        return True
 
     @property
     def quota_used(self) -> int:
@@ -120,14 +167,22 @@ class YouTubeAPIClient:
 
     @_create_retry_decorator()
     def _get(self, endpoint: str, params: dict[str, Any]) -> dict:
-        params["key"] = self._api_key
-        response = httpx.get(
-            f"{self.BASE_URL}/{endpoint}",
-            params=params,
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        return response.json()
+        while True:
+            params["key"] = self._api_key
+            response = httpx.get(
+                f"{self.BASE_URL}/{endpoint}",
+                params=params,
+                timeout=30.0,
+            )
+            if response.status_code == 403 and _is_quota_exceeded(response):
+                # Not retryable on this key — the allowance is gone until
+                # midnight Pacific. Another project's key can serve it now.
+                if self._rotate_key():
+                    continue
+                logger.error("youtube_all_keys_exhausted",
+                             keys=len(self._api_keys))
+            response.raise_for_status()
+            return response.json()
 
     def get_channels(self, channel_ids: list[str]) -> list[dict]:
         results: list[dict] = []

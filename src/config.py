@@ -58,6 +58,25 @@ class PostgresConfig(BaseSettings):
 
 class YouTubeConfig(BaseSettings):
     api_key: str = ""
+    # Comma-separated fallback keys, each from a DIFFERENT Google Cloud
+    # project. The 10,000 units/day ceiling is per project, not per key, so
+    # a second key minted inside the same project shares the same exhausted
+    # pool and buys nothing — verified the hard way when a same-project
+    # swap changed nothing and a different-project key worked immediately.
+    fallback_api_keys: str = ""
+
+    @property
+    def api_keys(self) -> list[str]:
+        """Primary first, then fallbacks, blanks dropped."""
+        keys = [self.api_key] + [
+            k.strip() for k in self.fallback_api_keys.split(",")
+        ]
+        seen, out = set(), []
+        for k in keys:
+            if k and k not in seen:
+                seen.add(k)
+                out.append(k)
+        return out
 
     model_config = {"env_prefix": "YOUTUBE_"}
 
