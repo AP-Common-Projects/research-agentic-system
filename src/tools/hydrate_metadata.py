@@ -95,6 +95,50 @@ def _derive_vertical_start(ch: dict, conn, fields: dict) -> None:
         fields["vertical_start_date_confidence"] = 0.3
 
 
+LATEST_LONG_FORM_SAMPLE = 50
+TOP_LIFETIME_SAMPLE = 20
+
+
+def _select_sample(videos: list[dict]) -> list[dict]:
+    """The rows worth keeping out of a full-catalogue scan.
+
+    Both briefs define the sample as a latest-N window plus a top-N-lifetime
+    set. The two overlap — a recent upload can also be a channel's
+    best-performing — so this is a union, not a concatenation, and each kept
+    video carries the reason it survived. 'top_lifetime' wins ties, being
+    the stronger claim.
+
+    Shorts pass through untouched: they are already a bounded sample from
+    UUSH and are analysed separately, never mixed into long-form ranking.
+    """
+    shorts = [v for v in videos if v.get("is_short")]
+    long_form = [v for v in videos if not v.get("is_short")]
+
+    latest = sorted(
+        long_form, key=lambda v: v.get("published_at") or "", reverse=True
+    )[:LATEST_LONG_FORM_SAMPLE]
+    top_lifetime = sorted(
+        (v for v in long_form if (v.get("view_count") or 0) > 0),
+        key=lambda v: v.get("view_count") or 0,
+        reverse=True,
+    )[:TOP_LIFETIME_SAMPLE]
+
+    kept: dict[str, dict] = {}
+    for video in latest:
+        vid = video.get("video_id")
+        if vid:
+            kept[vid] = {**video, "sample_reason": "latest"}
+    for video in top_lifetime:
+        vid = video.get("video_id")
+        if vid:
+            kept[vid] = {**video, "sample_reason": "top_lifetime"}
+    for video in shorts:
+        vid = video.get("video_id")
+        if vid and vid not in kept:
+            kept[vid] = video
+    return list(kept.values())
+
+
 def _tag_video_samples(conn, videos: list[dict]) -> None:
     """Tag the latest 50 long-form as 'latest' and the top 20 by lifetime
     views as 'top_lifetime' (Crime brief #5, Finance brief #9).
@@ -245,8 +289,15 @@ def hydrate_metadata(state: dict) -> dict:
             )
             videos = []
         scored = score_channel_videos(videos)
-        ch["_videos"] = scored
-        all_video_ids.extend(v["video_id"] for v in scored)
+        # Scan wide, keep narrow. The walk above reads the channel's whole
+        # long-form catalogue so "top 20 lifetime" is genuinely lifetime,
+        # but persisting all of it would store thousands of rows per
+        # channel — the median here holds 312 long-form uploads and the
+        # largest 15,473, against a brief that asks for ~70. That would
+        # inflate the deliverable roughly twentyfold and bill every
+        # downstream per-video LLM node for the privilege.
+        ch["_videos"] = _select_sample(scored)
+        all_video_ids.extend(v["video_id"] for v in ch["_videos"])
 
     try:
         from src.db.connection import get_connection, put_connection
