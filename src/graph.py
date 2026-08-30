@@ -325,7 +325,16 @@ async def run_pipeline(
             return migrate_state(final)
 
     if run_mode == "augment":
-        initial = create_augmented_state(run_id, thread_id, candidate_niches, budget_limit_usd=10.0)
+        # Take the configured ceiling rather than a hardcoded $10. Bright
+        # Data spend accumulates into budget_spent_usd (graph_walk and
+        # keyword_search both add records x cost_per_record), so a literal
+        # 10.0 here is not "an LLM allowance" — it halts discovery at ~6,666
+        # records regardless of what the operator budgeted, which is less
+        # than a single vertical's expansion needs.
+        initial = create_augmented_state(
+            run_id, thread_id, candidate_niches,
+            budget_limit_usd=get_config().harness.budget_limit_usd,
+        )
     elif run_mode == "snapshot_refresh":
         # Snapshot-only: no discovery, no LLM — just bulk YouTube API refresh
         from src.tools.youtube_api import YouTubeAPIClient
