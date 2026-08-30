@@ -92,7 +92,7 @@ class TestBuildExcelWorkbookV3:
             "exported_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def test_produces_all_six_sheets(self):
+    def test_produces_all_seven_sheets(self):
         wb = build_excel_workbook_v3(
             self._manifest(),
             channels=[{"channel_id": "c1", "title": "X"}],
@@ -102,7 +102,8 @@ class TestBuildExcelWorkbookV3:
             failure_factors=[],
         )
         assert wb.sheetnames == [
-            "Overview", "Channels", "Videos", "Niches", "Success Factors", "Failure Factors",
+            "Overview", "Channels", "Videos", "Shorts", "Niches",
+            "Success Factors", "Failure Factors",
         ]
 
     def test_overview_carries_run_stats_and_niche_rollup(self):
@@ -264,3 +265,80 @@ class TestExportExcel:
 
         assert result == tmp_path / "run-x.xlsx"
         assert result.exists()
+
+
+class TestSplitShortsAndFormatting:
+    """The client brief is explicit: "Keep Shorts separate. Do not mix Shorts
+    with long-form analysis." That makes the split a correctness requirement
+    of the deliverable, not a presentation preference."""
+
+    def test_shorts_and_long_form_go_to_different_sheets(self):
+        from src.export import _split_shorts
+
+        long_form, shorts = _split_shorts([
+            {"video_id": "a", "is_short": False, "duration_seconds": 600},
+            {"video_id": "b", "is_short": True, "duration_seconds": 45},
+        ])
+        assert [v["video_id"] for v in long_form] == ["a"]
+        assert [v["video_id"] for v in shorts] == ["b"]
+
+    def test_each_sheet_reports_duration_in_its_own_unit(self):
+        """Minutes for long-form, raw seconds for Shorts — a Short shown in
+        minutes is a fraction on every row, and a two-hour documentary shown
+        in seconds is unreadable."""
+        from src.export import _split_shorts
+
+        long_form, shorts = _split_shorts([
+            {"video_id": "a", "is_short": False, "duration_seconds": 600},
+            {"video_id": "b", "is_short": True, "duration_seconds": 45},
+        ])
+        assert long_form[0]["duration(in minute -by default)"] == 10.0
+        assert "duration_seconds" not in long_form[0]
+        assert shorts[0]["duration_seconds"] == 45
+        assert "duration(in minute -by default)" not in shorts[0]
+
+    def test_long_form_past_an_hour_switches_to_hours_and_minutes(self):
+        from src.export import _split_shorts
+
+        long_form, _ = _split_shorts(
+            [{"video_id": "a", "is_short": False, "duration_seconds": 5400}]
+        )
+        assert long_form[0]["duration(in minute -by default)"] == "1h 30m"
+
+    def test_is_short_column_is_dropped_from_both_sheets(self):
+        """Sheet membership already carries it; a redundant column is one
+        more thing that can disagree with the sheet it sits in."""
+        from src.export import _split_shorts
+
+        long_form, shorts = _split_shorts([
+            {"video_id": "a", "is_short": False, "duration_seconds": 600},
+            {"video_id": "b", "is_short": True, "duration_seconds": 45},
+        ])
+        assert "is_short" not in long_form[0]
+        assert "is_short" not in shorts[0]
+
+    def test_numeric_columns_get_thousands_separators(self):
+        wb = build_excel_workbook_v3(
+            _MANIFEST_FOR_FORMATTING,
+            channels=[{"channel_id": "c1", "subscriber_count": 13100000}],
+            videos=[], niches=[], success_factors=[], failure_factors=[],
+        )
+        ws = wb["Channels"]
+        assert ws.cell(row=2, column=2).number_format == "#,##0"
+
+    def test_booleans_are_not_comma_formatted_as_numbers(self):
+        """Booleans are ints in Python — formatting one as a number would
+        render TRUE as "1"."""
+        wb = build_excel_workbook_v3(
+            _MANIFEST_FOR_FORMATTING,
+            channels=[{"channel_id": "c1", "is_likely_news": True}],
+            videos=[], niches=[], success_factors=[], failure_factors=[],
+        )
+        ws = wb["Channels"]
+        assert ws.cell(row=2, column=2).number_format != "#,##0"
+
+
+_MANIFEST_FOR_FORMATTING = {
+    "run_id": "run-x", "niche": "crime", "channels": 1, "videos": 0,
+    "niches_covered": 0, "total_cost_usd": 0, "exported_at": "2026-08-30T00:00:00+00:00",
+}

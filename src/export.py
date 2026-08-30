@@ -140,19 +140,39 @@ def fetch_run_channels(
                (SELECT cs.live_stream_count FROM channel_snapshots cs
                     WHERE cs.channel_id = c.channel_id AND cs.run_id = t.run_id)
                    AS total_live_stream_count,
+               c.channel_creation_date,
+               c.vertical_start_date, c.vertical_start_date_basis,
+               c.vertical_start_date_confidence,
+               c.channel_size_bucket,
                c.country_code, c.region,
                c.primary_language_code, c.language_confidence,
                c.face_status, c.dominant_format,
                nt.parent_category AS category, nt.niche_name AS sub_niche,
                nt.description AS niche_description,
+               png.group_label AS primary_niche,
+               (SELECT cn.raw_niche_label FROM channel_niches cn
+                 WHERE cn.channel_id = c.channel_id AND cn.is_primary
+                 LIMIT 1) AS raw_sub_niche,
+               c.primary_topic, c.secondary_topic, c.geography_focus,
+               c.target_audience, c.content_approach,
+               c.creator_authority, c.creator_authority_evidence,
+               nt.commercial_intent,
                c.entertainment_score, c.evergreen_score, c.engagement_score,
                c.is_likely_news, c.uploads_per_week_avg, c.upload_consistency_score,
+               c.upload_frequency,
+               c.sub_growth_30d, c.sub_growth_90d, c.views_30d, c.views_90d,
                c.has_affiliate_signal, c.has_sponsor_signal, c.has_membership_signal,
+               c.is_comparison_pool,
+               (SELECT string_agg(cd.label, '; ' ORDER BY cd.label)
+                  FROM channel_cohorts cc
+                  JOIN cohort_definitions cd ON cd.cohort_code = cc.cohort_code
+                 WHERE cc.channel_id = c.channel_id) AS cohorts,
                c.data_completeness_score, c.missing_required_fields
         FROM channels c
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
+        LEFT JOIN primary_niche_groups png ON png.group_id = nt.primary_niche_group_id
         WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
@@ -195,7 +215,17 @@ def fetch_run_videos(
                END AS days_since_published,
                v.outlier_score,
                v.duration_seconds, v.is_short, v.language_code,
+               v.sample_reason,
                v.evergreen_score, v.is_likely_news, v.views_per_day_since_publish,
+               v.search_browse_estimate,
+               nt.commercial_intent,
+               v.sponsor_status, v.sponsor_category, v.sponsor_name,
+               ccm.crime_type, ccm.victim_type, ccm.suspect_relationship,
+               ccm.investigation_type, ccm.evidence_type_primary,
+               ccm.case_status, ccm.case_fame_level, ccm.case_country, ccm.case_year,
+               (SELECT string_agg(vrm.mechanism, '; ' ORDER BY vrm.mechanism)
+                  FROM video_reveal_mechanisms vrm
+                 WHERE vrm.video_id = v.video_id) AS reveal_mechanisms,
                v.title_word_count, v.title_has_number,
                v.title_is_question, v.title_capitalization, v.title_emoji_count
         FROM videos v
@@ -203,6 +233,7 @@ def fetch_run_videos(
           ON t.entity_id = v.video_id AND t.entity_type = 'video'
         JOIN channels c ON c.channel_id = v.channel_id
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
+        LEFT JOIN crime_case_metadata ccm ON ccm.video_id = v.video_id
         WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
@@ -1531,6 +1562,23 @@ _EXCEL_COLUMN_WIDTHS: dict[str, int] = {
     "total_video_count": 18,
     "total_long_video_count": 22, "total_shorts_count": 18,
     "total_live_stream_count": 22,
+    # v4 taxonomy dimensions, cohorts, age/growth (client briefs §3-§8)
+    "primary_niche": 30, "raw_sub_niche": 30,
+    "primary_topic": 24, "secondary_topic": 24, "geography_focus": 18,
+    "target_audience": 24, "content_approach": 20,
+    "creator_authority": 22, "creator_authority_evidence": 40,
+    "commercial_intent": 18, "channel_size_bucket": 18,
+    "channel_creation_date": 22, "vertical_start_date": 20,
+    "vertical_start_date_basis": 28, "vertical_start_date_confidence": 12,
+    "upload_frequency": 18, "cohorts": 34, "is_comparison_pool": 18,
+    "sub_growth_30d": 16, "sub_growth_90d": 16, "views_30d": 14, "views_90d": 14,
+    # v4 video-level
+    "duration(in minute -by default)": 24, "sample_reason": 16, "search_browse_estimate": 22,
+    "sponsor_status": 20, "sponsor_category": 18, "sponsor_name": 22,
+    "crime_type": 20, "victim_type": 18, "suspect_relationship": 22,
+    "investigation_type": 22, "evidence_type_primary": 22,
+    "case_status": 14, "case_fame_level": 18, "case_country": 14, "case_year": 12,
+    "reveal_mechanisms": 34,
     "published_at": 20,
     "country_code": 12, "region": 16,
     "primary_language_code": 14, "language_confidence": 12,
@@ -1585,9 +1633,88 @@ def _write_excel_sheet(ws, rows: list[dict[str, Any]]) -> None:
         ws.append([_excel_safe(row.get(h)) for h in headers])
     for i, h in enumerate(headers, start=1):
         ws.column_dimensions[get_column_letter(i)].width = _EXCEL_COLUMN_WIDTHS.get(h, 16)
+    _apply_thousands_separators(ws, headers, len(rows))
     # Native filter/sort dropdowns on every column — the client's explicit
     # ask ("can filter the data columns, can sort, can search").
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+
+
+def _apply_thousands_separators(ws, headers: list[str], n_rows: int) -> None:
+    """Comma-group every purely numeric column ("15300000" -> "15,300,000").
+
+    Applied per column rather than per cell: a column is formatted only when
+    every populated value in it is a real number, so ID-like and mixed
+    columns are left alone. Booleans are excluded explicitly — in Python
+    they ARE ints, and a TRUE rendered as "1" would be a regression.
+    """
+    for col_idx in range(1, len(headers) + 1):
+        has_numeric = has_float = False
+        for row_idx in range(2, n_rows + 2):
+            value = ws.cell(row=row_idx, column=col_idx).value
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                has_numeric = False
+                break
+            has_numeric = True
+            if isinstance(value, float) and value != int(value):
+                has_float = True
+        if not has_numeric:
+            continue
+        fmt = "#,##0.00" if has_float else "#,##0"
+        for row_idx in range(2, n_rows + 2):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                cell.number_format = fmt
+
+
+# The client renamed this column in the delivered workbook; keeping their
+# wording means a regenerated file is a drop-in replacement rather than
+# something they have to re-edit every time.
+_LONG_FORM_DURATION_HEADER = "duration(in minute -by default)"
+
+
+def _split_shorts(videos: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+    """Separate long-form from Shorts, in the units each sheet reports.
+
+    The client brief is explicit — "Keep Shorts separate. Do not mix Shorts
+    with long-form analysis" — so they are two sheets rather than one sheet
+    plus an is_short flag, and the flag is dropped: sheet membership already
+    carries it, and a redundant column invites the two disagreeing.
+
+    Duration is reported in the unit that suits each: minutes for long-form
+    (switching to "Xh Ym" past the hour, since "127.4" reads poorly for a
+    two-hour documentary), raw seconds for Shorts, where a minutes figure
+    would be a small fraction for every row.
+
+    is_short itself is YouTube's own classification (UUSH playlist
+    membership), not a duration guess — see
+    YouTubeAPIClient.get_channel_shorts_ids.
+    """
+    long_form: list[dict[str, Any]] = []
+    shorts: list[dict[str, Any]] = []
+    for video in videos:
+        row = dict(video)
+        is_short = bool(row.pop("is_short", False))
+        seconds = row.pop("duration_seconds", None)
+        if is_short:
+            row["duration_seconds"] = seconds
+            shorts.append(row)
+        else:
+            row[_LONG_FORM_DURATION_HEADER] = _format_duration_minutes(seconds)
+            long_form.append(row)
+    return long_form, shorts
+
+
+def _format_duration_minutes(seconds: Any) -> Any:
+    """Seconds -> minutes, or "Xh Ym" once it passes an hour."""
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        return seconds
+    minutes = seconds / 60
+    if minutes < 60:
+        return round(minutes, 2)
+    hours, rem = divmod(round(minutes), 60)
+    return f"{hours}h {rem}m"
 
 
 def build_excel_workbook_v3(
@@ -1598,18 +1725,20 @@ def build_excel_workbook_v3(
     success_factors: list[dict[str, Any]],
     failure_factors: list[dict[str, Any]],
 ):
-    """The client deliverable: one workbook, six sheets, nothing narrative.
+    """The client deliverable: one workbook, seven sheets, nothing narrative.
 
-    Overview (run stats + category/niche rollup), Channels (full v3
-    enrichment set), Videos (full title/thumbnail signal set), Niches
-    (category/sub-niche breakdown), Success Factors, Failure Factors — each
-    a filterable/sortable table a non-technical owner can explore directly,
-    and a flat enough shape to pivot or chart later.
+    Overview (run stats + category/niche rollup), Channels (full v3/v4
+    enrichment set), Videos and Shorts (long-form and Shorts kept apart, per
+    the client brief), Niches (category/sub-niche breakdown), Success
+    Factors, Failure Factors — each a filterable/sortable table a
+    non-technical owner can explore directly, and a flat enough shape to
+    pivot or chart later.
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
     wb = Workbook()
+    long_form, shorts = _split_shorts(videos)
 
     ws = wb.active
     ws.title = "Overview"
@@ -1617,7 +1746,9 @@ def build_excel_workbook_v3(
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([])
     ws.append(["Channels", manifest.get("channels", 0)])
-    ws.append(["Videos", manifest.get("videos", 0)])
+    ws.append(["Videos (long-form)", len(long_form)])
+    ws.append(["Shorts", len(shorts)])
+    ws.append(["Videos + Shorts", manifest.get("videos", 0)])
     ws.append(["Niches covered", manifest.get("niches_covered", 0)])
     ws.append(["Total cost (USD)", manifest.get("total_cost_usd", 0)])
     ws.append(["Generated", manifest.get("exported_at", "")[:19]])
@@ -1632,7 +1763,8 @@ def build_excel_workbook_v3(
         ws.column_dimensions[col].width = width
 
     _write_excel_sheet(wb.create_sheet("Channels"), channels)
-    _write_excel_sheet(wb.create_sheet("Videos"), videos)
+    _write_excel_sheet(wb.create_sheet("Videos"), long_form)
+    _write_excel_sheet(wb.create_sheet("Shorts"), shorts)
     _write_excel_sheet(wb.create_sheet("Niches"), niches)
     _write_excel_sheet(wb.create_sheet("Success Factors"), success_factors)
     _write_excel_sheet(wb.create_sheet("Failure Factors"), failure_factors)

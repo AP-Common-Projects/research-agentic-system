@@ -361,3 +361,85 @@ async def cluster_branch(state: dict) -> dict:
             "best_distinctness": best_distinctness,
         }),
     }
+
+
+# ---------------------------------------------------------------------------
+# v4 — cross-niche adjacency scoring (plan §6.2)
+# ---------------------------------------------------------------------------
+
+def score_niche_adjacency(
+    niche_a_refs: set[str],
+    niche_b_refs: set[str],
+    channels: list[dict[str, Any]],
+    discovery_edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cross-niche adjacency score — reuses the weighted-graph machinery
+    cluster_branch already builds, applied across two niches' channel sets.
+
+    Returns {score, status, cross_edge_count, total_edge_count, ...}.
+    Score = cross-edge weight sum / total weight sum in the union graph.
+    """
+    union_refs = sorted(niche_a_refs | niche_b_refs)
+    if len(union_refs) < 2:
+        return {"score": 0.0, "status": "insufficient_data",
+                "cross_edge_count": 0, "total_edge_count": 0}
+
+    G = build_similarity_graph(union_refs, channels, discovery_edges)
+    if G.number_of_edges() == 0:
+        return {"score": 0.0, "status": "no_edges",
+                "cross_edge_count": 0, "total_edge_count": 0}
+
+    cross_weight = 0.0
+    total_weight = 0.0
+    cross_count = 0
+    for u, v, data in G.edges(data=True):
+        w = data.get("weight", 0.0)
+        total_weight += w
+        u_in_a = u in niche_a_refs
+        v_in_a = v in niche_a_refs
+        u_in_b = u in niche_b_refs
+        v_in_b = v in niche_b_refs
+        if (u_in_a and v_in_b) or (u_in_b and v_in_a):
+            cross_weight += w
+            cross_count += 1
+
+    if total_weight == 0:
+        return {"score": 0.0, "status": "zero_total_weight",
+                "cross_edge_count": cross_count, "total_edge_count": 0}
+
+    score = cross_weight / total_weight
+    return {
+        "score": round(score, 6),
+        "status": "scored",
+        "cross_edge_count": cross_count,
+        "total_edge_count": G.number_of_edges(),
+        "cross_weight": round(cross_weight, 4),
+        "total_weight": round(total_weight, 4),
+    }
+
+
+def admission_score(
+    channel: dict[str, Any],
+    niche_corpus: list[dict[str, Any]],
+) -> float:
+    """Stage 3 per-channel admission score (plan §6.4).
+
+    Token-Jaccard similarity of the channel's title+description against
+    the niche's existing channel corpus. Falls back to lightweight difflib
+    (matching dedup.py's check_near_duplicate pattern) for edge-sparse cases.
+    """
+    if not niche_corpus:
+        return 0.0
+    ch_text = f"{channel.get('title', '')} {channel.get('description', '')}"
+    ch_tokens = _tokenize(ch_text)
+    if not ch_tokens:
+        return 0.0
+    scores: list[float] = []
+    for nc in niche_corpus:
+        nc_text = f"{nc.get('title', '')} {nc.get('description', '')}"
+        nc_tokens = _tokenize(nc_text)
+        if nc_tokens:
+            scores.append(_jaccard(ch_tokens, nc_tokens))
+    if not scores:
+        return 0.0
+    return round(sum(scores) / len(scores), 4)

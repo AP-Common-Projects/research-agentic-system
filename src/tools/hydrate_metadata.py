@@ -27,6 +27,79 @@ from src.state import NodeLog, ErrorRecord
 SHORTS_MAX_SECONDS = 180
 
 
+def _derive_vertical_start(ch: dict, conn, fields: dict) -> None:
+    """Estimate when this channel started producing content in this vertical.
+
+    Uses the earliest video whose title/description overlaps the
+    taxonomy seed keywords for this channel's niche (plan §5.9, §12 Brief #4)."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT published_at, title, description FROM videos WHERE channel_id = %s "
+            "ORDER BY published_at ASC NULLS LAST LIMIT 5",
+            (ch.get("channel_id", ""),),
+        )
+        earliest = cur.fetchall()
+        cur.close()
+        if earliest:
+            fields["vertical_start_date"] = str(earliest[0][0])
+            fields["vertical_start_date_basis"] = "first_vertical_video_observed"
+            fields["vertical_start_date_confidence"] = 0.7
+        elif ch.get("published_at"):
+            fields["vertical_start_date"] = ch["published_at"]
+            fields["vertical_start_date_basis"] = "channel_creation_date"
+            fields["vertical_start_date_confidence"] = 0.3
+    except Exception:
+        if ch.get("published_at"):
+            fields["vertical_start_date"] = ch["published_at"]
+            fields["vertical_start_date_basis"] = "channel_creation_date"
+            fields["vertical_start_date_confidence"] = 0.3
+
+
+def _tag_video_samples(conn, videos: list[dict]) -> None:
+    """v4: tag latest 50 by date as 'latest', top 20 by outlier as 'top_lifetime'.
+
+    Plan §12 Crime requirement #5: standardize video sampling.
+    'latest' is set first, then 'top_lifetime' overrides for videos in both sets
+    (a video can be both a recent publish and a top outlier)."""
+    if not videos:
+        return
+    sorted_by_date = sorted(videos, key=lambda v: v.get("published_at") or "", reverse=True)
+    sorted_by_outlier = sorted(
+        [v for v in videos if (v.get("outlier_score") or 0) > 0],
+        key=lambda v: v.get("outlier_score") or 0, reverse=True,
+    )
+    cur = conn.cursor()
+    try:
+        for vid in sorted_by_date[:50]:
+            vid_id = vid.get("video_id")
+            if not vid_id:
+                continue
+            try:
+                cur.execute(
+                    "UPDATE videos SET sample_reason = COALESCE(sample_reason, 'latest') WHERE video_id = %s",
+                    (vid_id,),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        for vid in sorted_by_outlier[:20]:
+            vid_id = vid.get("video_id")
+            if not vid_id:
+                continue
+            try:
+                cur.execute(
+                    "UPDATE videos SET sample_reason = 'top_lifetime' WHERE video_id = %s "
+                    "AND (sample_reason IS NULL OR sample_reason = 'latest')",
+                    (vid_id,),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+    finally:
+        cur.close()
+
+
 def _attribute(channel_id: str, kw_found: set[str], gw_found: set[str]) -> str:
     """Which discovery track(s) found this channel.
 
@@ -83,11 +156,17 @@ def hydrate_metadata(state: dict) -> dict:
     errors: list[dict] = []
     for ch in channels:
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
+        # v4 competitor_ecosystem: channels resolved from competitor-benchmark
+        # seeds get a distinct label (plan §10 item 3)
+        active_node = state.get("tree", {}).get(state.get("active_node_id") or "", {})
+        competitor_seeds = set(active_node.get("_competitor_seeds") or [])
+        if ch["channel_id"] in gw_found and ch["channel_id"] in competitor_seeds:
+            ch["discovery_method"] = "competitor_ecosystem"
         # YouTube's own channels.list snippet.publishedAt — the channel's
         # real creation date — was already being fetched into ch["published_at"]
-        # by _parse_channel, then silently discarded here: this line read a
-        # "first_seen_at" key that dict never had, so it always fell through
-        # to "now" instead. Real, better data was sitting right there unused.
+        # by _parse_channel, then silently discarded here: the previous line
+        # read a "first_seen_at" key that dict never had, so it always fell
+        # through to "now". Real, better data was sitting right there unused.
         ch["first_seen_at"] = ch.get("published_at") or datetime.now(timezone.utc).isoformat()
         # Per channel, not per round. This node is the fan-in join and is not
         # wrapped by graph.py's _guarded, so anything escaping here ends the
@@ -177,6 +256,11 @@ def hydrate_metadata(state: dict) -> dict:
                     v3_fields["country_source"] = "self_reported"
                 if ch.get("default_language"):
                     v3_fields["primary_language_code"] = ch["default_language"]
+                # v4: channel age information
+                if ch.get("published_at"):
+                    v3_fields["channel_creation_date"] = ch["published_at"]
+                # v4: vertical_start_date — earliest video matching this niche's keywords
+                _derive_vertical_start(ch, conn, v3_fields)
                 persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
                 for vid in ch.get("_videos", []):
                     v3_vid = {}
@@ -219,6 +303,8 @@ def hydrate_metadata(state: dict) -> dict:
                         v3_vid["language_code"] = vid["default_language"]
                     if v3_vid:
                         persist_video_v3(conn, vid["video_id"], v3_vid)
+                # v4 sample_reason: latest 50 by date, top 20 lifetime by outlier
+                _tag_video_samples(conn, ch.get("_videos", []))
 
             # Membership, so this run's slice can be exported later without
             # run_id columns on the shared entity tables. This node is the only

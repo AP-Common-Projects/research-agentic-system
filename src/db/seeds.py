@@ -192,6 +192,52 @@ NICHE_SEEDS: list[dict[str, str]] = [
     {"name": "car_review_automotive", "cat": "automotive", "desc": "Car reviews, automotive engineering explainers, and enthusiast content", "evergreen": True},
     {"name": "music_production_tutorial", "cat": "music", "desc": "Music production tutorials, DAW workflows, and sound design", "evergreen": True},
     {"name": "film_analysis_cinematography", "cat": "entertainment", "desc": "Film analysis, cinematography breakdowns, and directorial deep-dives", "evergreen": True},
+
+    # --- v4 expanded Finance niches (brief §2) ---
+    {"name": "bonds", "cat": "finance", "desc": "Government and corporate bonds, fixed income, yield analysis", "evergreen": False},
+    {"name": "currencies_forex", "cat": "finance", "desc": "Currency trading, forex market analysis, exchange rate strategy", "evergreen": False},
+    {"name": "etf_passive_investing", "cat": "finance", "desc": "ETF investing, passive index strategies, fund comparison", "evergreen": True},
+    {"name": "dividend_investing", "cat": "finance", "desc": "Dividend stock analysis, income investing, dividend growth", "evergreen": True},
+    {"name": "value_investing", "cat": "finance", "desc": "Value investing methodology, fundamental analysis, intrinsic value", "evergreen": True},
+    {"name": "quant_systematic_investing", "cat": "finance", "desc": "Quantitative investing, algorithmic trading, systematic strategies", "evergreen": False},
+    {"name": "options_trading", "cat": "finance", "desc": "Options strategies, derivatives, volatility trading", "evergreen": False},
+    {"name": "trading_education", "cat": "finance", "desc": "Trading education, chart analysis, technical indicators", "evergreen": True},
+    {"name": "macro_investing", "cat": "finance", "desc": "Macroeconomic investing, central bank policy, global market trends", "evergreen": False},
+    {"name": "finance_gen_z", "cat": "finance", "desc": "Finance for Gen Z — investing, saving, and money content for younger audiences", "evergreen": True},
+    {"name": "finance_young_adults", "cat": "finance", "desc": "Financial literacy and money management for young adults (20s-30s)", "evergreen": True},
+    {"name": "finance_women", "cat": "finance", "desc": "Finance and investing content tailored to women audiences", "evergreen": True},
+    {"name": "finance_immigrants_expats", "cat": "finance", "desc": "Cross-border finance, expat tax, immigrant wealth building", "evergreen": True},
+    {"name": "small_business_finance", "cat": "finance", "desc": "Small business financial management, accounting, and growth strategy", "evergreen": True},
+    {"name": "creator_economy_finance", "cat": "finance", "desc": "Creator monetization, content business finance, platform revenue", "evergreen": False},
+    {"name": "luxury_wealth_economics", "cat": "finance", "desc": "Luxury markets, wealth economics, high-net-worth content", "evergreen": False},
+    {"name": "ai_finance", "cat": "finance", "desc": "AI applications in finance — tools, analysis, and automation", "evergreen": False},
+    {"name": "ai_economy", "cat": "finance", "desc": "AI's impact on the economy, labor markets, and productivity", "evergreen": False},
+    {"name": "ai_investing", "cat": "finance", "desc": "AI-driven investing, robo-advisors, automated portfolio management", "evergreen": False},
+    {"name": "stock_market_stories", "cat": "finance", "desc": "Stock market narrative content — company stories, market history, drama", "evergreen": True},
+    {"name": "financial_scams_fraud", "cat": "finance", "desc": "Financial scams, fraud investigations, Ponzi schemes, and consumer protection", "evergreen": True},
+    {"name": "geopolitics_finance", "cat": "finance", "desc": "Intersection of geopolitics and financial markets — sanctions, trade wars, currency crises", "evergreen": False},
+    {"name": "debt_credit", "cat": "finance", "desc": "Debt management, credit scores, loan strategies, and credit education", "evergreen": True},
+    {"name": "mortgage_housing_finance", "cat": "finance", "desc": "Mortgage strategies, housing market analysis, real estate finance", "evergreen": True},
+    {"name": "retirement", "cat": "finance", "desc": "Retirement planning, 401k, IRA, pension, and retirement lifestyle", "evergreen": True},
+    {"name": "tax_education", "cat": "finance", "desc": "Tax planning, tax strategy, and tax education content", "evergreen": True},
+    {"name": "insurance", "cat": "finance", "desc": "Insurance products, risk management, and insurance education", "evergreen": True},
+    {"name": "personal_finance_psychology", "cat": "finance", "desc": "Behavioral finance, money psychology, spending habits", "evergreen": True},
+    {"name": "behavioral_finance", "cat": "finance", "desc": "Behavioral economics applied to finance — biases, decision-making, nudges", "evergreen": True},
+    {"name": "financial_independence_fire", "cat": "finance", "desc": "FIRE movement — financial independence, retire early strategies", "evergreen": True},
+    {"name": "wealth_building", "cat": "finance", "desc": "Long-term wealth building, asset accumulation, net worth growth", "evergreen": True},
+    {"name": "financial_markets_explainers", "cat": "finance", "desc": "Financial markets explained — how markets work, market structure, beginners", "evergreen": True},
+    {"name": "market_analysis", "cat": "finance", "desc": "Market analysis, sector rotation, technical/fundamental market commentary", "evergreen": False},
+    {"name": "economic_storytelling", "cat": "finance", "desc": "Narrative-driven economic content — storytelling about economic events and trends", "evergreen": True},
+    {"name": "financial_history", "cat": "finance", "desc": "History of finance — market crashes, financial innovations, historical cases", "evergreen": True},
+    {"name": "economic_history", "cat": "finance", "desc": "Economic history — great depressions, hyperinflation, economic transformations", "evergreen": True},
+    {"name": "company_breakdowns", "cat": "finance", "desc": "Company deep-dives, business model analysis, corporate strategy breakdowns", "evergreen": True},
+    {"name": "consumer_economics", "cat": "finance", "desc": "Consumer economics — inflation impact, purchasing power, household finance at macro scale", "evergreen": False},
+
+    # --- v4 expanded crime niches ---
+    {"name": "police_investigation_documentary", "cat": "crime", "desc": "Long-form police investigation documentary, detective work, case breakdowns", "evergreen": True},
+    {"name": "interrogation_criminal_psychology", "cat": "crime", "desc": "Interrogation analysis, criminal psychology, suspect interview breakdowns", "evergreen": True},
+    {"name": "cold_case_unsolved", "cat": "crime", "desc": "Cold case investigations, unsolved mysteries, dormant case re-examinations", "evergreen": True},
+    {"name": "digital_evidence_internet_crime", "cat": "crime", "desc": "Digital evidence analysis, internet crime, cyber-investigation, social-media-based crime", "evergreen": False},
 ]
 
 
@@ -227,9 +273,185 @@ def seed_taxonomies(conn) -> int:
             if cur.rowcount:
                 inserted += 1
         conn.commit()
+        # v4: seed primary_niche_groups and cohort_definitions
+        for g in V4_PRIMARY_NICHE_GROUPS:
+            cur.execute(
+                """INSERT INTO primary_niche_groups (vertical, group_label, description)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (vertical, group_label) DO NOTHING""",
+                (g["vertical"], g["label"], g["desc"]),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+        for p in V4_NICHE_ADJACENCY:
+            cur.execute(
+                """INSERT INTO niche_adjacency (vertical, niche_a, niche_b, adjacency_type, rationale, source)
+                    VALUES (%s, %s, %s, %s, %s, 'curated')
+                    ON CONFLICT (vertical, niche_a, niche_b, adjacency_type) DO NOTHING""",
+                (p["vertical"], p["a"], p["b"], p["type"], p["rationale"]),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+        for c in V4_COHORT_DEFS:
+            cur.execute(
+                """INSERT INTO cohort_definitions (cohort_code, vertical, exclusive_group, label, description)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (cohort_code) DO NOTHING""",
+                (c["code"], c["vertical"], c["exclusive_group"], c["label"], c["desc"]),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         cur.close()
     return inserted
+
+
+# === v4 seed data (plan §5.1, §5.4, §5.10) ===
+
+V4_PRIMARY_NICHE_GROUPS: list[dict[str, str]] = [
+    # Crime — 5 primary niche groups matching the brief's named categories
+    {"vertical": "crime", "label": "Bodycam / Police Incidents",
+     "desc": "Raw bodycam footage, police incident recordings, dashcam, and first-responder video content"},
+    {"vertical": "crime", "label": "Police Investigation Documentary",
+     "desc": "Long-form documentary-style coverage of police investigations, detective work, and case breakdowns"},
+    {"vertical": "crime", "label": "Interrogation / Criminal Psychology",
+     "desc": "Interrogation footage analysis, criminal psychology breakdowns, suspect interview analysis"},
+    {"vertical": "crime", "label": "Cold Case / Unsolved",
+     "desc": "Cold case investigations, unsolved mysteries, long-dormant case re-examinations"},
+    {"vertical": "crime", "label": "Digital Evidence / Internet Crime",
+     "desc": "Digital evidence analysis, internet crime, cyber-investigation, social-media-based crime"},
+
+    # Finance — 4 macro-groups matching the brief's named categories
+    {"vertical": "finance", "label": "Core / Storytelling",
+     "desc": "Financial storytelling, economic narratives, and accessible finance explainers"},
+    {"vertical": "finance", "label": "Investing / Markets",
+     "desc": "Stock market analysis, investing strategies, portfolio management, and market commentary"},
+    {"vertical": "finance", "label": "Personal Finance",
+     "desc": "Personal budgeting, saving strategies, debt management, and financial literacy"},
+    {"vertical": "finance", "label": "Emerging / Audience-Specific",
+     "desc": "Finance for Gen Z, finance for women, niche-audience financial content"},
+]
+
+V4_NICHE_ADJACENCY: list[dict[str, str]] = [
+    # Crime sibling_overlap — the 5 named underrepresented niches as one cluster
+    {"vertical": "crime", "a": "bodycam_footage", "b": "police_investigation_documentary",
+     "type": "sibling_overlap",
+     "rationale": "Same procedural subject — documentary framing over the same incidents bodycam captures raw"},
+    {"vertical": "crime", "a": "bodycam_footage", "b": "interrogation_criminal_psychology",
+     "type": "sibling_overlap",
+     "rationale": "Interrogations often follow the incident a bodycam captured — related procedural timeline"},
+    {"vertical": "crime", "a": "bodycam_footage", "b": "cold_case_unsolved",
+     "type": "sibling_overlap",
+     "rationale": "Cold-case channels frequently open episodes with original responding-officer footage"},
+    {"vertical": "crime", "a": "bodycam_footage", "b": "digital_evidence_internet_crime",
+     "type": "format_shared",
+     "rationale": "Different subject matter but similar evidence-presentation format — worth checking, lower prior"},
+    {"vertical": "crime", "a": "police_investigation_documentary", "b": "interrogation_criminal_psychology",
+     "type": "sibling_overlap",
+     "rationale": "Documentary investigations frequently include interrogation segments as key evidence"},
+    {"vertical": "crime", "a": "police_investigation_documentary", "b": "cold_case_unsolved",
+     "type": "sibling_overlap",
+     "rationale": "Same documentary format applied to active vs. cold investigations — substantial format overlap"},
+    {"vertical": "crime", "a": "interrogation_criminal_psychology", "b": "cold_case_unsolved",
+     "type": "sibling_overlap",
+     "rationale": "Criminal psychology analysis applies identically to current and reopened cases"},
+
+    # Finance parent_child — macro-groups to their sub-groups
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "investing_stock_market",
+     "type": "sibling_overlap",
+     "rationale": "Personal finance audiences frequently cross into investing content — highest-traffic cross-niche path"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "crypto_web3",
+     "type": "sibling_overlap",
+     "rationale": "Investing and crypto share an audience with high cross-over, especially among younger demographics"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "crypto_web3",
+     "type": "format_shared",
+     "rationale": "Different asset class but similar explainer/tutorial format — lower prior than the investing bridge"},
+
+    # --- v4 expanded Finance adjacency (brief §2 missing niches) ---
+    {"vertical": "finance", "a": "investing_stock_market", "b": "etf_passive_investing",
+     "type": "parent_child",
+     "rationale": "ETF investing is the most common entry point from general stock-market content"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "dividend_investing",
+     "type": "sibling_overlap",
+     "rationale": "Dividend investors are a large subset of the stock-market audience"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "value_investing",
+     "type": "sibling_overlap",
+     "rationale": "Value investing methodology extends naturally from stock analysis content"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "options_trading",
+     "type": "sibling_overlap",
+     "rationale": "Options traders commonly produce stock-market content as their baseline"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "market_analysis",
+     "type": "sibling_overlap",
+     "rationale": "Market analysis is a direct extension of stock-market content"},
+    {"vertical": "finance", "a": "investing_stock_market", "b": "stock_market_stories",
+     "type": "sibling_overlap",
+     "rationale": "Stock-market narrative channels share an audience with pure analysis channels"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "financial_independence_fire",
+     "type": "sibling_overlap",
+     "rationale": "FIRE content is the most popular lens on personal finance for younger demographics"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "debt_credit",
+     "type": "sibling_overlap",
+     "rationale": "Debt/credit management is the complement of budgeting/saving content"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "wealth_building",
+     "type": "sibling_overlap",
+     "rationale": "Budgeting is the practical step behind long-term wealth building strategies"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "retirement",
+     "type": "sibling_overlap",
+     "rationale": "Retirement planning is the endgame of personal finance — shared audience"},
+    {"vertical": "finance", "a": "personal_finance_budgeting", "b": "tax_education",
+     "type": "sibling_overlap",
+     "rationale": "Tax strategy is the practical complement to personal finance content"},
+    {"vertical": "finance", "a": "crypto_web3", "b": "ai_finance",
+     "type": "audience_shared",
+     "rationale": "Crypto and AI audiences share a heavy tech-early-adopter overlap"},
+    {"vertical": "finance", "a": "finance_documentary", "b": "economic_storytelling",
+     "type": "sibling_overlap",
+     "rationale": "Documentary and storytelling formats share the same production style and audience"},
+    {"vertical": "finance", "a": "finance_documentary", "b": "financial_history",
+     "type": "sibling_overlap",
+     "rationale": "Financial history is a natural documentary subject"},
+    {"vertical": "finance", "a": "finance_documentary", "b": "company_breakdowns",
+     "type": "sibling_overlap",
+     "rationale": "Company deep-dives are one of the most common documentary-style finance formats"},
+    {"vertical": "finance", "a": "finance_documentary", "b": "financial_scams_fraud",
+     "type": "sibling_overlap",
+     "rationale": "Scam/fraud documentaries share the same investigative-narrative format"},
+    {"vertical": "finance", "a": "personal_finance_psychology", "b": "behavioral_finance",
+     "type": "sibling_overlap",
+     "rationale": "Psychology and behavioral finance are two lenses on the same subject"},
+    {"vertical": "finance", "a": "geopolitics_finance", "b": "macro_investing",
+     "type": "sibling_overlap",
+     "rationale": "Geopolitical analysis feeds directly into macro investing decisions"},
+    {"vertical": "finance", "a": "finance_gen_z", "b": "finance_young_adults",
+     "type": "sibling_overlap",
+     "rationale": "Gen Z and young-adult audiences overlap heavily in content style and platform"},
+    {"vertical": "finance", "a": "finance_gen_z", "b": "creator_economy_finance",
+     "type": "audience_shared",
+     "rationale": "Gen Z's financial curiosity centers on creator-economy income models"},
+]
+
+V4_COHORT_DEFS: list[dict[str, str]] = [
+    # Crime — 4 mutually exclusive cohorts in one exclusive_group
+    {"code": "market_benchmark", "vertical": "crime", "exclusive_group": "crime_lifecycle",
+     "label": "Market Benchmark", "desc": "Established channels with sustained high performance — the leader set"},
+    {"code": "growth_competitor", "vertical": "crime", "exclusive_group": "crime_lifecycle",
+     "label": "Growth Competitor", "desc": "Channels showing rapid growth trajectory, potentially contesting benchmark positions"},
+    {"code": "new_entrant_breakout", "vertical": "crime", "exclusive_group": "crime_lifecycle",
+     "label": "New Entrant Breakout", "desc": "Channels created 2024-2026 showing breakout-level early performance"},
+    {"code": "underperformer", "vertical": "crime", "exclusive_group": "crime_lifecycle",
+     "label": "Underperformer", "desc": "Channels with meaningful video history but subpar performance relative to niche peers"},
+
+    # Finance — independent flag (is_new_channel) + mutually exclusive winner/loser pair
+    {"code": "is_new_channel", "vertical": "finance", "exclusive_group": None,
+     "label": "New Channel", "desc": "Channel created 2024-2026 — an independent flag, not mutually exclusive with winner/loser"},
+    {"code": "new_winner", "vertical": "finance", "exclusive_group": "finance_outcome",
+     "label": "New Winner", "desc": "New channel (2024-2026) demonstrating breakout performance vs. age-controlled peers"},
+    {"code": "new_loser", "vertical": "finance", "exclusive_group": "finance_outcome",
+     "label": "New Loser", "desc": "New channel (2024-2026) underperforming vs. age-controlled peers — the comparison set"},
+]
