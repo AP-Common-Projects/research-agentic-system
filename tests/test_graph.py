@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import contextlib
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -127,6 +129,74 @@ def _mock_youtube(yt_mock):
     return client
 
 
+# Every module that constructs a BrightDataClient. Patching is per-module
+# because each imports the name directly, so patching it at its source
+# would not affect references already bound at import time.
+# Modules that bind the name at import time must be patched individually;
+# a module that imports it inside the function body instead resolves through
+# the source module, so that one is patched there.
+_BRIGHTDATA_CALL_SITES = (
+    "src.tools.graph_walk",
+    "src.tools.keyword_search",
+    # v4 added these. Leaving them unmocked did not fail loudly — it made
+    # the test hit the REAL Bright Data API, spending live records on every
+    # suite run and hanging past any sane timeout. Confirmed from a
+    # `brightdata_collected records=5` line during a plain pytest run.
+    "src.tools.breakout_scanner",
+    "src.tools.new_channel_discovery",
+    "src.tools.underperformer_discovery",
+)
+
+
+# v4 added five nodes to the graph. None were added to this file's mocks, so
+# a plain `pytest` run made real LLM calls AND read/wrote the real database —
+# the exact failure the comments below already describe for the v3 nodes,
+# repeated. Confirmed live: the hung process held connections to
+# 127.0.0.1:5432 and two HTTPS peers.
+_V4_LLM_NODES = (
+    "src.nodes.populate_crime_metadata",
+    "src.nodes.populate_shared_fields",
+    "src.nodes.populate_taxonomy_dimensions",
+)
+_V4_DB_NODES = _V4_LLM_NODES + (
+    "src.nodes.expand_niche_adjacency",
+    "src.nodes.assign_cohorts",
+)
+
+
+@contextlib.contextmanager
+def _v4_nodes_isolated():
+    """Keep the v4 nodes off the network and off the real database.
+
+    Each already guards get_connection() with its own `except: return
+    early`, so raising there routes them down that designed-in path rather
+    than inventing new behaviour for the test.
+    """
+    with contextlib.ExitStack() as stack:
+        for module in _V4_LLM_NODES:
+            _mock_llm_tier(stack.enter_context(patch(f"{module}.complete_tier")))
+        for module in _V4_DB_NODES:
+            stack.enter_context(patch(
+                f"{module}.get_connection",
+                side_effect=Exception("test isolation: no real DB"),
+            ))
+        yield
+
+
+@contextlib.contextmanager
+def _all_brightdata_mocked():
+    """Mock BrightDataClient everywhere it is constructed.
+
+    An ExitStack rather than nested `with` clauses: the test already sits
+    near CPython's 20-statically-nested-block ceiling, and adding call
+    sites one at a time is what pushed it over.
+    """
+    with contextlib.ExitStack() as stack:
+        for module in _BRIGHTDATA_CALL_SITES:
+            _mock_bright_data(stack.enter_context(patch(f"{module}.BrightDataClient")))
+        yield
+
+
 @pytest.mark.asyncio
 async def test_end_to_end_run_completes():
     with (
@@ -164,8 +234,8 @@ async def test_end_to_end_run_completes():
         patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
-        patch("src.tools.graph_walk.BrightDataClient") as mock_bd,
-        patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
+        _all_brightdata_mocked(),
+        _v4_nodes_isolated(),
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
         patch("src.nodes.compact_branch.get_store") as mock_store,
         patch("src.nodes.synthesize.get_store") as mock_store_syn,
@@ -177,8 +247,7 @@ async def test_end_to_end_run_completes():
         _mock_llm_tier(mock_thumb)
         _mock_llm_tier(mock_factors)
         _mock_llm_tier(mock_describe)
-        _mock_bright_data(mock_bd)
-        _mock_bright_data(mock_bd_kw)
+
         _mock_youtube(mock_yt)
 
         store = MagicMock()
@@ -241,8 +310,8 @@ async def test_graph_terminates_with_budget_breaker():
         patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
-        patch("src.tools.graph_walk.BrightDataClient") as mock_bd,
-        patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
+        _all_brightdata_mocked(),
+        _v4_nodes_isolated(),
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
         patch("src.nodes.compact_branch.get_store") as mock_store,
         patch("src.nodes.synthesize.get_store") as mock_store_syn,
@@ -254,8 +323,7 @@ async def test_graph_terminates_with_budget_breaker():
         _mock_llm_tier(mock_thumb)
         _mock_llm_tier(mock_factors)
         _mock_llm_tier(mock_describe)
-        _mock_bright_data(mock_bd)
-        _mock_bright_data(mock_bd_kw)
+
         _mock_youtube(mock_yt)
 
         store = MagicMock()

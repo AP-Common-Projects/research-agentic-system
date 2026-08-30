@@ -79,3 +79,81 @@ def make_harness_config(**overrides) -> HarnessConfig:
     }
     base.update(overrides)
     return HarnessConfig(**base)
+
+
+# Every node module that reaches the network or the database on its own.
+# Kept as data rather than a pile of decorators so that adding a node to the
+# graph and forgetting to mock it cannot silently turn the suite into a live,
+# paid run — which is exactly what happened when v4 added five nodes: a plain
+# `pytest` made real LLM calls, spent real Bright Data records, and read and
+# wrote the developer's real Postgres. Two suites hung for minutes apiece,
+# holding connections to 127.0.0.1:5432 and two HTTPS peers.
+_LLM_NODE_MODULES = (
+    "src.nodes.populate_crime_metadata",
+    "src.nodes.populate_shared_fields",
+    "src.nodes.populate_taxonomy_dimensions",
+)
+_DB_NODE_MODULES = _LLM_NODE_MODULES + (
+    "src.nodes.expand_niche_adjacency",
+    "src.nodes.assign_cohorts",
+)
+# Guarded at each node's own call site, never at src.tools.bright_data
+# itself: one test constructs BrightDataClient directly to exercise its
+# retry/rate-limit behaviour, and patching the source class would break that
+# test rather than isolate it. Patching per call site leaves the class itself
+# importable and real.
+_BRIGHTDATA_MODULES = (
+    "src.tools.graph_walk",
+    "src.tools.keyword_search",
+    "src.tools.breakout_scanner",
+    "src.tools.new_channel_discovery",
+    "src.tools.underperformer_discovery",
+)
+
+
+@pytest.fixture(autouse=True)
+def no_live_calls_from_v4_nodes(monkeypatch):
+    """Fail closed: v4 nodes never reach a real LLM, API, or database.
+
+    Autouse and unconditional. A test that genuinely wants one of these
+    nodes to talk to something can still patch it itself — patches applied
+    inside the test win over this one — but the default is safe, so the
+    failure mode is a mocked call rather than a surprise invoice.
+
+    Each of these nodes already wraps get_connection() in `except: return
+    early`, so raising is the designed-in "no store available" path rather
+    than new behaviour invented for the tests.
+    """
+
+    def _no_db(*_args, **_kwargs):
+        raise RuntimeError("test isolation: no real database")
+
+    def _no_llm(*_args, **_kwargs):
+        return {"content": "{}", "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                "cost_usd": 0.0, "model": "test", "tier": "test"}
+
+    import importlib
+
+    for module_name in _DB_NODE_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, "get_connection"):
+            monkeypatch.setattr(module, "get_connection", _no_db, raising=False)
+        if module_name in _LLM_NODE_MODULES and hasattr(module, "complete_tier"):
+            monkeypatch.setattr(module, "complete_tier", _no_llm, raising=False)
+
+    for module_name in _BRIGHTDATA_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, "BrightDataClient"):
+            monkeypatch.setattr(
+                module, "BrightDataClient",
+                lambda *a, **k: (_ for _ in ()).throw(
+                    RuntimeError("test isolation: no live Bright Data")
+                ),
+                raising=False,
+            )

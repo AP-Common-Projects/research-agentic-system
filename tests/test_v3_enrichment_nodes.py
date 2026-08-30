@@ -645,3 +645,89 @@ class TestResolveFirstVideoDate:
 
         assert result["node_logs"][0]["input_summary"]["resolved"] == 0
         assert result["errors"] == []
+
+
+class TestVerticalStartDateConfidence:
+    """Both briefs warn against assuming channel creation date == vertical
+    start date. The basis/confidence must say which case actually applied,
+    rather than stamping a single optimistic number on every row."""
+
+    def _conn(self, earliest, held):
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.return_value = (earliest, held)
+        conn.cursor.return_value = cur
+        return conn
+
+    def test_full_catalogue_held_is_a_real_observation(self):
+        from src.tools.hydrate_metadata import _derive_vertical_start
+
+        fields = {}
+        ch = {"channel_id": "UCabc", "_total_long_form": 40}
+        _derive_vertical_start(ch, self._conn("2019-01-09", 40), fields)
+        assert fields["vertical_start_date_basis"] == "first_vertical_video_observed"
+        assert fields["vertical_start_date_confidence"] == 0.7
+
+    def test_truncated_scan_is_only_a_lower_bound(self):
+        """If we hold 50 of a channel's 2,761 long-form videos, the oldest we
+        can see says nothing about when it actually started — reporting that
+        as an observation with high confidence is the bug this guards."""
+        from src.tools.hydrate_metadata import _derive_vertical_start
+
+        fields = {}
+        ch = {"channel_id": "UCabc", "_total_long_form": 2761}
+        _derive_vertical_start(ch, self._conn("2025-06-01", 50), fields)
+        assert fields["vertical_start_date_basis"] == "earliest_observed_video_lower_bound"
+        assert fields["vertical_start_date_confidence"] == 0.4
+
+    def test_no_videos_falls_back_to_creation_date_and_says_so(self):
+        from src.tools.hydrate_metadata import _derive_vertical_start
+
+        fields = {}
+        ch = {"channel_id": "UCabc", "published_at": "2016-01-01", "_total_long_form": 0}
+        _derive_vertical_start(ch, self._conn(None, 0), fields)
+        assert fields["vertical_start_date_basis"] == "channel_creation_date"
+        assert fields["vertical_start_date_confidence"] == 0.3
+
+
+class TestTopLifetimeSampling:
+    def test_ranks_by_lifetime_views_over_the_whole_catalogue(self):
+        """The old implementation ranked the newest 50 by outlier score. A
+        channel's most-watched video is frequently an old one, so it has to
+        be able to win against recent uploads."""
+        from unittest.mock import MagicMock
+        from src.tools.hydrate_metadata import _tag_video_samples
+
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        videos = [
+            {"video_id": "old_hit", "published_at": "2015-01-01",
+             "view_count": 9_000_000, "is_short": False},
+            {"video_id": "recent", "published_at": "2026-01-01",
+             "view_count": 1_000, "is_short": False},
+        ]
+        _tag_video_samples(conn, videos)
+        statements = [c.args[0] for c in cur.execute.call_args_list]
+        ids = [c.args[1][0] for c in cur.execute.call_args_list]
+        top = [i for s, i in zip(statements, ids) if "'top_lifetime'" in s]
+        assert "old_hit" in top
+
+    def test_shorts_are_excluded_from_long_form_sampling(self):
+        from unittest.mock import MagicMock
+        from src.tools.hydrate_metadata import _tag_video_samples
+
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        videos = [
+            {"video_id": "longform", "published_at": "2026-01-01",
+             "view_count": 100, "is_short": False},
+            {"video_id": "a_short", "published_at": "2026-01-02",
+             "view_count": 5_000_000, "is_short": True},
+        ]
+        _tag_video_samples(conn, videos)
+        tagged = {c.args[1][0] for c in cur.execute.call_args_list}
+        assert "a_short" not in tagged

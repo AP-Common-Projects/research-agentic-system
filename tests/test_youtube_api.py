@@ -216,3 +216,98 @@ class TestGetChannelShortsIds:
         )
         with patch.object(client, "_get", side_effect=err):
             assert client.get_channel_shorts_ids("UCabc") == set()
+
+
+class TestGetChannelLongFormScan:
+    """"Top 20 lifetime videos" cannot be answered from a recent-50 window —
+    ranking the newest 50 uploads gives "best of the last few months", which
+    for a 2,761-video channel is its most recent 1.8%."""
+
+    def test_reads_the_long_form_playlist_not_all_uploads(self):
+        """Scanning UULF rather than UU keeps Shorts and live VODs out of the
+        quota budget entirely, and removes the need to post-filter."""
+        client = _client()
+        seen = []
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                seen.append(params["playlistId"])
+                return {"items": [{"contentDetails": {"videoId": "a"}}]}
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_long_form_scan("UCabc")
+
+        assert seen == ["UULFabc"]
+
+    def test_paginates_past_the_first_page(self):
+        client = _client()
+        pages = [
+            {"items": [{"contentDetails": {"videoId": "a"}}], "nextPageToken": "t2"},
+            {"items": [{"contentDetails": {"videoId": "b"}}]},
+        ]
+        fetched = {}
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                return pages.pop(0)
+            fetched["ids"] = params["id"]
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_long_form_scan("UCabc")
+
+        assert fetched["ids"] == "a,b"
+
+    def test_max_scan_bounds_a_pathological_channel(self):
+        """One 15k-video channel must not consume a day's quota alone."""
+        client = _client()
+        page = {
+            "items": [{"contentDetails": {"videoId": f"v{i}"}} for i in range(50)],
+            "nextPageToken": "more",
+        }
+        fetched = {}
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                return page
+            fetched.setdefault("batches", []).append(params["id"].split(","))
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_long_form_scan("UCabc", max_scan=60)
+
+        assert sum(len(b) for b in fetched["batches"]) == 60
+
+
+class TestGetChannelShortsSample:
+    def test_reads_the_shorts_playlist_and_bounds_the_sample(self):
+        client = _client()
+        page = {
+            "items": [{"contentDetails": {"videoId": f"s{i}"}} for i in range(50)],
+            "nextPageToken": "more",
+        }
+        fetched = {}
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                assert params["playlistId"] == "UUSHabc"
+                return page
+            fetched.setdefault("n", []).append(len(params["id"].split(",")))
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_shorts_sample("UCabc", limit=10)
+
+        assert sum(fetched["n"]) == 10
+
+    def test_no_shorts_playlist_is_not_an_error(self):
+        import httpx
+
+        client = _client()
+        err = httpx.HTTPStatusError(
+            "not found", request=httpx.Request("GET", "http://x"),
+            response=httpx.Response(404),
+        )
+        with patch.object(client, "_get", side_effect=err):
+            assert client.get_channel_shorts_sample("UCabc") == []

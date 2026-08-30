@@ -26,48 +26,101 @@ from src.state import NodeLog, ErrorRecord
 # decides.
 SHORTS_MAX_SECONDS = 180
 
+# Bounds the per-channel long-form walk. The median channel in the current
+# deliverables holds ~312 long-form uploads (~14 quota units); the largest
+# holds 15,473. Without a bound one such channel would spend most of a day's
+# 10,000-unit quota by itself, starving every other channel in the round.
+LIFETIME_SCAN_MAX_VIDEOS = 3000
+
+
 
 def _derive_vertical_start(ch: dict, conn, fields: dict) -> None:
     """Estimate when this channel started producing content in this vertical.
 
-    Uses the earliest video whose title/description overlaps the
-    taxonomy seed keywords for this channel's niche (plan §5.9, §12 Brief #4)."""
+    Both briefs warn against assuming the channel's creation date is its
+    vertical start date — Finance #4 spells it out, because an old channel
+    may have pivoted into finance only recently.
+
+    The honest answer depends on how much of the channel's history we
+    actually hold, so the basis and confidence say which case applied:
+
+      first_vertical_video_observed (0.7)
+          We hold the channel's full long-form catalogue (the walk reached
+          its last page), so the earliest video we can see really is its
+          earliest, and the date is a genuine observation.
+
+      earliest_observed_video_lower_bound (0.4)
+          The walk was truncated, so the oldest video we hold is only an
+          upper bound on the true start — the channel was already posting
+          before it. Recorded as a bound rather than a fact.
+
+      channel_creation_date (0.3)
+          No videos at all; the weakest fallback, and exactly the
+          assumption the brief cautions about, so it is labelled as such.
+
+    The earlier implementation read `ORDER BY published_at ASC LIMIT 5`
+    from a table holding only a recent window, then stamped 0.7 on the
+    result — reporting a months-old date as a years-old channel's vertical
+    debut. Its docstring also claimed a keyword overlap the SQL never
+    performed.
+    """
+    channel_id = ch.get("channel_id", "")
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT published_at, title, description FROM videos WHERE channel_id = %s "
-            "ORDER BY published_at ASC NULLS LAST LIMIT 5",
-            (ch.get("channel_id", ""),),
+            "SELECT MIN(published_at), COUNT(*) FROM videos WHERE channel_id = %s",
+            (channel_id,),
         )
-        earliest = cur.fetchall()
+        earliest, held = cur.fetchone()
         cur.close()
-        if earliest:
-            fields["vertical_start_date"] = str(earliest[0][0])
+    except Exception:
+        earliest, held = None, 0
+
+    if earliest:
+        # Complete only if we hold at least as many long-form videos as the
+        # channel is known to have. total_long is stamped by the caller from
+        # the UULF playlist count.
+        total_long = ch.get("_total_long_form")
+        complete = isinstance(total_long, int) and held >= total_long
+        fields["vertical_start_date"] = str(earliest)
+        if complete:
             fields["vertical_start_date_basis"] = "first_vertical_video_observed"
             fields["vertical_start_date_confidence"] = 0.7
-        elif ch.get("published_at"):
-            fields["vertical_start_date"] = ch["published_at"]
-            fields["vertical_start_date_basis"] = "channel_creation_date"
-            fields["vertical_start_date_confidence"] = 0.3
-    except Exception:
-        if ch.get("published_at"):
-            fields["vertical_start_date"] = ch["published_at"]
-            fields["vertical_start_date_basis"] = "channel_creation_date"
-            fields["vertical_start_date_confidence"] = 0.3
+        else:
+            fields["vertical_start_date_basis"] = "earliest_observed_video_lower_bound"
+            fields["vertical_start_date_confidence"] = 0.4
+    elif ch.get("published_at"):
+        fields["vertical_start_date"] = ch["published_at"]
+        fields["vertical_start_date_basis"] = "channel_creation_date"
+        fields["vertical_start_date_confidence"] = 0.3
 
 
 def _tag_video_samples(conn, videos: list[dict]) -> None:
-    """v4: tag latest 50 by date as 'latest', top 20 by outlier as 'top_lifetime'.
+    """Tag the latest 50 long-form as 'latest' and the top 20 by lifetime
+    views as 'top_lifetime' (Crime brief #5, Finance brief #9).
 
-    Plan §12 Crime requirement #5: standardize video sampling.
-    'latest' is set first, then 'top_lifetime' overrides for videos in both sets
-    (a video can be both a recent publish and a top outlier)."""
+    `videos` must be the channel's FULL long-form catalogue — see
+    YouTubeAPIClient.get_channel_long_form_scan. Passing only a recent
+    window silently reduces 'top_lifetime' to "best of the newest N", which
+    is not what either brief asks for.
+
+    Ranked by view_count rather than outlier_score: outlier score is
+    relative to the channel's own average, so it surfaces the videos that
+    over-performed *for that channel*, which is a different and useful
+    question — but "top lifetime videos" plainly means the most-watched.
+
+    'latest' is written first and 'top_lifetime' overrides it, so a video
+    that is both keeps the stronger label.
+    """
     if not videos:
         return
-    sorted_by_date = sorted(videos, key=lambda v: v.get("published_at") or "", reverse=True)
+    long_form = [v for v in videos if not v.get("is_short")] or videos
+    sorted_by_date = sorted(
+        long_form, key=lambda v: v.get("published_at") or "", reverse=True
+    )
     sorted_by_outlier = sorted(
-        [v for v in videos if (v.get("outlier_score") or 0) > 0],
-        key=lambda v: v.get("outlier_score") or 0, reverse=True,
+        [v for v in long_form if (v.get("view_count") or 0) > 0],
+        key=lambda v: v.get("view_count") or 0, reverse=True,
     )
     cur = conn.cursor()
     try:
@@ -173,7 +226,14 @@ def hydrate_metadata(state: dict) -> dict:
         # run — and by this point the round's Bright Data records are already
         # paid for. One channel's metadata is worth losing; a round is not.
         try:
-            videos = client.get_channel_videos(ch["channel_id"], max_results=50)
+            # The full long-form catalogue plus a Shorts sample, not one
+            # recent page. Both briefs ask for a latest-N window AND a
+            # top-20-lifetime set, and the second cannot be derived from the
+            # first: ranking the newest 50 gives "best of the last few
+            # months".
+            videos = client.get_channel_videos(
+                ch["channel_id"], max_results=LIFETIME_SCAN_MAX_VIDEOS
+            )
         except Exception as exc:
             errors.append(
                 ErrorRecord(
@@ -219,6 +279,11 @@ def hydrate_metadata(state: dict) -> dict:
                 shorts_ids: set[str] = set()
                 try:
                     breakdown = client.get_channel_upload_breakdown(ch["channel_id"])
+                    # Lets _derive_vertical_start tell "we hold this
+                    # channel's whole catalogue" from "the walk was cut
+                    # short", which is the difference between an observed
+                    # start date and a mere upper bound on one.
+                    ch["_total_long_form"] = breakdown.get("long")
                     oldest_sampled = min(
                         (v.get("published_at") for v in ch.get("_videos", [])
                          if v.get("published_at")),

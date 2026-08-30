@@ -23,6 +23,10 @@ QUOTA_CEILING_TARGET_RATIO = 0.90
 
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
+# Shorts are analysed separately from long-form rather than exhaustively —
+# a census of a channel's 4,000 Shorts answers no question either brief asks.
+_SHORTS_SAMPLE_LIMIT = 50
+
 
 def _is_retryable(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
@@ -148,75 +152,29 @@ class YouTubeAPIClient:
     def get_channel_videos(
         self, channel_id: str, max_results: int = 50
     ) -> list[dict]:
-        if not self.check_quota(1):
-            logger.error("quota_ceiling_hit", quota_used=self._quota_used)
-            return []
+        """The channel's long-form catalogue plus a recent Shorts sample.
 
-        channels_data = self._get(
-            "channels",
-            {
-                "part": "contentDetails",
-                "id": channel_id,
-            },
+        This used to fetch a single page of the uploads playlist — the 50
+        newest videos, Shorts and long-form mixed together. That shape could
+        not satisfy either client brief: "Top 20 lifetime videos" ranked
+        within the newest 50 means "best of the last few months" (for a
+        2,761-video channel, its most recent 1.8%), and a "latest 50
+        long-form" target was really ~33 once Shorts had eaten into the
+        budget.
+
+        Now it walks UULF for long-form and samples UUSH for Shorts, so the
+        two are collected against separate budgets and arrive already
+        classified by YouTube rather than by a duration guess.
+
+        max_results bounds the long-form walk. The Shorts sample stays
+        small and fixed — the briefs ask for Shorts kept apart from
+        long-form analysis, not for a complete Shorts census.
+        """
+        videos = self.get_channel_long_form_scan(channel_id, max_scan=max_results)
+        videos += self.get_channel_shorts_sample(
+            channel_id, limit=min(_SHORTS_SAMPLE_LIMIT, max_results)
         )
-        self._track_quota(1)
-
-        items = channels_data.get("items", [])
-        if not items:
-            return []
-
-        uploads_playlist = (
-            items[0]
-            .get("contentDetails", {})
-            .get("relatedPlaylists", {})
-            .get("uploads", "")
-        )
-        if not uploads_playlist:
-            return []
-
-        if not self.check_quota(1):
-            return []
-
-        try:
-            playlist_data = self._get(
-                "playlistItems",
-                {
-                    "part": "snippet",
-                    "playlistId": uploads_playlist,
-                    "maxResults": min(max_results, 50),
-                },
-            )
-        except httpx.HTTPStatusError as exc:
-            # A channel can advertise an uploads playlist that 404s — no public
-            # uploads, or the channel was terminated between discovery and
-            # hydration. That is a fact about one channel, not a run failure,
-            # but hydrate_metadata is the fan-in join and is NOT wrapped by
-            # graph.py's _guarded, so an escape here kills the whole run. One
-            # such channel ended a paid run after 64 records.
-            if exc.response.status_code in (403, 404):
-                logger.warning(
-                    "youtube_uploads_playlist_unavailable",
-                    channel_id=channel_id,
-                    playlist_id=uploads_playlist,
-                    status=exc.response.status_code,
-                )
-                self._track_quota(1)
-                return []
-            raise
-        self._track_quota(1)
-
-        video_ids = [
-            item["snippet"]["resourceId"]["videoId"]
-            for item in playlist_data.get("items", [])
-            if "snippet" in item
-            and "resourceId" in item["snippet"]
-            and "videoId" in item["snippet"]["resourceId"]
-        ]
-
-        if not video_ids:
-            return []
-
-        return self.get_videos(video_ids)
+        return videos
 
     def get_videos(self, video_ids: list[str]) -> list[dict]:
         results: list[dict] = []
@@ -407,6 +365,110 @@ class YouTubeAPIClient:
             if passed_window or not page_token:
                 break
         return ids
+
+    def get_channel_shorts_sample(self, channel_id: str, limit: int = 50) -> list[dict]:
+        """The channel's most recent Shorts, hydrated.
+
+        Reads the UUSH auto-playlist, so membership is YouTube's own
+        classification rather than a duration guess — the `<= 60s` rule this
+        replaces was wrong in both directions (YouTube's ceiling is 3
+        minutes, and a brief landscape upload is not a Short at all).
+
+        Bounded rather than exhaustive: the briefs ask for Shorts to be
+        analysed separately from long-form, not for a complete census of a
+        channel that may hold thousands.
+        """
+        suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        video_ids: list[str] = []
+        page_token: str | None = None
+        while len(video_ids) < limit:
+            if not self.check_quota(1):
+                logger.warning("quota_ceiling_hit_shorts_sample", channel_id=channel_id)
+                break
+            params = {"part": "contentDetails", "playlistId": "UUSH" + suffix,
+                      "maxResults": 50}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                page = self._get("playlistItems", params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 404):
+                    # No Shorts playlist: the channel has never posted one.
+                    break
+                raise
+            self._track_quota(1)
+            for item in page.get("items", []):
+                vid = item.get("contentDetails", {}).get("videoId")
+                if vid:
+                    video_ids.append(vid)
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+        return self.get_videos(video_ids[:limit])
+
+    def get_channel_long_form_scan(
+        self, channel_id: str, max_scan: int = 3000
+    ) -> list[dict]:
+        """Every long-form upload the channel has, newest first.
+
+        Reads the UULF auto-playlist rather than UU, so Shorts and live VODs
+        never consume the scan budget — a channel that is 60% Shorts costs
+        60% less to walk, and the result needs no post-filtering.
+
+        This exists because "top 20 lifetime videos" cannot be answered from
+        a recent-50 window. Ranking the newest 50 uploads by performance
+        yields "best of the last few months", which for a 2,761-video
+        channel is its most recent 1.8% — a different question than the one
+        asked, and the same trap first_video_published_at had to be fixed
+        for.
+
+        Cost is 1 quota unit per 50 videos to list them plus 1 per 50 to
+        fetch their statistics. Median channel here holds ~312 long-form
+        uploads (~14 units); max_scan bounds the tail so one 15k-video
+        channel cannot consume a day's quota on its own. Truncation is
+        logged rather than silent, because a truncated scan makes
+        'top_lifetime' mean "top within the newest max_scan", and a caller
+        that cannot tell the difference would overstate it.
+        """
+        suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        playlist_id = "UULF" + suffix
+        video_ids: list[str] = []
+        page_token: str | None = None
+        truncated = False
+        while len(video_ids) < max_scan:
+            if not self.check_quota(1):
+                logger.warning("quota_ceiling_hit_lifetime_scan", channel_id=channel_id)
+                truncated = True
+                break
+            params = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": 50}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                page = self._get("playlistItems", params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 404):
+                    logger.warning(
+                        "youtube_longform_playlist_unavailable",
+                        channel_id=channel_id, status=exc.response.status_code,
+                    )
+                    break
+                raise
+            self._track_quota(1)
+            for item in page.get("items", []):
+                vid = item.get("contentDetails", {}).get("videoId")
+                if vid:
+                    video_ids.append(vid)
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+        else:
+            truncated = page_token is not None
+        if truncated:
+            logger.info(
+                "lifetime_scan_truncated",
+                channel_id=channel_id, scanned=len(video_ids), max_scan=max_scan,
+            )
+        return self.get_videos(video_ids[:max_scan])
 
     def _parse_channel(self, item: dict) -> dict:
         snippet = item.get("snippet", {})

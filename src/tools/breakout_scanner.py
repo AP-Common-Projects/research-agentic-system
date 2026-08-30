@@ -11,6 +11,7 @@ import time
 
 from src.config import get_config
 from src.state import NodeLog, ErrorRecord
+from src.tools.bright_data import BrightDataClient
 
 
 def compute_breakout_signal(video_views: int, channel_subs: int) -> bool:
@@ -43,8 +44,6 @@ async def breakout_scanner(state: dict) -> dict:
     keywords = node.get("keywords", [])
     if not keywords:
         return {"node_logs": _log({"reason": "no keywords", "scanned": 0})}
-
-    from src.tools.bright_data import BrightDataClient
 
     client = BrightDataClient()
     breakout_channels: set[str] = set()
