@@ -431,10 +431,20 @@ class YouTubeAPIClient:
         that cannot tell the difference would overstate it.
         """
         suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        # UULF is only auto-generated for channels that actually have
+        # long-form uploads. A Shorts-only channel, or one with a handful of
+        # videos, returns 404 — and treating that as "no videos" would hand
+        # back an empty catalogue for a channel that plainly has uploads
+        # (observed live: UU=41 while UULF 404s). Falling back to the full
+        # uploads playlist keeps those channels, and costs nothing in
+        # correctness: is_short is decided by UUSH membership downstream and
+        # _select_sample splits on it, so Shorts arriving here are labelled
+        # and separated exactly as they would have been.
         playlist_id = "UULF" + suffix
         video_ids: list[str] = []
         page_token: str | None = None
         truncated = False
+        used_fallback = False
         while len(video_ids) < max_scan:
             if not self.check_quota(1):
                 logger.warning("quota_ceiling_hit_lifetime_scan", channel_id=channel_id)
@@ -447,8 +457,17 @@ class YouTubeAPIClient:
                 page = self._get("playlistItems", params)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in (403, 404):
+                    if not used_fallback and playlist_id.startswith("UULF"):
+                        logger.info(
+                            "youtube_longform_playlist_absent_using_uploads",
+                            channel_id=channel_id, status=exc.response.status_code,
+                        )
+                        playlist_id = "UU" + suffix
+                        used_fallback = True
+                        page_token = None
+                        continue
                     logger.warning(
-                        "youtube_longform_playlist_unavailable",
+                        "youtube_uploads_playlist_unavailable",
                         channel_id=channel_id, status=exc.response.status_code,
                     )
                     break

@@ -311,3 +311,51 @@ class TestGetChannelShortsSample:
         )
         with patch.object(client, "_get", side_effect=err):
             assert client.get_channel_shorts_sample("UCabc") == []
+
+
+class TestLongFormScanFallback:
+    """UULF is only auto-generated for channels that have long-form uploads.
+    A Shorts-only or very small channel 404s on it while still having a
+    perfectly good uploads playlist — observed live at UU=41, UULF=404."""
+
+    def test_falls_back_to_uploads_when_no_long_form_playlist(self):
+        import httpx
+
+        client = _client()
+        seen = []
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                pid = params["playlistId"]
+                seen.append(pid)
+                if pid.startswith("UULF"):
+                    raise httpx.HTTPStatusError(
+                        "not found", request=httpx.Request("GET", "http://x"),
+                        response=httpx.Response(404),
+                    )
+                return {"items": [{"contentDetails": {"videoId": "a"}}]}
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_long_form_scan("UCabc")
+
+        assert seen == ["UULFabc", "UUabc"], "must retry against the uploads playlist"
+
+    def test_gives_up_if_uploads_is_also_missing(self):
+        """Both absent means the channel really has nothing fetchable —
+        it must not loop retrying the same fallback."""
+        import httpx
+
+        client = _client()
+        seen = []
+
+        def fake_get(endpoint, params):
+            seen.append(params["playlistId"])
+            raise httpx.HTTPStatusError(
+                "not found", request=httpx.Request("GET", "http://x"),
+                response=httpx.Response(404),
+            )
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            assert client.get_channel_long_form_scan("UCabc") == []
+        assert seen == ["UULFabc", "UUabc"]
