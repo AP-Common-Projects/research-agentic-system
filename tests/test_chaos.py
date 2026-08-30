@@ -21,6 +21,7 @@ from tenacity import RetryError
 from src.graph import build_graph, run_pipeline, _guarded
 from src.nodes.taxonomy import build_taxonomy
 from src.tools.hydrate_metadata import hydrate_metadata
+from src.config import get_config
 from src.tools.saturation import check_saturation
 
 
@@ -402,6 +403,14 @@ async def test_rate_limit_on_bright_data():
 
 
 def test_budget_circuit_breaker_halts():
+    """The ceiling is pinned, not inherited from .env.
+
+    This read cfg.budget_limit_usd off the live config while asserting on a
+    hardcoded spend of 10.0, so it passed only while the deployment's ceiling
+    happened to be <= $10. Raising BUDGET_LIMIT_USD for a real run turned it
+    red, reporting a circuit-breaker regression where the breaker was working
+    exactly as designed.
+    """
     state = {
         "budget_spent_usd": 10.0,
         "novelty_rates": [0.5, 0.5, 0.5],
@@ -414,7 +423,8 @@ def test_budget_circuit_breaker_halts():
         },
     }
 
-    result = check_saturation(state)
+    with patch.object(get_config().harness, "budget_limit_usd", 5.0):
+        result = check_saturation(state)
 
     assert result["next_action"] == "budget_exhausted"
     assert result["tree"]["root"]["status"] == "saturated", "active node must be saturated"
