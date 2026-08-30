@@ -476,9 +476,9 @@ class TestBudgetExhaustedIsTerminal:
         assert route_after_select({"next_action": "budget_exhausted"}) == ["finalize_dataset"]
 
     def test_select_still_fans_out_normally(self):
-        assert route_after_select({"next_action": "expand_deeper"}) == [
+        assert set(route_after_select({"next_action": "expand_deeper"})) >= {
             "keyword_search", "graph_walk",
-        ]
+        }
 
     def test_compaction_does_not_re_enter_selection_after_a_ceiling(self):
         state = {

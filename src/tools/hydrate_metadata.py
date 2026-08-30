@@ -21,6 +21,50 @@ from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, 
 from src.state import NodeLog, ErrorRecord
 
 
+def _tag_video_samples(conn, videos: list[dict]) -> None:
+    """v4: tag latest 50 by date as 'latest', top 20 by outlier as 'top_lifetime'.
+
+    Plan §12 Crime requirement #5: standardize video sampling.
+    'latest' is set first, then 'top_lifetime' overrides for videos in both sets
+    (a video can be both a recent publish and a top outlier)."""
+    if not videos:
+        return
+    sorted_by_date = sorted(videos, key=lambda v: v.get("published_at") or "", reverse=True)
+    sorted_by_outlier = sorted(
+        [v for v in videos if (v.get("outlier_score") or 0) > 0],
+        key=lambda v: v.get("outlier_score") or 0, reverse=True,
+    )
+    cur = conn.cursor()
+    try:
+        for vid in sorted_by_date[:50]:
+            vid_id = vid.get("video_id")
+            if not vid_id:
+                continue
+            try:
+                cur.execute(
+                    "UPDATE videos SET sample_reason = COALESCE(sample_reason, 'latest') WHERE video_id = %s",
+                    (vid_id,),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        for vid in sorted_by_outlier[:20]:
+            vid_id = vid.get("video_id")
+            if not vid_id:
+                continue
+            try:
+                cur.execute(
+                    "UPDATE videos SET sample_reason = 'top_lifetime' WHERE video_id = %s "
+                    "AND (sample_reason IS NULL OR sample_reason = 'latest')",
+                    (vid_id,),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+    finally:
+        cur.close()
+
+
 def _attribute(channel_id: str, kw_found: set[str], gw_found: set[str]) -> str:
     """Which discovery track(s) found this channel.
 
@@ -77,6 +121,12 @@ def hydrate_metadata(state: dict) -> dict:
     errors: list[dict] = []
     for ch in channels:
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
+        # v4 competitor_ecosystem: channels resolved from competitor-benchmark
+        # seeds get a distinct label (plan §10 item 3)
+        active_node = state.get("tree", {}).get(state.get("active_node_id") or "", {})
+        competitor_seeds = set(active_node.get("_competitor_seeds") or [])
+        if ch["channel_id"] in gw_found and ch["channel_id"] in competitor_seeds:
+            ch["discovery_method"] = "competitor_ecosystem"
         ch["first_seen_at"] = ch.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
         # Per channel, not per round. This node is the fan-in join and is not
         # wrapped by graph.py's _guarded, so anything escaping here ends the
@@ -157,6 +207,8 @@ def hydrate_metadata(state: dict) -> dict:
                         v3_vid["language_code"] = vid["default_language"]
                     if v3_vid:
                         persist_video_v3(conn, vid["video_id"], v3_vid)
+                # v4 sample_reason: latest 50 by date, top 20 lifetime by outlier
+                _tag_video_samples(conn, ch.get("_videos", []))
 
             # Membership, so this run's slice can be exported later without
             # run_id columns on the shared entity tables. This node is the only
