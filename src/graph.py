@@ -23,6 +23,9 @@ from src.tools.hydrate_metadata import hydrate_metadata
 from src.tools.signal_scoring import score_signals
 from src.tools.saturation import check_saturation
 from src.tools.graph_clustering import cluster_branch
+from src.tools.breakout_scanner import breakout_scanner
+from src.tools.underperformer_discovery import underperformer_discovery
+from src.tools.new_channel_discovery import new_channel_discovery
 from src.nodes.taxonomy import build_taxonomy
 from src.nodes.compact_branch import compact_branch
 from src.nodes.finalize_dataset import finalize_dataset
@@ -32,6 +35,8 @@ from src.nodes.extract_metadata_signals import extract_metadata_signals
 from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
+from src.nodes.populate_shared_fields import populate_shared_fields
+from src.nodes.assign_cohorts import assign_cohorts
 from src.nodes.expand_niche_adjacency import expand_niche_adjacency
 from src.nodes.niche_queue import has_more_niches, advance_to_next_niche
 from src.nodes.describe_video_titles import describe_video_titles
@@ -126,7 +131,8 @@ def route_after_select(state: dict) -> list[str]:
         return ["finalize_dataset"]
     if state.get("next_action") == "next_niche":
         return ["build_taxonomy"]
-    return ["keyword_search", "graph_walk"]
+    # v4: primary discovery tracks + bias-fixing supplementary passes
+    return ["keyword_search", "graph_walk", "breakout_scanner", "underperformer_discovery", "new_channel_discovery"]
 
 
 def route_after_saturation(state: dict) -> list[str]:
@@ -168,6 +174,9 @@ def build_graph() -> StateGraph:
     graph.add_node("select_next_node", _logged(select_next_node, "select_next_node"))
     graph.add_node("keyword_search", _logged(_guarded(keyword_search, "keyword_search"), "keyword_search"))
     graph.add_node("graph_walk", _logged(_guarded(graph_walk, "graph_walk"), "graph_walk"))
+    graph.add_node("breakout_scanner", _logged(_guarded(breakout_scanner, "breakout_scanner"), "breakout_scanner"))
+    graph.add_node("underperformer_discovery", _logged(_guarded(underperformer_discovery, "underperformer_discovery"), "underperformer_discovery"))
+    graph.add_node("new_channel_discovery", _logged(_guarded(new_channel_discovery, "new_channel_discovery"), "new_channel_discovery"))
     graph.add_node("hydrate_metadata", _logged(hydrate_metadata, "hydrate_metadata"))
     graph.add_node("resolve_geo_language", _logged(resolve_geo_language, "resolve_geo_language"))
     graph.add_node("extract_metadata_signals", _logged(extract_metadata_signals, "extract_metadata_signals"))
@@ -179,6 +188,8 @@ def build_graph() -> StateGraph:
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
     graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
     graph.add_node("describe_video_titles", _logged(describe_video_titles, "describe_video_titles"))
+    graph.add_node("populate_shared_fields", _logged(populate_shared_fields, "populate_shared_fields"))
+    graph.add_node("assign_cohorts", _logged(assign_cohorts, "assign_cohorts"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
     graph.add_edge(START, "scan_niches")
@@ -190,10 +201,14 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "select_next_node",
         route_after_select,
-        ["keyword_search", "graph_walk", "build_taxonomy", "finalize_dataset"],
+        ["keyword_search", "graph_walk", "breakout_scanner", "underperformer_discovery",
+         "new_channel_discovery", "build_taxonomy", "finalize_dataset"],
     )
     graph.add_edge("keyword_search", "hydrate_metadata")
     graph.add_edge("graph_walk", "hydrate_metadata")
+    graph.add_edge("breakout_scanner", "hydrate_metadata")
+    graph.add_edge("underperformer_discovery", "hydrate_metadata")
+    graph.add_edge("new_channel_discovery", "hydrate_metadata")
     graph.add_edge("hydrate_metadata", "resolve_geo_language")
     graph.add_edge("resolve_geo_language", "extract_metadata_signals")
     graph.add_edge("extract_metadata_signals", "score_signals")
@@ -216,7 +231,9 @@ def build_graph() -> StateGraph:
         ["select_next_node", "extract_success_failure_factors", "finalize_dataset"],
     )
     graph.add_edge("extract_success_failure_factors", "describe_video_titles")
-    graph.add_edge("describe_video_titles", "finalize_dataset")
+    graph.add_edge("describe_video_titles", "populate_shared_fields")
+    graph.add_edge("populate_shared_fields", "assign_cohorts")
+    graph.add_edge("assign_cohorts", "finalize_dataset")
     graph.add_edge("finalize_dataset", END)
 
     return graph

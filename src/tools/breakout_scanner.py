@@ -1,13 +1,8 @@
 """breakout_scanner — video-first breakout discovery (v4, plan §10).
 
-Uses Bright Data's keyword-based video discovery to sample recent videos in a
-niche's keyword space and flag ones with an early views-vs-channel-size ratio
-far outside that channel's baseline. The owning channel, if not already known,
-becomes a new discovery candidate tagged discovery_method='breakout_video_discovery'.
-
-This is the reverse direction of today's pipeline — which only computes
-outlier_score AFTER hydration — and the one genuinely new discovery tool
-this delta adds.
+Uses Bright Data's keyword channel discovery to sample recent videos in a
+niche's keyword space and flag channels with views far above what their
+subscriber count would predict. Tags discovery_method='breakout_video_discovery'.
 """
 
 from __future__ import annotations
@@ -19,10 +14,9 @@ from src.state import NodeLog, ErrorRecord
 
 
 def compute_breakout_signal(video_views: int, channel_subs: int) -> bool:
-    """Is this video's view count far outside what its channel size predicts?"""
     if channel_subs <= 0:
-        return video_views >= 100000  # absolute floor for unknown channel size
-    return video_views >= channel_subs * 5  # 5x subs = breakout signal
+        return video_views >= 100000
+    return video_views >= channel_subs * 5
 
 
 async def breakout_scanner(state: dict) -> dict:
@@ -47,42 +41,35 @@ async def breakout_scanner(state: dict) -> dict:
 
     node = tree[active_node_id]
     keywords = node.get("keywords", [])
-
     if not keywords:
-        return {"node_logs": _log({"reason": "no keywords for this node", "scanned": 0})}
+        return {"node_logs": _log({"reason": "no keywords", "scanned": 0})}
 
-    # Sample breakout videos via Bright Data video-first discovery
     from src.tools.bright_data import BrightDataClient
 
     client = BrightDataClient()
     breakout_channels: set[str] = set()
     records = 0
 
-    try:
-        for kw in keywords[:3]:  # sample at most 3 keywords per round
-            try:
+    for kw in keywords[:3]:
+        try:
             results, used = await client.discover_channels_by_keyword(
                 [kw], limit_per_input=5
             )
-                records += used
-                for video in results:
-                    ch_id = video.get("channel_id", "")
-                    v_views = int(video.get("view_count") or 0)
-                    ch_subs = int(video.get("subscriber_count") or 0)
-                    if ch_id and compute_breakout_signal(v_views, ch_subs):
-                        breakout_channels.add(ch_id)
-            except Exception as exc:
-                errors.append(ErrorRecord(
-                    node_name="breakout_scanner",
-                    error_type=type(exc).__name__,
-                    message=f"keyword breakout scan failed for '{kw}': {exc}",
-                    recoverable=True,
-                ).model_dump())
-                continue
-    except Exception:
-        pass
+            records += used
+            for video in results:
+                ch_id = video.get("channel_id", "")
+                v_views = int(video.get("view_count") or 0)
+                ch_subs = int(video.get("subscriber_count") or 0)
+                if ch_id and compute_breakout_signal(v_views, ch_subs):
+                    breakout_channels.add(ch_id)
+        except Exception as exc:
+            errors.append(ErrorRecord(
+                node_name="breakout_scanner",
+                error_type=type(exc).__name__,
+                message=f"breakout scan failed for '{kw}': {exc}",
+                recoverable=True,
+            ).model_dump())
 
-    # Add breakout channels as new discoveries
     discovered_set = set(state.get("discovered_channel_ids", []))
     truly_new = [c for c in breakout_channels if c not in discovered_set]
     cost = round(records * cfg.brightdata_cost_per_record_usd, 8)
@@ -94,7 +81,7 @@ async def breakout_scanner(state: dict) -> dict:
         "budget_spent_usd": cost,
         "node_logs": _log({
             "keywords_sampled": len(keywords[:3]),
-            "videos_returned": records,
+            "results": records,
             "breakout_channels_found": len(breakout_channels),
             "new_discoveries": len(truly_new),
         }),
