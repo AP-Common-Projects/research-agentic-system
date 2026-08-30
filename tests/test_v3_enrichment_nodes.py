@@ -731,3 +731,72 @@ class TestTopLifetimeSampling:
         _tag_video_samples(conn, videos)
         tagged = {c.args[1][0] for c in cur.execute.call_args_list}
         assert "a_short" not in tagged
+
+
+class TestEnrichmentIsFloorGated:
+    """The per-channel YouTube enrichment lookups (upload breakdown, Shorts
+    ID set) answer questions asked only of exported channels. Ungated they
+    ran for every discovered channel: measured live, 233 hydrated in 35
+    minutes of which 11 cleared the floor, yet all 233 paid for them.
+    Combined burn reached 367 calls/min — two projects' 20,000-unit daily
+    allowance gone in under an hour."""
+
+    def _client(self, subs):
+        from unittest.mock import MagicMock
+
+        c = MagicMock()
+        c.get_channels.return_value = [{
+            "channel_id": "UCx", "title": "T", "subscriber_count": subs,
+            "video_count": 10, "view_count": 100, "published_at": "2020-01-01",
+        }]
+        c.get_channel_videos.return_value = []
+        c.get_quota_used.return_value = 0
+        return c
+
+    def _run(self, client):
+        from unittest.mock import MagicMock, patch
+        import importlib
+
+        # src/tools/__init__ re-exports the function under the submodule's
+        # own name, so `import src.tools.hydrate_metadata as mod` hands back
+        # the function rather than the module.
+        mod = importlib.import_module("src.tools.hydrate_metadata")
+
+        with (
+            patch.object(mod, "YouTubeAPIClient", return_value=client),
+            patch.object(mod, "persist_channel"),
+            patch.object(mod, "persist_channel_v3"),
+            patch.object(mod, "persist_channel_snapshot"),
+            patch.object(mod, "persist_video"),
+            patch.object(mod, "persist_video_v3"),
+            patch("src.db.connection.get_connection", return_value=MagicMock()),
+            patch("src.db.connection.put_connection"),
+            patch("src.tools.dedup.persist_category_tags"),
+        ):
+            return mod.hydrate_metadata({
+                "discovered_channel_ids": ["UCx"], "thread_id": "t",
+                "run_id": "r", "hydrated_channel_ids": set(),
+            })
+
+    def test_sub_floor_channel_skips_the_paid_lookups(self):
+        client = self._client(1_000)
+        self._run(client)
+        client.get_channel_upload_breakdown.assert_not_called()
+        client.get_channel_shorts_ids.assert_not_called()
+
+    def test_sub_floor_channel_uses_the_cheap_video_path(self):
+        client = self._client(1_000)
+        self._run(client)
+        assert client.get_channel_videos.call_args.kwargs["deep_scan"] is False
+
+    def test_floor_clearing_channel_gets_the_full_treatment(self):
+        client = self._client(500_000)
+        self._run(client)
+        client.get_channel_upload_breakdown.assert_called_once()
+        assert client.get_channel_videos.call_args.kwargs["deep_scan"] is True
+
+    def test_skipping_is_not_recorded_as_an_error(self):
+        """A deliberate skip must not look like a failure in the run log."""
+        out = self._run(self._client(1_000))
+        assert not [e for e in out.get("errors", [])
+                    if "breakdown" in e.get("message", "")]
