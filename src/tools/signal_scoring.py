@@ -10,6 +10,34 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+
+# Bucket edges and labels come straight from the client brief (finance §7).
+# The en dashes are theirs and are what the workbook column shows, so they
+# are not incidental formatting.
+_SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
+    (10_000, "<10K"),
+    (50_000, "10K–50K"),
+    (100_000, "50K–100K"),
+    (500_000, "100K–500K"),
+    (1_000_000, "500K–1M"),
+)
+
+
+def channel_size_bucket(subscriber_count: int | None) -> str:
+    """The client's subscriber-size stratum for a channel.
+
+    Module-level rather than inline in score_signals so a backfill can reuse
+    it. The value is a pure function of subscriber_count, which makes it very
+    tempting to re-derive in SQL -- and a second copy of these edges is
+    exactly how the workbook column and the node drift apart.
+    """
+    n = int(subscriber_count or 0)
+    for edge, label in _SIZE_BUCKETS:
+        if n < edge:
+            return label
+    return "1M+"
+
+
 def compute_engagement_rate(video: dict) -> float:
     views = int(video.get("view_count") or video.get("views") or 0)
     likes = int(video.get("like_count") or video.get("likes") or 0)
@@ -301,20 +329,7 @@ def score_signals(state: dict) -> dict:
                     if reason:
                         v3_fields["floor_override_reason"] = reason
                     # v4: channel_size_bucket (brief §7)
-                    sub_count = int(ch_subs)
-                    if sub_count < 10000:
-                        bucket = "<10K"
-                    elif sub_count < 50000:
-                        bucket = "10K–50K"
-                    elif sub_count < 100000:
-                        bucket = "50K–100K"
-                    elif sub_count < 500000:
-                        bucket = "100K–500K"
-                    elif sub_count < 1000000:
-                        bucket = "500K–1M"
-                    else:
-                        bucket = "1M+"
-                    v3_fields["channel_size_bucket"] = bucket
+                    v3_fields["channel_size_bucket"] = channel_size_bucket(ch_subs)
                     # v4: upload_frequency
                     uploads_per_week = signals.get("cadence", 0) / 30 * 7 if signals.get("cadence") else 0
                     if uploads_per_week >= 3:
