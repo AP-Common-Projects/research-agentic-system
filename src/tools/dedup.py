@@ -290,6 +290,23 @@ def persist_channel_v3(conn: Any, channel_id: str, run_id: str, fields: dict) ->
         "upload_consistency_score", "data_completeness_score",
         "missing_required_fields", "classifier_model", "classifier_version",
         "first_video_published_at",
+        # v4. Every one of these was missing from this allowlist, so the
+        # loop below dropped it: populate_shared_fields,
+        # populate_taxonomy_dimensions, signal_scoring's size bucket and
+        # hydrate_metadata's vertical_start_date all computed their values,
+        # called persist_channel_v3, reported success, and wrote nothing.
+        # The whole v4 channel-enrichment layer was silently a no-op —
+        # creator_authority read 'unknown' across all 8,493 channels only
+        # because that is the column default, never because anything
+        # classified them.
+        "primary_topic", "secondary_topic", "geography_focus",
+        "target_audience", "content_approach",
+        "creator_authority", "creator_authority_evidence",
+        "channel_size_bucket", "upload_frequency",
+        "sub_growth_30d", "sub_growth_90d", "views_30d", "views_90d",
+        "channel_creation_date", "vertical_start_date",
+        "vertical_start_date_basis", "vertical_start_date_confidence",
+        "is_comparison_pool",
     }
     for col in v3_cols:
         if col in fields:
@@ -386,6 +403,16 @@ def persist_video_v3(conn: Any, video_id: str, fields: dict) -> None:
         "thumbnail_has_face", "thumbnail_text_density",
         "data_completeness_score", "missing_required_fields",
         "video_description",
+        # hydrate_metadata has always set these from the API response, but
+        # they were missing from this set, so the loop below silently
+        # dropped them: every video row in the database has a NULL raw
+        # description despite the text arriving free in the same
+        # videos.list payload the other columns come from. That starved
+        # populate_crime_metadata, whose eligibility query requires a
+        # description, and left a field both client briefs ask for empty.
+        # `description` is the channel's own text; `video_description` is
+        # the LLM's one-line gloss of the title — different fields.
+        "description", "tags",
     }
     for col in v3_cols:
         if col in fields:
