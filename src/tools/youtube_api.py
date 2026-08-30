@@ -150,9 +150,17 @@ class YouTubeAPIClient:
         return results
 
     def get_channel_videos(
-        self, channel_id: str, max_results: int = 50
+        self, channel_id: str, max_results: int = 50, deep_scan: bool = True
     ) -> list[dict]:
         """The channel's long-form catalogue plus a recent Shorts sample.
+
+        deep_scan=False asks for one page of uploads instead — roughly 3
+        quota units rather than ~14. Callers use it for channels that cannot
+        reach the deliverable anyway (below the subscriber floor), where the
+        videos are only needed for outlier scoring and graph traversal.
+        Scanning those deeply exhausted the 10,000-unit daily quota in about
+        an hour on the live augment runs, since ~90% of discovered channels
+        are sub-floor.
 
         This used to fetch a single page of the uploads playlist — the 50
         newest videos, Shorts and long-form mixed together. That shape could
@@ -170,6 +178,8 @@ class YouTubeAPIClient:
         small and fixed — the briefs ask for Shorts kept apart from
         long-form analysis, not for a complete Shorts census.
         """
+        if not deep_scan:
+            return self._one_page_of_uploads(channel_id, max_results)
         videos = self.get_channel_long_form_scan(channel_id, max_scan=max_results)
         videos += self.get_channel_shorts_sample(
             channel_id, limit=min(_SHORTS_SAMPLE_LIMIT, max_results)
@@ -365,6 +375,39 @@ class YouTubeAPIClient:
             if passed_window or not page_token:
                 break
         return ids
+
+    def _one_page_of_uploads(self, channel_id: str, max_results: int) -> list[dict]:
+        """One page of the uploads playlist — the cheap path.
+
+        What this method did for every channel before the lifetime scan
+        existed: ~3 quota units, newest-first, Shorts and long-form mixed.
+        Correct for channels whose videos only feed outlier scoring and
+        graph traversal.
+        """
+        suffix = channel_id[2:] if channel_id.startswith("UC") else channel_id
+        if not self.check_quota(1):
+            logger.error("quota_ceiling_hit", quota_used=self._quota_used)
+            return []
+        try:
+            page = self._get(
+                "playlistItems",
+                {"part": "contentDetails", "playlistId": "UU" + suffix,
+                 "maxResults": min(max_results, 50)},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404):
+                logger.warning(
+                    "youtube_uploads_playlist_unavailable",
+                    channel_id=channel_id, status=exc.response.status_code,
+                )
+                return []
+            raise
+        self._track_quota(1)
+        ids = [
+            item.get("contentDetails", {}).get("videoId")
+            for item in page.get("items", [])
+        ]
+        return self.get_videos([v for v in ids if v])
 
     def get_channel_shorts_sample(self, channel_id: str, limit: int = 50) -> list[dict]:
         """The channel's most recent Shorts, hydrated.

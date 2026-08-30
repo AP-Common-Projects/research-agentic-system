@@ -251,6 +251,9 @@ def hydrate_metadata(state: dict) -> dict:
 
     all_video_ids: list[str] = []
     errors: list[dict] = []
+    # The client's 50k rule, read once rather than per channel.
+    from src.config import get_config as _get_config
+    floor = int(_get_config().harness.subscriber_floor)
     for ch in channels:
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
         # v4 competitor_ecosystem: channels resolved from competitor-benchmark
@@ -270,13 +273,24 @@ def hydrate_metadata(state: dict) -> dict:
         # run — and by this point the round's Bright Data records are already
         # paid for. One channel's metadata is worth losing; a round is not.
         try:
-            # The full long-form catalogue plus a Shorts sample, not one
-            # recent page. Both briefs ask for a latest-N window AND a
-            # top-20-lifetime set, and the second cannot be derived from the
-            # first: ranking the newest 50 gives "best of the last few
-            # months".
+            # The full-catalogue walk is only worth its quota on channels
+            # that can actually reach the deliverable. Measured on the live
+            # augment runs: ~9-10% of discovered channels clear the
+            # subscriber floor, but every one of them was getting the deep
+            # scan — ~14 API calls each instead of ~3. That burned the
+            # entire 10,000-unit daily quota in about an hour, on channels
+            # that were then filtered out, and stalled discovery completely.
+            #
+            # Sub-floor channels still get a single page, which is what the
+            # pipeline always did: enough for outlier scoring and graph
+            # traversal, which is all they are ever used for. Floor-clearing
+            # channels get the deep scan, because they are the ones the
+            # briefs' latest-50 + top-20-lifetime sampling applies to.
+            deep = (ch.get("subscriber_count") or 0) >= floor
             videos = client.get_channel_videos(
-                ch["channel_id"], max_results=LIFETIME_SCAN_MAX_VIDEOS
+                ch["channel_id"],
+                max_results=LIFETIME_SCAN_MAX_VIDEOS if deep else 50,
+                deep_scan=deep,
             )
         except Exception as exc:
             errors.append(

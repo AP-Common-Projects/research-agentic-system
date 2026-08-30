@@ -359,3 +359,61 @@ class TestLongFormScanFallback:
         with patch.object(client, "_get", side_effect=fake_get):
             assert client.get_channel_long_form_scan("UCabc") == []
         assert seen == ["UULFabc", "UUabc"]
+
+
+class TestDeepScanGating:
+    """~90% of discovered channels sit below the subscriber floor and can
+    never reach the deliverable. Deep-scanning them exhausted the 10,000-unit
+    daily quota in about an hour on the live augment runs and stalled
+    discovery entirely."""
+
+    def test_shallow_scan_reads_one_page_of_uploads(self):
+        client = _client()
+        seen = []
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                seen.append(params["playlistId"])
+                return {"items": [{"contentDetails": {"videoId": "a"}}],
+                        "nextPageToken": "more"}
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_videos("UCabc", max_results=50, deep_scan=False)
+
+        assert seen == ["UUabc"], "one page of uploads, no UULF/UUSH walk"
+
+    def test_deep_scan_walks_long_form_and_shorts(self):
+        client = _client()
+        seen = []
+
+        def fake_get(endpoint, params):
+            if endpoint == "playlistItems":
+                seen.append(params["playlistId"][:4])
+                return {"items": [{"contentDetails": {"videoId": "a"}}]}
+            return {"items": []}
+
+        with patch.object(client, "_get", side_effect=fake_get):
+            client.get_channel_videos("UCabc", max_results=3000, deep_scan=True)
+
+        assert "UULF" in seen and "UUSH" in seen
+
+    def test_shallow_is_the_cheaper_path(self):
+        client = _client()
+
+        def counting(seen):
+            def fake_get(endpoint, params):
+                seen.append(endpoint)
+                if endpoint == "playlistItems":
+                    return {"items": [{"contentDetails": {"videoId": "a"}}]}
+                return {"items": []}
+            return fake_get
+
+        shallow, deep = [], []
+        with patch.object(client, "_get", side_effect=counting(shallow)):
+            client.get_channel_videos("UCabc", max_results=50, deep_scan=False)
+        with patch.object(_client(), "_get", side_effect=counting(deep)) as _:
+            c2 = _client()
+            with patch.object(c2, "_get", side_effect=counting(deep)):
+                c2.get_channel_videos("UCabc", max_results=3000, deep_scan=True)
+        assert len(shallow) < len(deep)
