@@ -123,6 +123,21 @@ def populate_crime_metadata(state: dict) -> dict:
         return {"node_logs": _log({"reason": "store unreachable", "populated": 0})}
 
     # Find Crime videos from channels meeting the floor, not yet classified
+
+    # Optional restriction to a set of channels, defaulting to the node's
+    # normal global behaviour. Two uses: skip channels the deliverable's
+    # trim will discard anyway, and split the work across parallel workers
+    # on disjoint slices -- the eligibility query is ORDER BY outlier_score
+    # LIMIT 50, so unscoped workers would all fetch the same rows and pay
+    # for the same LLM calls several times over.
+    scope = state.get("scope_channel_ids")
+    if scope:
+        scope_sql = "AND v.channel_id = ANY(%s) "
+        scope_params: tuple = (list(scope),)
+    else:
+        scope_sql = ""
+        scope_params = ()
+
     try:
         cur = conn.cursor()
         cur.execute(
@@ -143,10 +158,12 @@ def populate_crime_metadata(state: dict) -> dict:
             "WHERE nt.parent_category = 'crime' "
             "AND c.meets_subscriber_floor = TRUE "
             "AND ccm.video_id IS NULL "
+            + scope_sql
             # Either source of text will do; a bare title is too thin to
             # classify a case from, so those are left for a later pass.
-            "AND COALESCE(NULLIF(v.description, ''), v.video_description) IS NOT NULL "
-            "ORDER BY v.outlier_score DESC NULLS LAST LIMIT 50"
+            + "AND COALESCE(NULLIF(v.description, ''), v.video_description) IS NOT NULL "
+            "ORDER BY v.outlier_score DESC NULLS LAST LIMIT 50",
+            scope_params,
         )
         eligible = cur.fetchall()
         cur.close()
