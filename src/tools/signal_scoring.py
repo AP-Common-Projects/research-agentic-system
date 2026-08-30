@@ -300,6 +300,33 @@ def score_signals(state: dict) -> dict:
                     v3_fields["meets_subscriber_floor"] = meets
                     if reason:
                         v3_fields["floor_override_reason"] = reason
+                    # v4: channel_size_bucket (brief §7)
+                    sub_count = int(ch_subs)
+                    if sub_count < 10000:
+                        bucket = "<10K"
+                    elif sub_count < 50000:
+                        bucket = "10K–50K"
+                    elif sub_count < 100000:
+                        bucket = "50K–100K"
+                    elif sub_count < 500000:
+                        bucket = "100K–500K"
+                    elif sub_count < 1000000:
+                        bucket = "500K–1M"
+                    else:
+                        bucket = "1M+"
+                    v3_fields["channel_size_bucket"] = bucket
+                    # v4: upload_frequency
+                    uploads_per_week = signals.get("cadence", 0) / 30 * 7 if signals.get("cadence") else 0
+                    if uploads_per_week >= 3:
+                        v3_fields["upload_frequency"] = "daily_plus"
+                    elif uploads_per_week >= 1:
+                        v3_fields["upload_frequency"] = "weekly"
+                    elif uploads_per_week >= 0.25:
+                        v3_fields["upload_frequency"] = "monthly"
+                    elif uploads_per_week > 0:
+                        v3_fields["upload_frequency"] = "irregular"
+                    else:
+                        v3_fields["upload_frequency"] = "unknown"
 
                     try:
                         persist_channel_v3(conn, ch_id, run_id, v3_fields)

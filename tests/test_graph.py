@@ -300,10 +300,14 @@ def test_graph_compiles_and_has_expected_nodes():
     nodes = graph.nodes
     expected = {
         "scan_niches",
+        "expand_niche_adjacency",
         "build_taxonomy",
         "select_next_node",
         "keyword_search",
         "graph_walk",
+        "breakout_scanner",
+        "underperformer_discovery",
+        "new_channel_discovery",
         "hydrate_metadata",
         "resolve_geo_language",
         "extract_metadata_signals",
@@ -314,6 +318,11 @@ def test_graph_compiles_and_has_expected_nodes():
         "cluster_branch",
         "compact_branch",
         "extract_success_failure_factors",
+        "describe_video_titles",
+        "populate_taxonomy_dimensions",
+        "populate_crime_metadata",
+        "populate_shared_fields",
+        "assign_cohorts",
         "finalize_dataset",
     }
     assert expected <= set(nodes)

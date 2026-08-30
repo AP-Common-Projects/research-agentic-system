@@ -6,8 +6,11 @@ graph exceeds export_max_graph_nodes.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from src.export import (
     _category,
+    _excel_safe,
     _ref_label,
     _report_markdown,
     build_graph_payload,
@@ -323,3 +326,35 @@ class TestReportMarkdown:
         md = _report_markdown(report, _manifest(), channels, {}, {})
         assert "Channels: Blockchain basics" in md
         assert "\n\n," not in md
+
+
+# TestBuildExcelWorkbook removed: it exercised the v1 three-sheet workbook
+# (Overview/Channels/Outlier Videos) built by build_excel_workbook, which v3
+# replaced with build_excel_workbook_v3 and its six-sheet client deliverable.
+# The v3 workbook is covered by tests/test_export_v3.py.
+
+
+class TestExcelSafe:
+    def test_strips_timezone_from_datetimes(self):
+        aware = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        result = _excel_safe(aware)
+        assert result.tzinfo is None
+        assert result == datetime(2026, 1, 1)
+
+    def test_naive_datetimes_pass_through_unchanged(self):
+        naive = datetime(2026, 1, 1)
+        assert _excel_safe(naive) == naive
+
+    def test_joins_lists(self):
+        assert _excel_safe(["a", "b"]) == "a; b"
+
+    def test_other_types_pass_through(self):
+        assert _excel_safe("plain string") == "plain string"
+        assert _excel_safe(42) == 42
+        assert _excel_safe(None) is None
+
+    def test_strips_illegal_control_characters_from_strings(self):
+        """openpyxl raises IllegalCharacterError outright on these — caught
+        live exporting a real Legal channel description containing one."""
+        assert _excel_safe("before\x0bafter") == "beforeafter"
+        assert _excel_safe("clean text") == "clean text"
