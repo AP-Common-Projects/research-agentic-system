@@ -430,6 +430,19 @@ MIGRATIONS: list[str] = [
     )""",
     """CREATE INDEX IF NOT EXISTS idx_comments_sample_video ON video_comments_sample(video_id)""",
 
+    # === v4 shared channels columns: taxonomy dimensions (brief §3), size bucket, growth ===
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS primary_topic TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS secondary_topic TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS geography_focus TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS target_audience TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS content_approach TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS channel_size_bucket TEXT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS sub_growth_30d BIGINT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS sub_growth_90d BIGINT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS views_30d BIGINT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS views_90d BIGINT""",
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS upload_frequency TEXT""",
+
     # === v4 shared finance/crime fields (plan §5.8) ===
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS search_browse_estimate TEXT
         CHECK (search_browse_estimate IN

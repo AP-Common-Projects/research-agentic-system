@@ -72,7 +72,7 @@ async def expand_niche_adjacency(state: dict) -> dict:
         put_connection(conn)
         return {"node_logs": _log({"reason": "query failed", "target": target_niche})}
 
-    # Stage 2: score candidates against real discovery_edges
+# Stage 2: score candidates against real discovery_edges + description similarity
     store = get_store()
     from src.tools.graph_clustering import score_niche_adjacency, admission_score
 
@@ -106,7 +106,6 @@ async def expand_niche_adjacency(state: dict) -> dict:
             neighbor_refs = {ch["channel_id"] for ch in neighbor_chs}
             all_channels = target_chs + neighbor_chs
 
-            # Load discovery_edges for the union
             from src.tools.bright_data import normalize_channel_ref
             all_refs = sorted(target_refs | neighbor_refs)
             edges = await store.get_discovery_edges_for_channels(all_refs) if all_refs else []
@@ -114,12 +113,29 @@ async def expand_niche_adjacency(state: dict) -> dict:
             result = score_niche_adjacency(target_refs, neighbor_refs, all_channels, edges)
             score = result["score"]
 
-            adj_scores[neighbor] = score
-            floor = 0.05  # Phase 0 calibration placeholder — plan §14
-            if score >= floor:
-                admitted_niches.append((neighbor, score, c["type"]))
+            # Strengthen: also check if the adjacency has real description-level signal.
+            # A high graph score from one edge doesn't mean the niches are genuinely adjacent —
+            # cross-check with description similarity (plan §6.4, user requirement #4).
+            desc_score = 0.0
+            if neighbor_chs and target_chs:
+                # Sample: check how many neighbor channels have high description overlap
+                # with the target niche's channel corpus
+                matches = 0
+                for nc in neighbor_chs[:20]:
+                    sim = admission_score(nc, target_chs[:30])
+                    if sim > 0.15:
+                        matches += 1
+                desc_score = matches / max(1, min(20, len(neighbor_chs)))
+
+            # Blend: graph score weighted 0.6, description score weighted 0.4
+            blended_score = score * 0.6 + desc_score * 0.4
+
+            adj_scores[neighbor] = blended_score
+            floor = 0.05
+            if blended_score >= floor:
+                admitted_niches.append((neighbor, blended_score, c["type"]))
             else:
-                # Record rejected
+                # Record rejected — below the adjacency floor
                 try:
                     cur = conn.cursor()
                     cur.execute(

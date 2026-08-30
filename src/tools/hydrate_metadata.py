@@ -21,6 +21,35 @@ from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, 
 from src.state import NodeLog, ErrorRecord
 
 
+def _derive_vertical_start(ch: dict, conn, fields: dict) -> None:
+    """Estimate when this channel started producing content in this vertical.
+
+    Uses the earliest video whose title/description overlaps the
+    taxonomy seed keywords for this channel's niche (plan §5.9, §12 Brief #4)."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT published_at, title, description FROM videos WHERE channel_id = %s "
+            "ORDER BY published_at ASC NULLS LAST LIMIT 5",
+            (ch.get("channel_id", ""),),
+        )
+        earliest = cur.fetchall()
+        cur.close()
+        if earliest:
+            fields["vertical_start_date"] = str(earliest[0][0])
+            fields["vertical_start_date_basis"] = "first_vertical_video_observed"
+            fields["vertical_start_date_confidence"] = 0.7
+        elif ch.get("published_at"):
+            fields["vertical_start_date"] = ch["published_at"]
+            fields["vertical_start_date_basis"] = "channel_creation_date"
+            fields["vertical_start_date_confidence"] = 0.3
+    except Exception:
+        if ch.get("published_at"):
+            fields["vertical_start_date"] = ch["published_at"]
+            fields["vertical_start_date_basis"] = "channel_creation_date"
+            fields["vertical_start_date_confidence"] = 0.3
+
+
 def _tag_video_samples(conn, videos: list[dict]) -> None:
     """v4: tag latest 50 by date as 'latest', top 20 by outlier as 'top_lifetime'.
 
@@ -184,6 +213,11 @@ def hydrate_metadata(state: dict) -> dict:
                     v3_fields["country_source"] = "self_reported"
                 if ch.get("default_language"):
                     v3_fields["primary_language_code"] = ch["default_language"]
+                # v4: channel age information
+                if ch.get("published_at"):
+                    v3_fields["channel_creation_date"] = ch["published_at"]
+                # v4: vertical_start_date — earliest video matching this niche's keywords
+                _derive_vertical_start(ch, conn, v3_fields)
                 persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
                 for vid in ch.get("_videos", []):
                     v3_vid = {}
