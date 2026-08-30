@@ -33,6 +33,12 @@ SHORTS_MAX_SECONDS = 180
 LIFETIME_SCAN_MAX_VIDEOS = 3000
 
 
+class _SkipEnrichment(Exception):
+    """Sentinel: this channel is below the floor, so the per-channel
+    YouTube enrichment lookups are deliberately skipped rather than failed.
+    Raised and caught locally; never escapes the node."""
+
+
 
 def _derive_vertical_start(ch: dict, conn, fields: dict) -> None:
     """Estimate when this channel started producing content in this vertical.
@@ -321,6 +327,11 @@ def hydrate_metadata(state: dict) -> dict:
             import json as _json
 
             for ch in channels:
+                # Recomputed here rather than reused from the fetch loop
+                # above: that loop has already finished, so its `deep` would
+                # hold whichever channel it happened to end on and every
+                # channel in this loop would inherit that one answer.
+                deep = (ch.get("subscriber_count") or 0) >= floor
                 persist_channel(conn, ch)
                 for vid in ch.get("_videos", []):
                     if vid.get("thumbnails"):
@@ -334,15 +345,24 @@ def hydrate_metadata(state: dict) -> dict:
                     persist_video(conn, vid)
                 # v3: snapshot + enrichment provenance
                 run_id = state.get("run_id", "")
-                # 4 quota units for the long/Shorts/live split of the
-                # lifetime total, plus up to a few more for the Shorts ID
-                # set that settles is_short below. Cheap next to the ~100
-                # units this node already spends hydrating the channel, and
-                # the only way to answer "how many of these are Shorts?" —
-                # statistics.videoCount carries no type breakdown.
+                # 4 quota units for the long/Shorts/live split, plus a few
+                # more for the Shorts ID set that settles is_short — but
+                # only for channels that can reach the deliverable. Both
+                # answer questions asked exclusively of exported channels:
+                # the breakdown fills export columns, and is_short decides
+                # which sheet a row lands in.
+                #
+                # Ungated, this ran for every discovered channel and was the
+                # dominant quota leak: measured live, 233 channels hydrated
+                # in 35 minutes of which only 11 cleared the floor, yet all
+                # 233 paid ~6 units here. Combined burn hit 367 calls/min —
+                # enough to exhaust two projects' 20,000-unit daily
+                # allowance in under an hour.
                 breakdown = {}
                 shorts_ids: set[str] = set()
                 try:
+                    if not deep:
+                        raise _SkipEnrichment
                     breakdown = client.get_channel_upload_breakdown(ch["channel_id"])
                     # Lets _derive_vertical_start tell "we hold this
                     # channel's whole catalogue" from "the walk was cut
@@ -357,6 +377,14 @@ def hydrate_metadata(state: dict) -> dict:
                     shorts_ids = client.get_channel_shorts_ids(
                         ch["channel_id"], published_after=oldest_sampled
                     )
+                except _SkipEnrichment:
+                    # Sub-floor channel: deliberately skipped, not an error.
+                    # The counts stay NULL, which reads as "not looked up"
+                    # rather than a false zero, and is_short falls back to
+                    # the duration bound — exactly what this channel would
+                    # have had before the breakdown existed, and it never
+                    # reaches the export anyway.
+                    pass
                 except Exception as exc:
                     # Never fail hydration over the breakdown: the counts
                     # stay NULL ("not looked up") and is_short falls back to
