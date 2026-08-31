@@ -355,6 +355,59 @@ class YouTubeAPIClient:
                 break
         return oldest_published_at
 
+    def get_top_comments(self, video_id: str, limit: int = 20) -> list[dict] | None:
+        """The most relevant top-level comments on a video, or None.
+
+        order=relevance is YouTube's own ranking, which is what "top
+        comments" means to a viewer -- ordering by likes would bury early
+        high-engagement replies under late spam.
+
+        None means the video has no comment list to read: comments disabled
+        by the uploader, or the video is gone. That is a fact about the
+        video and must be distinguishable from "we have not looked yet", so
+        the caller can record it and never retry. A quota failure is NOT
+        that -- it propagates, as everywhere else in this client.
+        """
+        if not self.check_quota(1):
+            logger.error("quota_ceiling_hit", quota_used=self._quota_used)
+            return None
+        try:
+            data = self._get(
+                "commentThreads",
+                {
+                    "part": "snippet",
+                    "videoId": video_id,
+                    "order": "relevance",
+                    "maxResults": min(int(limit), 100),
+                    "textFormat": "plainText",
+                },
+            )
+        except YouTubeQuotaExhausted:
+            raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404):
+                logger.info(
+                    "youtube_comments_unavailable",
+                    video_id=video_id, status=exc.response.status_code,
+                )
+                return None
+            raise
+        self._track_quota(1)
+
+        out: list[dict] = []
+        for item in data.get("items", [])[:limit]:
+            top = (item.get("snippet", {}) or {}).get("topLevelComment", {})
+            sn = (top.get("snippet", {}) or {})
+            out.append({
+                "comment_text": sn.get("textDisplay") or "",
+                "comment_date": sn.get("publishedAt"),
+                "likes": int(sn.get("likeCount") or 0),
+                "reply_count": int(
+                    (item.get("snippet", {}) or {}).get("totalReplyCount") or 0
+                ),
+            })
+        return out
+
     def get_channel_upload_breakdown(self, channel_id: str) -> dict[str, int | None]:
         """How many of the channel's uploads are long-form vs Shorts vs live.
 
