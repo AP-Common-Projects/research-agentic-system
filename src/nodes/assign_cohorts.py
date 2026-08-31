@@ -100,7 +100,11 @@ def assign_cohorts(state: dict) -> dict:
             "c.vertical_start_date, c.engagement_score, c.evergreen_score, "
             "nt.parent_category, c.channel_size_bucket, "
             "(SELECT MAX(v.published_at) FROM videos v "
-            " WHERE v.channel_id = c.channel_id) AS last_upload "
+            " WHERE v.channel_id = c.channel_id) AS last_upload, "
+            "(SELECT COUNT(*) FROM videos v "
+            " WHERE v.channel_id = c.channel_id) AS video_n, "
+            "(SELECT MIN(v.published_at) FROM videos v "
+            " WHERE v.channel_id = c.channel_id) AS first_upload "
             "FROM channels c "
             "LEFT JOIN channel_niches cn ON c.channel_id = cn.channel_id AND cn.is_primary = TRUE "
             "LEFT JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
@@ -125,7 +129,7 @@ def assign_cohorts(state: dict) -> dict:
         peer_floor = _peer_engagement_floors(conn)
 
         for (ch_id, subs, ch_creation, v_start, eng, eg, vertical,
-             size_bucket, last_upload) in channels:
+             size_bucket, last_upload, video_n, first_upload) in channels:
             if not vertical or vertical not in ("crime", "finance"):
                 continue
 
@@ -169,7 +173,30 @@ def assign_cohorts(state: dict) -> dict:
             stagnant = days_silent is not None and days_silent >= 180
             below_peers = eng < peer_floor.get((vertical, size_bucket), 0.0)
 
-            is_under = (not is_winner) and (abandoned or stagnant or below_peers)
+            # The brief qualifies an underperformer as a channel that
+            # "published at least 30-50 videos" and was "active for some
+            # months or even years" -- a channel with three uploads is not a
+            # failure case, it is an absence of data. Our sample is capped,
+            # so a channel showing 30 videos provably published at least 30;
+            # it is a conservative floor rather than the true count.
+            history_span_days = None
+            if first_upload is not None and last_upload is not None:
+                try:
+                    history_span_days = (last_upload - first_upload).days
+                except TypeError:
+                    history_span_days = None
+
+            has_track_record = (
+                int(video_n or 0) >= 30
+                and history_span_days is not None
+                and history_span_days >= 180
+            )
+
+            is_under = (
+                (not is_winner)
+                and has_track_record
+                and (abandoned or stagnant or below_peers)
+            )
 
             if is_under and not is_new:
                 # Checked before the per-vertical branches: underperformer

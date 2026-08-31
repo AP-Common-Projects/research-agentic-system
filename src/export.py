@@ -223,9 +223,19 @@ def fetch_run_videos(
                ccm.crime_type, ccm.victim_type, ccm.suspect_relationship,
                ccm.investigation_type, ccm.evidence_type_primary,
                ccm.case_status, ccm.case_fame_level, ccm.case_country, ccm.case_year,
+               ccm.interrogation_available, ccm.bodycam_available,
+               ccm.cctv_available, ccm.call_911_available,
+               ccm.court_footage_available,
                (SELECT string_agg(vrm.mechanism, '; ' ORDER BY vrm.mechanism)
                   FROM video_reveal_mechanisms vrm
                  WHERE vrm.video_id = v.video_id) AS reveal_mechanisms,
+               -- Thumbnail: the URL the client asked for as its own column,
+               -- plus the two per-video vision signals, which were computed
+               -- and stored but never reached a sheet.
+               -- the 'high' entry is an object carrying url/width/height,
+               -- not a bare string (braces avoided: this SQL is an f-string)
+               v.extra->'thumbnails'->'high'->>'url' AS thumbnail_url,
+               v.thumbnail_has_face, v.thumbnail_text_density,
                v.title_word_count, v.title_has_number,
                v.title_is_question, v.title_capitalization, v.title_emoji_count
         FROM videos v
@@ -1583,6 +1593,10 @@ _EXCEL_COLUMN_WIDTHS: dict[str, int] = {
     "country_code": 12, "region": 16,
     "primary_language_code": 14, "language_confidence": 12,
     "face_status": 12, "dominant_format": 20,
+    "thumbnail_url": 52, "thumbnail_has_face": 16, "thumbnail_text_density": 20,
+    "interrogation_available": 20, "bodycam_available": 16,
+    "cctv_available": 14, "call_911_available": 16,
+    "court_footage_available": 20,
     "category": 16, "sub_niche": 26,
     "entertainment_score": 14, "evergreen_score": 14, "engagement_score": 14,
     "is_likely_news": 12, "uploads_per_week_avg": 16, "upload_consistency_score": 16,

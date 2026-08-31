@@ -230,6 +230,15 @@ MIGRATIONS: list[str] = [
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_capitalization TEXT
         CHECK (title_capitalization IN ('title_case','sentence_case','all_caps','mixed_emphasis'))""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS title_emoji_count INT""",
+    # Footage-availability flags the client brief asks for per case. Derived
+    # rather than asked of the model again: the reveal mechanism and the
+    # primary evidence type already encode what footage the video shows, and
+    # a title saying "bodycam" is direct evidence of bodycam footage.
+    """ALTER TABLE crime_case_metadata ADD COLUMN IF NOT EXISTS interrogation_available BOOLEAN""",
+    """ALTER TABLE crime_case_metadata ADD COLUMN IF NOT EXISTS bodycam_available BOOLEAN""",
+    """ALTER TABLE crime_case_metadata ADD COLUMN IF NOT EXISTS cctv_available BOOLEAN""",
+    """ALTER TABLE crime_case_metadata ADD COLUMN IF NOT EXISTS call_911_available BOOLEAN""",
+    """ALTER TABLE crime_case_metadata ADD COLUMN IF NOT EXISTS court_footage_available BOOLEAN""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_has_face BOOLEAN""",
     """ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_text_density TEXT
         CHECK (thumbnail_text_density IN ('none','low','medium','high'))""",

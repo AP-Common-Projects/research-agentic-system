@@ -53,11 +53,26 @@ class TestUnderperformanceIsRelativeAndTimeAware:
             assert token in src, f"{token} must feed the underperformer test"
 
     def test_a_winner_is_never_an_underperformer(self):
+        """Asserted on the assignment's shape, not its exact formatting.
+
+        The first version of this matched a literal source line and broke
+        the moment the expression was wrapped over several lines, while the
+        behaviour it guards was untouched.
+        """
         src = inspect.getsource(mod.assign_cohorts)
-        assert "is_under = (not is_winner)" in src, (
+        expr = src[src.index("is_under = "):]
+        expr = expr[: expr.index("\n\n")]
+        assert "not is_winner" in expr, (
             "a high-engagement or very large channel must not be labelled "
             "an underperformer merely for a quiet six months"
         )
+
+    def test_underperformer_requires_a_real_track_record(self):
+        """The brief: at least 30-50 videos, active for months or years."""
+        src = inspect.getsource(mod.assign_cohorts)
+        assert "has_track_record" in src
+        assert ">= 30" in src, "a channel with three uploads is missing data, not failing"
+        assert "history_span_days" in src
 
 
 class TestEligibilityTerminates:
