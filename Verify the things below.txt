@@ -1,0 +1,55 @@
+Verify the things below: 
+
+-1 For both finance and crime, Fix the Taxonomy's considering family sub-niches as single by single sub-niches issue.
+-2 For Crime, We are going to have  the following sub-niches : Bodycam / Police Investigation
+, Digital Evidence / Investigation-driven Crime
+
+-3 For both Finance and crime, Most added channels are small-to-medium channels.
+-4 For both Finance and crime, New Entrants channels.
+-5 Balanced size of sub-niches' sub count for each Finance and Crime niches.
+-6 In Crime, Bodycam used to have the most bias! it needs to be fixed by adding Bodycam<100k , Bodycam 100–500K, new entrant Bodycam, Failed Bodycam contents(the last one is crucial).
+- 7 For both Finance and crime, Not just collect successful channels, but, collect failed/underperforming channels which have published at least 30-50 videos, had been active for some months or even years, but have a very low median view compared to others, or have stopped publishing.
+- 8 For both Finance and crime, To have breakout videos in our new pools.
+-9 For both Finance and crime, Core Dataset being in English, the other languages being held in an "International Comparison Dataset" (because mixing for Hindi Crime Patrol with US Investigation Documentary for example, will miscompute the Medians).
+-10 For both Finance and Crime, we are supposed to have Channel-weighted analysis, which is to collect `Latest 50 Long-form videos`, and `Top 20 lifetime videos` if possible.
+-11 For Crime new pools adding, the focus must be mostly on the following sub-niches (Bodycam / Police Incident, Investigation Documentary,Interrogation/Psychology) and also Small/New breakout channels. around 25-30 channels in Digital Evidence,Cold Cases,Storytelling,Case Stories,Trial/Court. (better if it is already more).
+-12 For each Finance and Crime, around 25-30 channels contaninnig Underperformers,Stagnant channels,Abandoned channels;  To avoid the Survivorship Bias.
+-13 To have Historical View snapshots(Views 24h / 3d / 7d / 30d / 90d / 180d / Current) and Thumbnail tags(a column dedicated to thumbnail_url or thumbnail image ) for both Finance and Crime.
+-14 To have a concise topic tagging for both, like in Crime, having structured columns : crime_type
+victim_type
+suspect_relation
+case_status
+investigation_type
+evidence_type
+reveal_mechanism
+interrogation_available
+bodycam_available
+cctv_available
+911_available
+court_footage_available
+case_country
+case_year
+case_fame_level (this one is crucial to find out if the content was successful because of the good packaging or the case was just famous from before.)
+-15 For Crime, having Reveal Mechanism added. one column for each case. Possible Reveal Mechnisms: Interrogation confession
+Suspect slip-up
+Phone records
+Google search history
+CCTV
+Bodycam
+DNA
+911 call
+Witness
+Social media
+Financial records
+Location data
+Unexpected search
+Family member testimony. So then we can find out which mechanism has the most Breakout Probability; so for example maybe after the analysis, we find out :Suspect mistake = 1.8×
+
+Phone evidence = 1.5×
+
+CCTV = 1.2×
+
+DNA = 0.9× . Which is very precious data for Case Selection.
+
+-16 Comment Data : Top20 comments for each video.
+-17 Channel Growth History; to have Subscribers 2023 / 2024 / 2025 / 2026 , or even monthly if possible.
