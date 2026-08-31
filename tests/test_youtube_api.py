@@ -8,7 +8,10 @@ off by over a decade on a real channel with a long upload history.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
 
 from src.tools.youtube_api import YouTubeAPIClient
 
@@ -519,3 +522,58 @@ class TestApiKeysConfig:
         from src.config import YouTubeConfig
 
         assert YouTubeConfig(api_key="A", fallback_api_keys="").api_keys == ["A"]
+
+
+class TestQuotaExhaustionIsNotAPlaylistProblem:
+    """A 403 from spent quota must not be reported as a dead playlist.
+
+    403 is ambiguous: a private or absent playlist returns it, and so does an
+    expired daily quota. YouTubeQuotaExhausted subclasses HTTPStatusError so
+    ordinary transport handlers keep working -- and the playlist helpers'
+    `except HTTPStatusError -> treat as unavailable` blocks therefore
+    swallowed it. The caller then saw a channel with no videos and no error,
+    marked it permanently unhydratable, and moved on. 302 channels were one
+    step from being classified with no video data at all.
+    """
+
+    def _client(self, exc):
+        from src.tools.youtube_api import YouTubeAPIClient
+
+        c = YouTubeAPIClient.__new__(YouTubeAPIClient)
+        c._api_keys = ["k"]
+        c._key_index = 0
+        c._quota_used = 0
+        c._get = MagicMock(side_effect=exc)
+        return c
+
+    def _quota_error(self):
+        from src.tools.youtube_api import YouTubeQuotaExhausted
+
+        req = httpx.Request("GET", "https://example.test")
+        return YouTubeQuotaExhausted(
+            "quota", request=req, response=httpx.Response(403, request=req)
+        )
+
+    def test_long_form_scan_propagates_quota_exhaustion(self):
+        from src.tools.youtube_api import YouTubeQuotaExhausted
+
+        c = self._client(self._quota_error())
+        with pytest.raises(YouTubeQuotaExhausted):
+            c.get_channel_long_form_scan("UC_x", max_scan=50)
+
+    def test_upload_breakdown_propagates_quota_exhaustion(self):
+        from src.tools.youtube_api import YouTubeQuotaExhausted
+
+        c = self._client(self._quota_error())
+        with pytest.raises(YouTubeQuotaExhausted):
+            c.get_channel_upload_breakdown("UC_x")
+
+    def test_a_real_403_still_reads_as_an_unavailable_playlist(self):
+        """The ambiguity cuts both ways -- a genuine 403 must NOT raise."""
+        req = httpx.Request("GET", "https://example.test")
+        c = self._client(
+            httpx.HTTPStatusError(
+                "forbidden", request=req, response=httpx.Response(403, request=req)
+            )
+        )
+        assert c.get_channel_long_form_scan("UC_x", max_scan=50) == []

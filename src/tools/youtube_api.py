@@ -326,6 +326,15 @@ class YouTubeAPIClient:
                 params["pageToken"] = page_token
             try:
                 page = self._get("playlistItems", params)
+            except YouTubeQuotaExhausted:
+                # 403 is ambiguous: a private/absent playlist AND an expired
+                # daily quota both return it. YouTubeQuotaExhausted subclasses
+                # HTTPStatusError so ordinary transport handlers keep working,
+                # which meant these blocks swallowed it and reported a dead
+                # playlist -- the caller then concluded the CHANNEL was
+                # unhydratable and moved on. Re-raise: quota is a run-level
+                # condition, never a fact about one channel.
+                raise
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in (403, 404):
                     logger.warning(
@@ -388,6 +397,8 @@ class YouTubeAPIClient:
                 )
                 self._track_quota(1)
                 out[key] = page.get("pageInfo", {}).get("totalResults", 0)
+            except YouTubeQuotaExhausted:
+                raise  # see note above: quota is run-level, not per-channel
             except httpx.HTTPStatusError as exc:
                 self._track_quota(1)
                 if exc.response.status_code == 404:
@@ -572,6 +583,15 @@ class YouTubeAPIClient:
                 params["pageToken"] = page_token
             try:
                 page = self._get("playlistItems", params)
+            except YouTubeQuotaExhausted:
+                # 403 is ambiguous: a private/absent playlist AND an expired
+                # daily quota both return it. YouTubeQuotaExhausted subclasses
+                # HTTPStatusError so ordinary transport handlers keep working,
+                # which meant these blocks swallowed it and reported a dead
+                # playlist -- the caller then concluded the CHANNEL was
+                # unhydratable and moved on. Re-raise: quota is a run-level
+                # condition, never a fact about one channel.
+                raise
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in (403, 404):
                     if not used_fallback and playlist_id.startswith("UULF"):
