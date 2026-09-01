@@ -187,9 +187,15 @@ def classify_channel(state: dict) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
+            # IS DISTINCT FROM, not !=. A NULL classifier_version makes
+            # `classifier_version != 'v3.0'` evaluate to NULL rather than
+            # TRUE, so a channel whose version was cleared to force a
+            # re-classification is silently never selected -- and if its
+            # niche rows were deleted first, it ends up with no
+            # classification at all and disappears from the deliverable.
             "SELECT channel_id FROM channels WHERE meets_subscriber_floor = TRUE "
-            "AND (classifier_model IS NULL OR classifier_model != 'deepseek-v4-pro' "
-            "OR classifier_version != 'v3.0') "
+            "AND (classifier_model IS DISTINCT FROM 'deepseek-v4-pro' "
+            "OR classifier_version IS DISTINCT FROM 'v3.0') "
             + scope_sql + "LIMIT 50",
             scope_params,
         )

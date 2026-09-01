@@ -1788,12 +1788,30 @@ def build_excel_workbook_v3(
     ws.append(["Generated", manifest.get("exported_at", "")[:19]])
     ws.append([])
     if niches:
-        ws.append(["Category", "Sub-niche", "Channels"])
+        # The rollup is keyed on primary_topic (the family level), not
+        # sub_niche -- that changed when the Niches sheet was regrouped to
+        # answer the client's "too many sub-niches" complaint, and this
+        # summary was still reading the old key, so every label came out
+        # blank. Falls back through the older keys so an older rollup shape
+        # still renders.
+        ws.append(["Category", "Niche family", "Channels", "Share of vertical",
+                   "Distinct sub-niches", "Example sub-niches"])
         for cell in ws[ws.max_row]:
             cell.font = Font(bold=True)
         for n in sorted(niches, key=lambda r: -r.get("channel_count", 0)):
-            ws.append([n.get("category", ""), n.get("sub_niche", ""), n.get("channel_count", 0)])
-    for col, width in (("A", 28), ("B", 28), ("C", 14)):
+            label = (n.get("primary_topic") or n.get("sub_niche")
+                     or n.get("niche_name") or "Unclassified")
+            pct = n.get("pct_of_vertical")
+            ws.append([
+                n.get("category", ""),
+                label,
+                n.get("channel_count", 0),
+                f"{pct}%" if pct is not None else "",
+                n.get("distinct_sub_niches", ""),
+                n.get("example_sub_niches", ""),
+            ])
+    for col, width in (("A", 22), ("B", 26), ("C", 12), ("D", 18),
+                       ("E", 20), ("F", 58)):
         ws.column_dimensions[col].width = width
 
     _write_excel_sheet(wb.create_sheet("Channels"), channels)
