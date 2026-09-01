@@ -107,15 +107,22 @@ def fetch_run_channels(
     for.
 
     total_long_video_count / total_shorts_count / total_live_stream_count
-    break that single total down by upload type, and satisfy
-    long + shorts + live = total exactly. statistics.videoCount carries no
-    type split, so these come from YouTube's auto-generated per-type
-    playlists (UULF/UUSH/UULV) — see
+    break that single total down by upload type. statistics.videoCount
+    carries no type split, so these come from YouTube's auto-generated
+    per-type playlists (UULF/UUSH/UULV) — see
     YouTubeAPIClient.get_channel_upload_breakdown. They are NOT derived by
     counting the Videos/Shorts sheets: those hold only the <=50-video
     sample, so their ratio says nothing about a channel with 11k uploads.
     NULL means the breakdown was never looked up for that run, which is
     deliberately distinct from a real 0.
+
+    long + shorts + live does NOT always equal total_video_count, and that
+    is not a bug: statistics.videoCount (total) includes private/unlisted
+    videos, which never appear in a public per-type playlist. Verified live
+    on a real channel — 7,848 vs a breakdown summing to 6,021, a gap of
+    1,827 private/unlisted uploads. UULF + UUSH + UULV DOES sum exactly to
+    the combined uploads playlist (UU) — that identity was checked on 269
+    channels — it just isn't the same quantity as statistics.videoCount.
 
     min_subscribers overrides the client's 50k floor — pass 0 for "every
     discovered channel, no floor", the big-run deliverable's own ask.
@@ -226,9 +233,22 @@ def fetch_run_videos(
                ccm.interrogation_available, ccm.bodycam_available,
                ccm.cctv_available, ccm.call_911_available,
                ccm.court_footage_available,
-               (SELECT string_agg(vrm.mechanism, '; ' ORDER BY vrm.mechanism)
-                  FROM video_reveal_mechanisms vrm
-                 WHERE vrm.video_id = v.video_id) AS reveal_mechanisms,
+               -- COALESCE to an explicit marker: a blank cell cannot be
+               -- told apart from "this video was never classified", whereas
+               -- the model genuinely identifies no reveal mechanism for
+               -- roughly two in five crime videos (bodycam compilations,
+               -- commentary, scam-baiting -- content with no case reveal to
+               -- describe). Percent signs are avoided in this SQL string:
+               -- psycopg reads a bare one as a parameter placeholder.
+               -- Only emitted where case metadata exists, so a truly
+               -- unprocessed video still reads blank.
+               CASE WHEN ccm.video_id IS NULL THEN NULL
+                    ELSE COALESCE(
+                      (SELECT string_agg(vrm.mechanism, '; ' ORDER BY vrm.mechanism)
+                         FROM video_reveal_mechanisms vrm
+                        WHERE vrm.video_id = v.video_id),
+                      'none_identified')
+               END AS reveal_mechanisms,
                -- Thumbnail: the URL the client asked for as its own column,
                -- plus the two per-video vision signals, which were computed
                -- and stored but never reached a sheet.
