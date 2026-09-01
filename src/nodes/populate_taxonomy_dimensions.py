@@ -28,7 +28,10 @@ Output: 5 independent fields, each one value from its allowed set:
    For Finance: "Retirement", "Investing", "Personal Finance", "Economics", "Real Estate",
    "Crypto", "Tax", "Insurance", "Banking", "Business Finance", "Trading", "Other"
    For Crime: "Bodycam", "Police Investigation", "Interrogation", "Cold Case",
-   "Digital Evidence", "Court Trial", "Forensic Science", "Criminal Psychology", "Other"
+   "Digital Evidence", "Court Trial", "Forensic Science", "Criminal Psychology",
+   "True Crime Storytelling", "Scam & Fraud", "Missing Persons",
+   "Organized Crime", "Paranormal & Unexplained", "Other"
+   Use "Other" only when the channel genuinely fits none of these.
 
 2. secondary_topic: the specific angle within the primary topic.
    Examples: "Retirement Planning", "Dividend Strategy", "Options Trading",

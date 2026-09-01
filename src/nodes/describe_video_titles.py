@@ -38,16 +38,27 @@ Respond with ONLY a JSON array of strings, one per title, in the same order:
 _BATCH_SIZE = 30
 
 
-def _fetch_batch(conn) -> list[tuple[str, str]]:
+def _fetch_batch(conn, scope: list[str] | None = None) -> list[tuple[str, str]]:
+    """Titles still lacking a description.
+
+    `scope is not None` restricts to a channel set -- absent means the
+    original global behaviour, present-but-empty means this worker owns
+    nothing. Truthiness would collapse those two, which is how parallel
+    workers with an empty slice ended up each re-running the whole table.
+    """
     cur = conn.cursor()
     try:
+        scope_sql = "AND v.channel_id = ANY(%s) " if scope is not None else ""
+        params: tuple = ((scope, _BATCH_SIZE) if scope is not None
+                         else (_BATCH_SIZE,))
         cur.execute(
             "SELECT v.video_id, v.title FROM videos v "
             "JOIN channels c ON c.channel_id = v.channel_id "
             "WHERE c.meets_subscriber_floor = TRUE AND v.video_description IS NULL "
             "AND v.title IS NOT NULL AND v.title <> '' "
+            + scope_sql +
             "ORDER BY v.video_id LIMIT %s",
-            (_BATCH_SIZE,),
+            params,
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
     finally:
@@ -56,6 +67,7 @@ def _fetch_batch(conn) -> list[tuple[str, str]]:
 
 def describe_video_titles(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
+    scope = state.get("scope_channel_ids")
     start = time.monotonic()
     errors: list[dict] = []
 
@@ -81,7 +93,7 @@ def describe_video_titles(state: dict) -> dict:
     max_videos = 3000
 
     try:
-        batch = _fetch_batch(conn)
+        batch = _fetch_batch(conn, scope)
     except Exception:
         put_connection(conn)
         return {"node_logs": _log({"reason": "query failed", "described": 0})}
@@ -118,7 +130,7 @@ def describe_video_titles(state: dict) -> dict:
             if total_seen >= max_videos:
                 break
             try:
-                batch = _fetch_batch(conn)
+                batch = _fetch_batch(conn, scope)
             except Exception:
                 break
             continue
@@ -143,7 +155,7 @@ def describe_video_titles(state: dict) -> dict:
         if total_seen >= max_videos:
             break
         try:
-            batch = _fetch_batch(conn)
+            batch = _fetch_batch(conn, scope)
         except Exception as exc:
             errors.append(ErrorRecord(
                 node_name="describe_video_titles",

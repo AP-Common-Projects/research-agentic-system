@@ -23,6 +23,29 @@ _SIZE_BUCKETS: tuple[tuple[int, str], ...] = (
 )
 
 
+
+def upload_frequency_band(uploads_per_week: float | None) -> str:
+    """The client's cadence band for a channel.
+
+    Module-level so a backfill shares one definition with score_signals --
+    the same reason channel_size_bucket was lifted out. This column shipped
+    empty for all 4,600 floor-qualifying channels because score_signals had
+    not run since the persist allowlist was fixed, while
+    uploads_per_week_avg was present for 4,597 of them: the band was
+    derivable the whole time.
+    """
+    upw = float(uploads_per_week or 0)
+    if upw >= 3:
+        return "daily_plus"
+    if upw >= 1:
+        return "weekly"
+    if upw >= 0.25:
+        return "monthly"
+    if upw > 0:
+        return "irregular"
+    return "unknown"
+
+
 def channel_size_bucket(subscriber_count: int | None) -> str:
     """The client's subscriber-size stratum for a channel.
 
@@ -332,16 +355,7 @@ def score_signals(state: dict) -> dict:
                     v3_fields["channel_size_bucket"] = channel_size_bucket(ch_subs)
                     # v4: upload_frequency
                     uploads_per_week = signals.get("cadence", 0) / 30 * 7 if signals.get("cadence") else 0
-                    if uploads_per_week >= 3:
-                        v3_fields["upload_frequency"] = "daily_plus"
-                    elif uploads_per_week >= 1:
-                        v3_fields["upload_frequency"] = "weekly"
-                    elif uploads_per_week >= 0.25:
-                        v3_fields["upload_frequency"] = "monthly"
-                    elif uploads_per_week > 0:
-                        v3_fields["upload_frequency"] = "irregular"
-                    else:
-                        v3_fields["upload_frequency"] = "unknown"
+                    v3_fields["upload_frequency"] = upload_frequency_band(uploads_per_week)
 
                     try:
                         persist_channel_v3(conn, ch_id, run_id, v3_fields)

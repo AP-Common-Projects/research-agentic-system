@@ -533,8 +533,17 @@ MIGRATIONS: list[str] = [
     """CREATE INDEX IF NOT EXISTS idx_channel_cohorts_channel ON channel_cohorts(channel_id)""",
 
     # === v4 video sample_reason + is_comparison_pool (plan §10, §12) ===
-    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sample_reason TEXT
-        CHECK (sample_reason IN ('latest','top_lifetime'))""",
+    """ALTER TABLE videos ADD COLUMN IF NOT EXISTS sample_reason TEXT""",
+    # Shorts are collected by get_channel_shorts_sample, a different path
+    # from the latest/top-lifetime long-form sampler, and were never
+    # labelled -- so the column read empty for every Short in the workbook.
+    # ADD COLUMN IF NOT EXISTS is a no-op on an existing table and so never
+    # revises the CHECK it carries; the constraint has to be dropped and
+    # recreated to widen it.
+    """ALTER TABLE videos DROP CONSTRAINT IF EXISTS videos_sample_reason_check""",
+    """ALTER TABLE videos ADD CONSTRAINT videos_sample_reason_check
+        CHECK (sample_reason IS NULL
+               OR sample_reason IN ('latest','top_lifetime','shorts_sample'))""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_comparison_pool BOOLEAN NOT NULL DEFAULT FALSE""",
 ]
 
