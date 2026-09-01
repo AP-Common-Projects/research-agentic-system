@@ -1,0 +1,157 @@
+Upgrade the current 129-channel dataset to 220–240 channels. Do not use vision model for analyzing in-video contents, do not do script/transcript analysis yet.
+
+1. Fix channel sampling bias
+Target: 220–240 total channels.
+Prioritize missing/underrepresented niches:
+Bodycam / Police Incidents
+Police Investigation Documentary
+Interrogation / Criminal Psychology
+Cold Case / Unsolved
+Digital Evidence / Internet Crime
+Do not simply add random channels; fill the weakest categories first.
+Maintain English as the core dataset; isolate non-English channels into a separate comparison pool.
+2. Fix survivor bias
+
+Add 30–40 underperforming/failed channels:
+
+Active or previously active channels with meaningful video history.
+Low/subpar performance relative to their niche/size.
+Include stagnant and abandoned channels where sufficient data exists.
+3. Add New-Entrant cohort
+
+Add 30–40 channels launched mainly in 2024–2026.
+Prioritize channels showing unusually strong growth or breakout videos.
+
+Create four explicit cohorts:
+
+Market_Benchmark
+Growth_Competitor
+New_Entrant_Breakout
+Underperformer
+
+A channel may belong to a niche + one cohort.
+
+4. Fix subscriber-size bias
+
+Target distribution:
+
+<100K: ~25%
+100K–500K: ~35%
+500K–2M: ~25–30%
+2M+: ~10–15%
+
+Do not allow large channels to dominate the dataset.
+
+5. Standardize video sampling
+
+For each channel collect:
+
+Latest 50 long-form videos
+Top 20 lifetime videos
+
+Store a field identifying:
+latest_video, top_lifetime_video
+
+Avoid treating all channels equally by raw video count; use channel-weighted analysis when comparing channels.
+
+6. Add historical performance tracking
+
+The current dataset only provides a point-in-time performance view.
+
+Implement recurring snapshots for:
+
+Video views
+Channel subscribers
+Likes
+Comments
+
+For videos, preserve snapshot dates so we can calculate:
+
+24h / 7d / 30d / 90d / 180d performance where available
+View velocity
+Growth curve
+Viral vs. Evergreen classification
+
+Important: historical data cannot be reconstructed reliably later; begin scheduled collection immediately.
+
+8. Add structured Case metadata
+
+Add standardized fields:
+
+crime_type
+victim_type
+suspect_relationship
+investigation_type
+evidence_type
+case_status
+case_fame_level
+case_country
+case_year
+
+Use controlled vocabularies, not free-text labels, to prevent category fragmentation.
+
+9. Add Reveal Mechanism
+
+Add a controlled reveal_mechanism field, including where applicable:
+
+Interrogation/confession
+Suspect mistake/slip-up
+CCTV
+Phone/device data
+DNA
+911 call
+Witness
+Social media
+Financial records
+Location data
+Other
+
+Allow multiple mechanisms per video when necessary.
+
+10. Add comment data
+
+For selected videos—especially Breakouts, Typical videos, and major Outliers—collect a standardized sample of comments.
+
+Store:
+
+Comment text
+Comment date
+Likes
+Reply count
+
+Use this later for audience-reaction analysis.
+
+11. Fix discovery bias
+
+Do not discover channels through keyword search alone.
+
+Use multiple discovery paths:
+
+Keyword/category search
+Related channels/videos
+Competitor ecosystems
+Breakout-video discovery
+New-channel discovery
+Underperformer discovery
+
+Record discovery_method for every channel.
+
+12. Fix taxonomy fragmentation
+
+Create a two-level taxonomy:
+
+Primary_Niche → Sub_Niche
+
+Merge semantically overlapping categories such as different Interrogation/Criminal Psychology labels into one analyzable parent category.
+
+Do not delete the original label; preserve it as raw_sub_niche.
+
+13. Preserve raw vs. derived data
+
+For every important metric maintain:
+
+Raw API value
+Collection timestamp
+Derived/calculated value
+
+Never overwrite historical values.

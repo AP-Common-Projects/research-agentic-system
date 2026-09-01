@@ -1,0 +1,392 @@
+1. Expand the Channel Dataset
+
+Expand the dataset from approximately 140 channels to 250–350 Finance YouTube channels.
+
+Do NOT simply add random channels.
+
+Use a structured/stratified sampling strategy so that the dataset represents different Finance categories, channel sizes, countries, formats, and levels of success.
+
+Prioritize:
+
+Large established channels
+Medium-sized channels
+Small/emerging channels
+Recently created channels
+Fast-growing channels
+Stagnant/low-performing channels
+
+Aim for enough channels within important categories to make comparisons meaningful.
+
+For major categories, aim for at least 5–15 channels per category, preferably more where sufficient channels exist.
+
+2. Specifically Search for Underrepresented / Missing Finance Niches
+
+The existing dataset may have missed important Finance sub-niches.
+
+Actively search for channels in at least the following areas:
+
+Core / Storytelling
+Financial Documentary
+Finance Storytelling
+Economic Storytelling
+Financial History
+Economic History
+Business/Corporate Finance Stories
+Company Breakdowns
+Money & Society
+Consumer Economics
+Financial Scams / Fraud
+Geopolitics × Finance
+Investing / Markets
+Financial Markets Explainers
+Market Analysis
+Bonds
+Currencies / Forex
+ETF / Passive Investing
+Dividend Investing
+Value Investing
+Quant / Systematic Investing
+Options
+Trading Education
+Macro Investing
+Stock Market Stories
+Personal Finance
+Wealth Building
+Financial Independence / FIRE
+Debt / Credit
+Credit Cards
+Mortgage / Housing Finance
+Retirement
+Tax
+Insurance
+Budgeting / Saving
+Personal Finance Psychology
+Behavioral Finance
+Emerging / Audience-Specific
+AI × Finance
+AI × Economy
+AI × Investing
+Finance for Gen Z
+Finance for Young Adults
+Finance for Women
+Finance for Immigrants / Expats
+Small Business Finance
+Creator Economy Finance
+Luxury / Wealth Economics
+
+Do not assume that every category is good. The purpose is to discover whether these categories are actually represented and how they perform.
+
+3. Fix the Taxonomy
+
+Do NOT use a single field such as:
+
+"Canadian Retirement Planning"
+
+as the complete niche classification.
+
+Separate the dimensions.
+
+For every channel, create independent fields such as:
+
+primary_topic
+secondary_topic
+geography
+target_audience
+content_approach
+dominant_format
+
+For example:
+
+Primary Topic:
+Retirement
+
+Secondary Topic:
+Retirement Planning
+
+Geography:
+Canada
+
+Audience:
+Retirees / 50+
+
+Content Approach:
+Educational
+
+Format:
+Talking Head
+
+This will allow us to compare the same topic across different countries, audiences and formats.
+4. Add Channel Age Information
+
+For every channel collect:
+
+Channel creation date
+Approximate age of channel
+If possible, date when the channel started producing Finance content
+
+The Finance start date is important because an old channel may have only recently entered Finance.
+
+Do not assume channel creation date equals Finance channel age.
+
+5. Create a New-Channel Cohort
+
+Create a dedicated cohort of approximately 50–100 Finance channels created or substantially started in 2024–2026, where possible.
+
+The goal is to understand what is currently working for new Finance channels.
+
+Prioritize channels that:
+
+Started recently
+Have meaningful subscriber growth
+Have reached 10K+
+Have reached 50K+
+Have reached 100K+
+Or show unusually strong view velocity despite being small
+
+Also include some recently created channels that remain small/stagnant.
+
+6. Create a "New Winners vs New Losers" Cohort
+
+This is a high-priority analysis dataset.
+
+Find recently created Finance channels and divide them approximately into:
+
+New Winners
+
+Channels started recently that achieved unusually strong growth.
+
+Examples:
+
+100K+ subscribers
+Rapidly approaching 100K
+High views relative to subscriber count
+Strong recent growth
+New Losers / Stagnant
+
+Channels started during approximately the same period but that remain relatively small or have weak view performance despite having enough videos.
+
+Try to control for channel age as much as possible.
+
+The objective is to compare:
+
+What are successful new Finance channels doing differently from unsuccessful new Finance channels?
+
+7. Stratify Channels by Size
+
+Record subscriber count and classify channels approximately into:
+
+<10K
+10K–50K
+50K–100K
+100K–500K
+500K–1M
+1M+
+
+Do not treat all channels as equivalent.
+
+A strategy that works for a 3M-subscriber channel may not be useful for a brand-new channel.
+
+8. Add Growth / Velocity Metrics Where Available
+
+For each channel, collect current:
+
+Subscriber count
+Total channel views
+Number of videos
+Upload frequency
+
+If historical data is available, also collect:
+
+Subscriber growth over 30 days
+Subscriber growth over 90 days
+Views over 30 days
+Views over 90 days
+
+If exact historical subscriber data is unavailable, do NOT fabricate it.
+
+Clearly mark unavailable fields as null/missing.
+
+9. Expand the Video-Level Dataset
+
+For the newly collected channels, collect as many recent long-form videos as practical.
+
+Target approximately:
+
+50–100 recent long-form videos per important channel
+
+For smaller datasets, prioritize at least the most recent 30–50 long-form videos.
+
+Keep Shorts separate.
+
+Do not mix Shorts with long-form analysis.
+
+11. Add Search-vs-Browse Intent Estimate
+
+For every video, estimate the likely traffic/content intent using the title and description.
+
+Use categories such as:
+
+Search-driven
+Browse-driven
+News-driven
+Mixed
+Unclear
+
+This is an estimate, not actual YouTube Analytics traffic-source data.
+
+Do NOT claim that this is actual traffic-source data.
+
+The purpose is to distinguish videos such as:
+
+"How to File Form 1099"
+
+from:
+
+"Japan's Money Is Collapsing"
+
+because these likely have very different discovery mechanisms.
+
+12. Add Creator Authority
+
+For each channel, classify the creator's apparent authority/background where reasonably verifiable:
+
+Financial professional
+Economist
+Accountant
+Trader
+Investor
+Academic / Professor
+Entrepreneur / Business owner
+Media personality
+General creator
+Anonymous / Brand
+Unknown
+
+Do not invent credentials.
+
+Use "Unknown" when insufficient evidence exists.
+
+The purpose is to determine whether Finance channels require professional authority or whether strong storytelling can succeed without traditional credentials.
+
+13. Add Commercial Intent
+
+For each primary topic, estimate commercial intent:
+
+Low
+Medium
+High
+
+Consider whether the topic naturally connects to products/services such as:
+
+Brokerage
+Banking
+Credit cards
+Insurance
+Mortgage
+Financial software
+Investing platforms
+Tax services
+Financial education
+
+This is NOT an estimate of actual RPM.
+
+It is a classification of commercial potential.
+
+14. Add Sponsorship Information Where Practical
+
+For sampled channels, inspect recent videos and identify obvious sponsorships where information is publicly available.
+
+Record:
+
+Sponsored / Not clearly sponsored
+Sponsor category
+Sponsor name, if clearly identifiable
+
+Possible sponsor categories include:
+
+Finance / investing
+Banking
+Credit cards
+Insurance
+Software
+VPN
+Education
+Other
+
+Do not guess sponsorships.
+
+17. Sampling Requirements
+
+Avoid over-representing a single:
+
+Creator
+Country
+Sub-niche
+Channel size
+Content format
+
+If a niche has very few channels, record that fact instead of artificially filling it.
+
+The objective is representative sampling, not forcing equal category sizes.
+
+18. Final Dataset Structure
+
+Produce a Dataset V2 with at least two logical tables:
+
+Channels
+
+Include:
+
+channel_id
+channel_name
+channel_url
+subscribers
+total_views
+video_count
+channel_creation_date
+finance_start_date
+channel_age
+country
+language
+primary_topic
+secondary_topic
+target_audience
+geography_focus
+content_approach
+dominant_format
+face_status
+creator_authority
+upload_frequency
+channel_size_bucket
+recent_growth_metrics, where available
+new_channel_cohort
+winner_loser_cohort, where applicable
+
+Videos
+
+Include:
+
+video_id
+channel_id
+title
+description
+publish_date
+duration
+views
+likes
+comments
+views_per_day
+outlier_score
+evergreen_score
+primary_topic
+secondary_topic
+audience
+geography
+content_approach
+dominant_format
+news_status
+evergreen_classification
+search_browse_estimate
+commercial_intent
+sponsor_status
+sponsor_category
