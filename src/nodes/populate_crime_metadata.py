@@ -19,6 +19,8 @@ from typing import Any
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
+import structlog
+
 from src.state import NodeLog, ErrorRecord
 
 SYSTEM_PROMPT = """You analyze true-crime videos to extract structured case metadata.
@@ -90,7 +92,15 @@ Respond with ONLY a JSON array, one object per input video, in order:
 # and the factor extractor already do; 20 is deliberately below their 30
 # because each item here carries a 600-char description and returns ten
 # fields, so the response is far larger per item.
-CRIME_METADATA_BATCH_SIZE = 20
+# 8, not 20. A 20-item response measured 7,906 completion tokens against
+# the mid tier's 8,192 max_tokens -- 96.5% of the ceiling. Batches whose
+# descriptions run slightly long truncate, the JSON fails to parse, and the
+# halving path re-calls the same videos at 10, then 5, then 2... Throughput
+# collapsed to 5.5 rows/min against an expected 60, and cost came in 4x
+# over estimate. 8 items is ~3,200 output tokens: no truncation, no cascade.
+logger = structlog.get_logger(__name__)
+
+CRIME_METADATA_BATCH_SIZE = 8
 
 
 def _safe_str(val: Any) -> str:
@@ -131,7 +141,13 @@ def populate_crime_metadata(state: dict) -> dict:
     # LIMIT 50, so unscoped workers would all fetch the same rows and pay
     # for the same LLM calls several times over.
     scope = state.get("scope_channel_ids")
-    if scope:
+    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
+    # no channels" and must select nothing. Treating it as falsy silently
+    # widened the query to every channel in the table, so four parallel
+    # workers each re-ran the entire global backlog instead of their own
+    # slice -- four hours of redundant LLM calls that also re-classified
+    # channels deliberately excluded from the run.
+    if scope is not None:
         scope_sql = "AND v.channel_id = ANY(%s) "
         scope_params: tuple = (list(scope),)
     else:
@@ -257,6 +273,13 @@ def populate_crime_metadata(state: dict) -> dict:
             content = (result.get("content") or "").strip()
             m = re.search(r"\[[\s\S]*\]", content)
             parsed = json.loads(m.group(0)) if m else None
+            if parsed is None or (isinstance(parsed, list) and len(parsed) != len(rows)):
+                logger.warning(
+                    "crime_metadata_batch_unusable",
+                    size=len(rows),
+                    got=(len(parsed) if isinstance(parsed, list) else None),
+                    completion_tokens=(result.get("usage") or {}).get("completion_tokens"),
+                )
             if not isinstance(parsed, list) or len(parsed) != len(rows):
                 raise ValueError(
                     f"expected {len(rows)} objects, got "

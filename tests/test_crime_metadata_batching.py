@@ -1,4 +1,4 @@
-"""populate_crime_metadata batches its LLM calls.
+"""populate_crime_metadata batches its LLM calls, at a size that fits.
 
 One mid-tier call per video cost ~$0.003, which across ~94 videos on 240
 Crime channels came to roughly $67 — about seventeen times the rest of the
@@ -50,7 +50,7 @@ class TestBatching:
             return {"content": json.dumps([_obj()] * n)}
 
         _run(_rows(50), llm)
-        assert sizes == [20, 20, 10], "50 videos must cost 3 calls, not 50"
+        assert sizes == [8, 8, 8, 8, 8, 8, 2], "50 videos must cost 7 calls, not 50"
 
     def test_response_order_maps_back_to_the_right_videos(self):
         """The batch prompt and response are matched positionally, so a
@@ -79,7 +79,7 @@ class TestMalformedBatchRecovery:
             return {"content": json.dumps([_obj()] * n)}
 
         out = _run(_rows(20), llm)
-        assert sizes == [20, 10, 10]
+        assert sizes == [8, 8, 4]
         assert out["node_logs"][0]["input_summary"]["populated"] == 20
 
     def test_wrong_length_response_is_treated_as_a_failure(self):

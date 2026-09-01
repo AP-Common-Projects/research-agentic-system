@@ -91,7 +91,13 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
     # ever show. Unscoped, one backfill had 3,415 channels queued at ~2.8/min
     # -- 20 hours and roughly $8 -- to populate ~780 that mattered.
     scope = state.get("scope_channel_ids")
-    if scope:
+    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
+    # no channels" and must select nothing. Treating it as falsy silently
+    # widened the query to every channel in the table, so four parallel
+    # workers each re-ran the entire global backlog instead of their own
+    # slice -- four hours of redundant LLM calls that also re-classified
+    # channels deliberately excluded from the run.
+    if scope is not None:
         scope_sql = "AND c.channel_id = ANY(%s) "
         scope_params: tuple = (list(scope),)
     else:

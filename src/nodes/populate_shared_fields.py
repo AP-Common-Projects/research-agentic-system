@@ -143,8 +143,14 @@ def populate_shared_fields(state: dict) -> dict:
     # See populate_taxonomy_dimensions: optional, default-global scoping so a
     # backfill can skip channels no deliverable contains.
     scope = state.get("scope_channel_ids")
-    scope_sql = "AND channel_id = ANY(%s) " if scope else ""
-    scope_params: tuple = (list(scope),) if scope else ()
+    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
+    # no channels" and must select nothing. Treating it as falsy silently
+    # widened the query to every channel in the table, so four parallel
+    # workers each re-ran the entire global backlog instead of their own
+    # slice -- four hours of redundant LLM calls that also re-classified
+    # channels deliberately excluded from the run.
+    scope_sql = "AND channel_id = ANY(%s) " if scope is not None else ""
+    scope_params: tuple = (list(scope),) if scope is not None else ()
 
     classified = 0
     try:

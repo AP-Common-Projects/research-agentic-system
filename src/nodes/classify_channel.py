@@ -163,12 +163,35 @@ def classify_channel(state: dict) -> dict:
     except Exception:
         return {"node_logs": _log({"reason": "store unreachable", "classified": 0})}
 
+
+    # Optional restriction to a channel set, defaulting to the node's normal
+    # global behaviour. This node makes one mid-tier call per channel at
+    # ~28s, so a 1,100-channel backlog is seven hours single-threaded. The
+    # eligibility query is an unordered LIMIT 50, so unscoped parallel
+    # workers would fetch overlapping rows and buy the same classification
+    # several times; disjoint slices are what make parallelism safe.
+    scope = state.get("scope_channel_ids")
+    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
+    # no channels" and must select nothing. Treating it as falsy silently
+    # widened the query to every channel in the table, so four parallel
+    # workers each re-ran the entire global backlog instead of their own
+    # slice -- four hours of redundant LLM calls that also re-classified
+    # channels deliberately excluded from the run.
+    if scope is not None:
+        scope_sql = "AND channel_id = ANY(%s) "
+        scope_params: tuple = (list(scope),)
+    else:
+        scope_sql = ""
+        scope_params = ()
+
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT channel_id FROM channels WHERE meets_subscriber_floor = TRUE "
             "AND (classifier_model IS NULL OR classifier_model != 'deepseek-v4-pro' "
-            "OR classifier_version != 'v3.0') LIMIT 50"
+            "OR classifier_version != 'v3.0') "
+            + scope_sql + "LIMIT 50",
+            scope_params,
         )
         eligible = [r[0] for r in cur.fetchall()]
         cur.close()
