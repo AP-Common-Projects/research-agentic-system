@@ -70,9 +70,17 @@ def main() -> int:
             sig.get("title_is_question"), sig.get("title_capitalization"),
             sig.get("title_emoji_count"), _is_news_title(title or ""),
             vpd,
-            # Shorts come from get_channel_shorts_sample, which never set a
-            # reason; anything still unlabelled here is one of those.
-            "shorts_sample" if is_short else None,
+            # Shorts come from get_channel_shorts_sample, which never
+            # labelled them. Long-form rows with no reason at all predate
+            # the v4 sampler (2026-08-30): they came from the old
+            # get_channel_videos(max_results=50) path, which IS the
+            # 'latest' sample -- it just predates the label existing.
+            #
+            # This was first fixed by hand for Finance's rows, one time,
+            # not through this script -- which is exactly why Crime's
+            # legacy rows were still empty on the next pass. Encoded here
+            # now so it cannot be missed a third time.
+            "shorts_sample" if is_short else "latest",
             vid,
         ))
 
