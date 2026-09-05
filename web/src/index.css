@@ -48,6 +48,26 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Theme toggle: cross-fades every themed surface, border and glyph instead
+ * of flipping the palette instantly. Scoped to `.theme-changing`, which
+ * Shell.tsx applies only around the attribute change and removes once the
+ * transition finishes -- unscoped, this same rule would also animate a hover
+ * state's color the moment `data-theme` set on first paint, competing with
+ * the tooltip's own opacity/transform transition, and firing on the initial
+ * page load where there is nothing to fade from. */
+@media (prefers-reduced-motion: no-preference) {
+  .theme-changing,
+  .theme-changing * {
+    transition:
+      background-color 220ms ease,
+      border-color 220ms ease,
+      color 220ms ease,
+      fill 220ms ease,
+      stroke 220ms ease,
+      box-shadow 220ms ease !important;
+  }
+}
+
 /* Numbers that sit in columns must align; standalone figures keep the
  * proportional defaults. */
 .tnum {

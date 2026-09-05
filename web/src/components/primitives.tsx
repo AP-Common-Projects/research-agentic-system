@@ -63,6 +63,33 @@ export function PanelHeader({
 
 let tooltipSeq = 0;
 
+type TooltipSide = 'top' | 'bottom' | 'right' | 'left';
+
+// Placement of the bubble and its arrow, per side. The arrow is a rotated
+// square clipped by two borders, so which two borders show is what makes it
+// point the right way from each side.
+const TOOLTIP_PLACEMENT: Record<
+  TooltipSide,
+  { bubble: string; arrow: string }
+> = {
+  top: {
+    bubble: 'bottom-full left-1/2 mb-2 -translate-x-1/2',
+    arrow: 'left-1/2 top-full -mt-1 -translate-x-1/2 border-r border-b',
+  },
+  bottom: {
+    bubble: 'top-full left-1/2 mt-2 -translate-x-1/2',
+    arrow: 'left-1/2 bottom-full -mb-1 -translate-x-1/2 border-t border-l',
+  },
+  right: {
+    bubble: 'left-full top-1/2 ml-2 -translate-y-1/2',
+    arrow: 'right-full top-1/2 -mr-1 -translate-y-1/2 border-b border-l',
+  },
+  left: {
+    bubble: 'right-full top-1/2 mr-2 -translate-y-1/2',
+    arrow: 'left-full top-1/2 -ml-1 -translate-y-1/2 border-t border-r',
+  },
+};
+
 export function Tooltip({
   label,
   children,
@@ -72,14 +99,14 @@ export function Tooltip({
   label?: string;
   children: ReactNode;
   className?: string;
-  side?: 'top' | 'bottom';
+  side?: TooltipSide;
 }) {
   // Stable for the life of the component; only ever an id, never rendered.
   const [id] = useState(() => `tt-${++tooltipSeq}`);
 
   if (!label) return <>{children}</>;
 
-  const above = side === 'top';
+  const placement = TOOLTIP_PLACEMENT[side];
   return (
     <span
       className={`group/tt relative inline-flex ${className}`}
@@ -90,19 +117,18 @@ export function Tooltip({
       <span
         role="tooltip"
         id={id}
-        className={`pointer-events-none absolute left-1/2 z-30 w-max max-w-64 -translate-x-1/2 scale-95
+        className={`pointer-events-none absolute z-30 w-max max-w-64 scale-95
           rounded-md border border-line bg-raised px-2.5 py-1.5 text-left text-xs leading-snug
           text-ink-2 opacity-0 transition-[opacity,transform] duration-100
           group-hover/tt:scale-100 group-hover/tt:opacity-100
           group-focus-visible/tt:scale-100 group-focus-visible/tt:opacity-100
-          ${above ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+          ${placement.bubble}`}
         style={{ boxShadow: 'var(--shadow-pop)' }}
       >
         {label}
         <span
           aria-hidden
-          className={`absolute left-1/2 size-2 -translate-x-1/2 rotate-45 border-line bg-raised
-            ${above ? 'top-full -mt-1 border-r border-b' : 'bottom-full -mb-1 border-t border-l'}`}
+          className={`absolute size-2 rotate-45 border-line bg-raised ${placement.arrow}`}
         />
       </span>
     </span>
