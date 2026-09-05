@@ -283,6 +283,23 @@ class HarnessConfig(BaseSettings):
     # cycles, not inside a node, so a long node in flight can overshoot it.
     run_deadline_seconds: int = 0
 
+    # Ceiling on how many channels one run carries into enrichment, 0 ==
+    # uncapped (the default, and what a bare CLI run gets).
+    #
+    # Discovery volume and enrichment capacity were never connected, and
+    # they have to be: classify_channel processes 50 channels per
+    # invocation, and a Glimpse run gets one cycle -- so it could classify
+    # at most 50 no matter what. Its record budget discovered 273. The
+    # workbook that came out had 95% of its classification columns empty
+    # (category, sub_niche, primary_topic, geography_focus, ...), not
+    # because anything failed but because the run was asked to find four
+    # times what it could ever describe.
+    #
+    # Capping discovery at what the run can finish is what makes a
+    # deliverable complete rather than large. Fewer channels, all of them
+    # populated, beats many channels mostly empty.
+    max_channels_per_run: int = 0
+
     # $1.50 per 1,000 records, Bright Data pay-as-you-go list rate.
     brightdata_cost_per_record_usd: float = 0.0015
 

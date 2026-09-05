@@ -124,6 +124,16 @@ def _deadline_aware(fn, name: str):
     return wrapper
 
 
+def _channel_cap() -> int:
+    """How many channels this run may carry into enrichment, 0 == uncapped."""
+    try:
+        from src.config import get_config
+
+        return int(get_config().harness.max_channels_per_run or 0)
+    except Exception:
+        return 0
+
+
 def _guarded(fn, name: str):
     """Wrap a fan-out branch so a failure is recorded and flagged, not a silent hang.
 
@@ -140,7 +150,20 @@ def _guarded(fn, name: str):
         # client was quoted. The terminal path -- check_saturation,
         # compact_branch, finalize_dataset -- is deliberately not wrapped
         # here, so a run that stops on its deadline still exports.
+        skip_reason = None
         if run_deadline.passed():
+            skip_reason = "run_deadline_seconds"
+        else:
+            # Enough channels to fill the enrichment the run has time for.
+            # Discovering past this point produces rows the pipeline cannot
+            # describe: the automotive run found 273 and classified 50 at
+            # most, so 95% of its classification columns shipped empty.
+            cap = _channel_cap()
+            found = len(state.get("discovered_channel_ids", []) or [])
+            if cap and found >= cap:
+                skip_reason = "max_channels_per_run"
+
+        if skip_reason:
             return {
                 f"{name}_done": True,
                 "node_logs": [
@@ -148,8 +171,11 @@ def _guarded(fn, name: str):
                         "node_name": name,
                         "thread_id": state.get("thread_id", ""),
                         "input_summary": {
-                            "skipped": "run_deadline_seconds",
+                            "skipped": skip_reason,
                             "elapsed_s": int(run_deadline.run_elapsed_seconds()),
+                            "channels_found": len(
+                                state.get("discovered_channel_ids", []) or []
+                            ),
                         },
                     }
                 ],

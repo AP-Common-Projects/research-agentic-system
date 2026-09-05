@@ -69,7 +69,10 @@ def _floor() -> int:
 
 
 def fetch_run_channels(
-    run_id: str, category: str | None = None, min_subscribers: int | None = None
+    run_id: str,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+    own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Channels tagged to this run, with the full v3 enrichment set flattened.
 
@@ -184,9 +187,12 @@ def fetch_run_channels(
           AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
+    if own_only:
+        sql += " AND c.first_discovered_run_id = %s"
+        params = params + (run_id,)
     if category:
         sql += " AND nt.parent_category = %s"
-        params = (run_id, category)
+        params = params + (category,)
     sql += " ORDER BY c.subscriber_count DESC NULLS LAST"
     return _fetch(sql, params)
 
@@ -196,6 +202,7 @@ def fetch_run_videos(
     limit: int | None,
     category: str | None = None,
     min_subscribers: int | None = None,
+    own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """This run's videos, highest outlier score first, with v3's title
     signal columns and evergreen/news flags flattened alongside them.
@@ -268,6 +275,9 @@ def fetch_run_videos(
           AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
+    if own_only:
+        sql += " AND c.first_discovered_run_id = %s"
+        params = params + (run_id,)
     if category:
         sql += " AND nt.parent_category = %s"
         params = params + (category,)
@@ -279,7 +289,10 @@ def fetch_run_videos(
 
 
 def fetch_run_niche_breakdown(
-    run_id: str, category: str | None = None, min_subscribers: int | None = None
+    run_id: str,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+    own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """One row per niche this run actually populated — category, sub-niche,
     and how many of this run's channels landed in it. Feeds the Excel
@@ -297,9 +310,12 @@ def fetch_run_niche_breakdown(
           AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
+    if own_only:
+        sql += " AND c.first_discovered_run_id = %s"
+        params = params + (run_id,)
     if category:
         sql += " AND nt.parent_category = %s"
-        params = (run_id, category)
+        params = params + (category,)
     sql += (
         " GROUP BY nt.niche_id, nt.parent_category, nt.niche_name, nt.description, nt.is_evergreen_prone"
         " ORDER BY channel_count DESC"
@@ -308,7 +324,8 @@ def fetch_run_niche_breakdown(
 
 
 def _fetch_run_factors(
-    table: str, taxonomy: str, run_id: str, category: str | None, min_subscribers: int | None = None
+    table: str, taxonomy: str, run_id: str, category: str | None,
+    min_subscribers: int | None = None, own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Shared body for the success/failure factor sheets — identical shape,
     identical filters, only the pair of table names differs. Both are
@@ -326,30 +343,41 @@ def _fetch_run_factors(
           AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
+    if own_only:
+        sql += " AND c.first_discovered_run_id = %s"
+        params = params + (run_id,)
     if category:
         sql += " AND nt.parent_category = %s"
-        params = (run_id, category)
+        params = params + (category,)
     sql += " ORDER BY c.subscriber_count DESC NULLS LAST, f.evidence_grade"
     return _fetch(sql, params)
 
 
 def fetch_run_success_factors(
-    run_id: str, category: str | None = None, min_subscribers: int | None = None
+    run_id: str,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+    own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Channels' confirmed success factors for this run, joined to their
     taxonomy label so the sheet reads without a code lookup."""
     return _fetch_run_factors(
-        "channel_success_factors", "success_factor_taxonomy", run_id, category, min_subscribers
+        "channel_success_factors", "success_factor_taxonomy", run_id, category,
+        min_subscribers, own_only,
     )
 
 
 def fetch_run_failure_factors(
-    run_id: str, category: str | None = None, min_subscribers: int | None = None
+    run_id: str,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+    own_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Channels' confirmed failure factors for this run, joined to their
     taxonomy label so the sheet reads without a code lookup."""
     return _fetch_run_factors(
-        "channel_failure_factors", "failure_factor_taxonomy", run_id, category, min_subscribers
+        "channel_failure_factors", "failure_factor_taxonomy", run_id, category,
+        min_subscribers, own_only,
     )
 
 
@@ -1794,6 +1822,36 @@ def _dropped_columns(is_crime: bool) -> frozenset[str]:
     )
 
 
+#: Columns that stay even when every value is blank, because their
+#: emptiness is itself the answer a reader needs (a channel with no
+#: sponsor is a finding; a missing channel_id is a broken row).
+_KEEP_EVEN_IF_EMPTY = frozenset({
+    "channel_id", "video_id", "niche_id", "title", "url",
+})
+
+
+def _drop_all_empty_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove columns with no value in any row of this sheet.
+
+    A column that is blank all the way down carries no information and
+    costs the reader a scroll to discover that. This is a floor, not a
+    fix: a column empty because the run was cut short before the node that
+    fills it should be addressed by letting the run finish, which is what
+    max_channels_per_run is for. Partly-populated columns are deliberately
+    left alone -- hiding them would hide real, if incomplete, data.
+    """
+    if not rows:
+        return rows
+    populated = {
+        key
+        for row in rows
+        for key, value in row.items()
+        if value not in (None, "")
+    }
+    keep = populated | _KEEP_EVEN_IF_EMPTY
+    return [{k: v for k, v in row.items() if k in keep} for row in rows]
+
+
 def _prune_columns(
     rows: list[dict[str, Any]], dropped: frozenset[str]
 ) -> list[dict[str, Any]]:
@@ -1860,13 +1918,18 @@ def build_excel_workbook_v3(
     wb = Workbook()
 
     dropped = _dropped_columns(_is_crime_export(manifest))
-    channels = _prune_columns(channels, dropped)
+    channels = _drop_all_empty_columns(_prune_columns(channels, dropped))
     videos = _prune_columns(videos, dropped)
-    niches = _prune_columns(niches, dropped)
-    success_factors = _prune_columns(success_factors, dropped)
-    failure_factors = _prune_columns(failure_factors, dropped)
+    niches = _drop_all_empty_columns(_prune_columns(niches, dropped))
+    success_factors = _drop_all_empty_columns(_prune_columns(success_factors, dropped))
+    failure_factors = _drop_all_empty_columns(_prune_columns(failure_factors, dropped))
 
+    # Split first: Videos and Shorts are separate sheets, so a column empty
+    # across all Shorts but populated for long-form must survive on one and
+    # go from the other.
     long_form, shorts = _split_shorts(videos)
+    long_form = _drop_all_empty_columns(long_form)
+    shorts = _drop_all_empty_columns(shorts)
 
     ws = wb.active
     ws.title = "Overview"
@@ -2035,11 +2098,19 @@ def export_excel(
     min_subscribers = 0 if all_channels else None
     video_limit = get_config().harness.export_max_videos if cap_videos else None
 
-    channels = fetch_run_channels(run_id, category, min_subscribers)
-    videos = fetch_run_videos(run_id, video_limit, category, min_subscribers)
-    niches = fetch_run_niche_breakdown(run_id, category, min_subscribers)
-    success_factors = fetch_run_success_factors(run_id, category, min_subscribers)
-    failure_factors = fetch_run_failure_factors(run_id, category, min_subscribers)
+    # With no category resolved there is nothing keeping other verticals
+    # out, and a run re-tags channels earlier runs discovered. On the
+    # automotive run that meant four strangers -- one crime, one
+    # entertainment, one finance, one politics -- riding into the workbook
+    # and putting their niche families on the Overview sheet. Scope to what
+    # this run actually found instead. When a category IS resolved it
+    # already does this job, so nothing changes for those exports.
+    own_only = category is None
+    channels = fetch_run_channels(run_id, category, min_subscribers, own_only)
+    videos = fetch_run_videos(run_id, video_limit, category, min_subscribers, own_only)
+    niches = fetch_run_niche_breakdown(run_id, category, min_subscribers, own_only)
+    success_factors = fetch_run_success_factors(run_id, category, min_subscribers, own_only)
+    failure_factors = fetch_run_failure_factors(run_id, category, min_subscribers, own_only)
 
     total_cost = 0.0
     try:

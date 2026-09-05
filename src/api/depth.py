@@ -31,6 +31,17 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+#: Measured across real runs: classify_channel takes ~21 minutes per batch
+#: of 50 channels, one LLM call each.
+_SECONDS_PER_CHANNEL = 25.0
+#: Share of a run's window left for enrichment once discovery and hydration
+#: have had their turn. From the automotive run: ~15 minutes of discovery
+#: plus hydration inside a 30-minute window.
+_ENRICHMENT_WINDOW_SHARE = 0.5
+#: Below this a tier is not worth running at all.
+_MIN_CHANNELS_PER_RUN = 20
+
+
 @dataclass
 class DepthTier:
     id: str
@@ -54,6 +65,31 @@ class DepthTier:
         # Every other governor here bounds work; this one bounds the clock,
         # and without it "30m" was a projection that ran 3-5 hours.
         self.governors["RUN_DEADLINE_SECONDS"] = int(self.hours * 3600)
+        self.governors["MAX_CHANNELS_PER_RUN"] = self.max_channels
+
+    @property
+    def max_channels(self) -> int:
+        """How many channels this tier can actually finish enriching.
+
+        Derived, not chosen. Discovery volume and enrichment capacity used
+        to be unrelated numbers, and the gap between them is what produced
+        a workbook whose classification columns were 95% empty: Glimpse's
+        record budget found 273 channels, and one cycle of classification
+        can describe 50. The run had been asked to find four times what it
+        could ever describe.
+
+        The model is deliberately crude and its inputs are measured:
+        classification runs at ~25s per channel (21 minutes per batch of
+        50, across several real runs), and roughly half a run's window goes
+        on discovery and hydration before enrichment starts. Both come from
+        a small number of observations and should be re-measured -- but a
+        cap derived from real timings beats an estimate that answers to
+        nothing, which is what the channel counts here used to be.
+        """
+        return max(
+            _MIN_CHANNELS_PER_RUN,
+            int(self.hours * 3600 * _ENRICHMENT_WINDOW_SHARE / _SECONDS_PER_CHANNEL),
+        )
 
     @property
     def est_total_usd(self) -> float:

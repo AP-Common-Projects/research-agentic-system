@@ -241,6 +241,104 @@ class TestEveryExpensiveNodeIsGuarded:
         assert out == {"ok": True}
 
 
+class TestChannelCapMatchesEnrichmentCapacity:
+    """Discovery volume and enrichment capacity were unrelated numbers.
+
+    classify_channel describes 50 channels per cycle and Glimpse gets one
+    cycle, so 50 was its hard ceiling -- while its record budget found 273.
+    The workbook that came out had 95% of its classification columns empty
+    (category, sub_niche, primary_topic, geography_focus, and eight more),
+    not because anything failed but because the run was asked to find four
+    times what it could ever describe.
+    """
+
+    def test_every_tier_declares_a_cap(self):
+        from src.api.depth import TIERS
+
+        for tier in TIERS:
+            cap = tier.governors["MAX_CHANNELS_PER_RUN"]
+            assert cap == tier.max_channels
+            assert cap >= 20, tier.id
+
+    def test_the_cap_grows_with_the_window(self):
+        from src.api.depth import TIERS
+
+        caps = [t.governors["MAX_CHANNELS_PER_RUN"] for t in TIERS]
+        assert caps == sorted(caps), caps
+
+    def test_glimpse_cannot_be_asked_for_more_than_it_can_describe(self):
+        """The exact failure: one cycle of classification handles 50, so a
+        30-minute tier must not be sized to discover several times that."""
+        from src.api.depth import get_tier
+
+        glimpse = get_tier("glimpse")
+        assert glimpse.governors["MAX_CHANNELS_PER_RUN"] <= 50
+
+    def test_discovery_stops_once_the_cap_is_reached(self):
+        from src.graph import _guarded
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        node = _guarded(_node, "keyword_search")
+        cfg = type("C", (), {"harness": HarnessConfig(max_channels_per_run=40)})()
+
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch("src.config.get_config", lambda: cfg):
+            out = asyncio.run(node({
+                "thread_id": "t",
+                "discovered_channel_ids": [f"c{i}" for i in range(40)],
+            }))
+
+        assert calls == []
+        assert out["node_logs"][0]["input_summary"]["skipped"] == "max_channels_per_run"
+
+    def test_discovery_continues_below_the_cap(self):
+        from src.graph import _guarded
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        node = _guarded(_node, "keyword_search")
+        cfg = type("C", (), {"harness": HarnessConfig(max_channels_per_run=40)})()
+
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch("src.config.get_config", lambda: cfg):
+            asyncio.run(node({
+                "thread_id": "t",
+                "discovered_channel_ids": [f"c{i}" for i in range(10)],
+            }))
+
+        assert len(calls) == 1
+
+    def test_zero_means_uncapped_for_a_bare_cli_run(self):
+        from src.graph import _guarded
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        node = _guarded(_node, "keyword_search")
+        cfg = type("C", (), {"harness": HarnessConfig(max_channels_per_run=0)})()
+
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch("src.config.get_config", lambda: cfg):
+            asyncio.run(node({
+                "thread_id": "t",
+                "discovered_channel_ids": [f"c{i}" for i in range(10_000)],
+            }))
+
+        assert len(calls) == 1
+
+
 class TestTerminationStillExports:
     def test_the_terminal_path_is_not_subject_to_admission_control(self):
         """check_saturation, compact_branch and finalize_dataset must run
