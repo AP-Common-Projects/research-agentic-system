@@ -5,12 +5,12 @@ import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components
 const PROVIDER_META: Record<string, { label: string; funds: string; topUp: string }> = {
   openrouter: {
     label: 'OpenRouter',
-    funds: 'Model calls — classification, enrichment, case metadata',
+    funds: 'Analysing channels — classification, enrichment, case detail',
     topUp: 'https://openrouter.ai/credits',
   },
   brightdata: {
     label: 'Bright Data',
-    funds: 'Channel discovery — every keyword sweep is billed per record',
+    funds: 'Finding channels — keyword sweeps, billed per record',
     topUp: 'https://brightdata.com/cp/billing',
   },
 };
@@ -33,7 +33,7 @@ function SourceBadge({ source }: { source: ProviderBalance['source'] }) {
         ? 'border-[var(--track-keyword)]/40 text-[var(--track-keyword)]'
         : 'border-line text-ink-3';
   const label =
-    source === 'live' ? 'Live' : source === 'derived' ? 'Derived' : 'Unavailable';
+    source === 'live' ? 'Live' : source === 'derived' ? 'Estimated' : 'Unavailable';
   return (
     <span className={`rounded-full border px-2 py-0.5 text-xs ${style}`}>{label}</span>
   );
@@ -115,8 +115,8 @@ function AffordabilityTable({ tiers }: { tiers: DepthTier[] }) {
   return (
     <Panel>
       <PanelHeader
-        title="What this balance can fund"
-        hint="The same check the run launcher enforces"
+        title="What you can run right now"
+        hint="The same check we apply when a run starts"
       />
       <table className="w-full text-sm">
         <thead>
@@ -147,10 +147,10 @@ function AffordabilityTable({ tiers }: { tiers: DepthTier[] }) {
               <td className="px-4 py-2.5">
                 {tier.locked ? (
                   <span className="text-xs text-ink-3" title={tier.blockers.join(' ')}>
-                    Locked — {tier.blockers[0]}
+                    Needs more credit
                   </span>
                 ) : (
-                  <span className="text-xs text-[var(--grade-strong)]">Affordable</span>
+                  <span className="text-xs text-[var(--grade-strong)]">Ready to run</span>
                 )}
               </td>
             </tr>
@@ -177,9 +177,9 @@ export function BalancesPage() {
           <Eyebrow>Wallet</Eyebrow>
           <h1 className="mt-1 text-2xl font-medium text-ink">Provider balances</h1>
           <p className="mt-1 max-w-2xl text-sm text-ink-2">
-            Discovery and model calls are funded separately and run out
-            separately. When either falls below what a depth needs, that depth
-            locks itself in the launcher.
+            Finding channels and analysing them are billed to different
+            providers, so they top up separately. If either runs low,
+            we&rsquo;ll show you which depths it can still cover.
           </p>
         </div>
         <button

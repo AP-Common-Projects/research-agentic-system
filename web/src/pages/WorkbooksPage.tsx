@@ -20,7 +20,7 @@ function WorkbookCard({ workbook }: { workbook: Workbook }) {
         <div className="p-5">
           <h2 className="font-medium text-ink">{workbook.title}</h2>
           <p className="mt-2 text-sm text-ink-2">
-            {workbook.error ?? 'This workbook is not on disk.'}
+            {workbook.error ?? 'We couldn\u2019t find this file.'}
           </p>
         </div>
       </Panel>
@@ -64,7 +64,7 @@ function WorkbookCard({ workbook }: { workbook: Workbook }) {
         {sheets.length > 0 && (
           <div className="mt-4">
             <p className="mb-2 text-xs text-ink-3">
-              {sheets.length} sheets — row counts read from the file itself
+              {sheets.length} sheets, with the row count in each
             </p>
             <ul className="flex flex-wrap gap-1.5">
               {sheets.map((sheet) => (
@@ -95,9 +95,9 @@ export function WorkbooksPage() {
         <Eyebrow>Deliverables</Eyebrow>
         <h1 className="mt-1 text-2xl font-medium text-ink">Exported workbooks</h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-2">
-          The finished Excel research reports, ready to send. Figures below are
-          read from each file directly, so this page cannot drift from what the
-          client would actually open.
+          Your finished research workbooks, ready to share. The figures here
+          are read straight from each file, so what you see is exactly
+          what&rsquo;s inside it.
         </p>
       </header>
 
@@ -110,7 +110,7 @@ export function WorkbooksPage() {
       )}
       {workbooks.data?.length === 0 && (
         <EmptyState title="No workbooks yet">
-          A run has to finish and export before anything appears here.
+          Once a run finishes, its workbook will show up here.
         </EmptyState>
       )}
       {workbooks.data?.map((workbook) => (

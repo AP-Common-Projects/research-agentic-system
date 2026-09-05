@@ -4,11 +4,11 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 
 const NAV = [
-  { to: '/new', label: 'New run', hint: 'Choose a topic and how deep to go' },
-  { to: '/workbooks', label: 'Workbooks', hint: 'Finished Excel deliverables' },
-  { to: '/graph', label: 'Discovery graph', hint: 'How a workbook\'s channels were reached' },
-  { to: '/spend', label: 'Spend', hint: 'What a finished workbook cost, per provider' },
-  { to: '/balances', label: 'Balances', hint: 'Provider credit and what it can fund' },
+  { to: '/new', label: 'New run', hint: 'Start a new piece of research' },
+  { to: '/workbooks', label: 'Workbooks', hint: 'Your finished Excel reports' },
+  { to: '/graph', label: 'Discovery graph', hint: 'What a workbook is made up of' },
+  { to: '/spend', label: 'Spend', hint: 'What each workbook cost to produce' },
+  { to: '/balances', label: 'Balances', hint: 'Your credit, and what it covers' },
 ];
 
 function useTheme() {

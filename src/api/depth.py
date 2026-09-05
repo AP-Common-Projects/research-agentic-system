@@ -61,7 +61,8 @@ TIERS: list[DepthTier] = [
         description=(
             "One shallow discovery sweep on the strongest keywords. Enough to "
             "see whether a topic has channels above the floor at all, and what "
-            "the obvious sub-niches are. Not a dataset you would hand a client."
+            "the obvious sub-niches are. A scouting pass rather than a finished "
+            "deliverable."
         ),
         est_channels="40-60",
         est_videos="1,500-2,500",
@@ -189,9 +190,9 @@ TIERS: list[DepthTier] = [
         hours=72,
         tagline="Everything the vertical has, to saturation",
         description=(
-            "Runs until discovery genuinely saturates rather than until a "
-            "governor trips. The most complete dataset the harness can "
-            "produce for a topic, and the most expensive."
+            "Keeps going until discovery genuinely runs dry rather than until a "
+            "limit is reached. The most complete picture we can build for a "
+            "topic, and the most expensive."
         ),
         est_channels="750-900",
         est_videos="35,000-48,000",
@@ -247,7 +248,10 @@ def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
 
         or_avail = openrouter.get("available_usd")
         if or_avail is None:
-            warnings.append("OpenRouter balance unavailable; cost not verified.")
+            warnings.append(
+                "We could not read the OpenRouter balance just now, so this "
+                "cost has not been checked against it."
+            )
         elif or_avail < tier.est_openrouter_usd:
             blockers.append(
                 f"OpenRouter has ${or_avail:,.2f}; this depth needs about "
@@ -257,9 +261,9 @@ def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
         bd_avail = brightdata.get("available_usd")
         if bd_avail is None:
             warnings.append(
-                "Bright Data balance is not readable, so this depth's "
-                f"~${tier.est_brightdata_usd:,.2f} of discovery spend could not "
-                "be checked against it."
+                "We could not read the Bright Data balance just now, so the "
+                f"~${tier.est_brightdata_usd:,.2f} of discovery spend has not "
+                "been checked against it."
             )
         elif bd_avail < tier.est_brightdata_usd:
             blockers.append(

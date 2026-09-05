@@ -61,8 +61,8 @@ export function SpendPage() {
         <Eyebrow>Spend</Eyebrow>
         <h1 className="mt-1 text-2xl font-medium text-ink">What a workbook cost</h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-2">
-          Discovery and model spend for one finished deliverable, attributed
-          run by run from the ledgers each run wrote.
+          A breakdown for each finished workbook — split between finding the
+          channels and analysing them, then by the runs that built it.
         </p>
       </header>
 
@@ -80,7 +80,7 @@ export function SpendPage() {
         <>
           <Panel>
             <div className="p-5">
-              <p className="text-xs text-ink-3">Total attributed</p>
+              <p className="text-xs text-ink-3">Total cost</p>
               <p className="mt-1 text-4xl font-medium tabular-nums text-ink">
                 {usd(spend.data.total_usd)}
               </p>
@@ -93,18 +93,18 @@ export function SpendPage() {
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <ProviderTotal
-                  label="Bright Data — discovery"
+                  label="Bright Data — finding channels"
                   amount={spend.data.brightdata_usd}
                   total={spend.data.total_usd}
                   tint="var(--track-keyword)"
                   detail={`${spend.data.brightdata_records.toLocaleString()} records billed at $${spend.data.cost_per_record_usd}`}
                 />
                 <ProviderTotal
-                  label="OpenRouter — model"
+                  label="OpenRouter — analysis"
                   amount={spend.data.openrouter_usd}
                   total={spend.data.total_usd}
                   tint="var(--track-graph)"
-                  detail="Classification, enrichment and case metadata calls"
+                  detail="Classifying, enriching and adding case detail"
                 />
               </div>
 
@@ -115,7 +115,7 @@ export function SpendPage() {
           </Panel>
 
           <Panel>
-            <PanelHeader title="By run" hint="Largest first" />
+            <PanelHeader title="By run" hint="Most expensive first" />
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs text-ink-3">

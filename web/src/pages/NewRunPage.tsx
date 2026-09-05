@@ -61,7 +61,8 @@ function DepthCard({
 
       {locked && (
         <p className="mt-3 rounded border border-line bg-sunken px-2 py-1.5 text-xs leading-snug text-ink-2">
-          <span className="font-medium text-ink">Locked.</span> {tier.blockers[0]}
+          <span className="font-medium text-ink">Not available yet.</span>{' '}
+          {tier.blockers[0]}
         </p>
       )}
     </button>
@@ -124,19 +125,19 @@ export function NewRunPage() {
       <header>
         <Eyebrow>New research run</Eyebrow>
         <h1 className="mt-1 text-2xl font-medium text-ink">
-          What should the harness map?
+          What would you like researched?
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-2">
-          Choose a topic and how deep to go. Finding the sub-niches worth
-          covering is the model&rsquo;s job, not yours. Depth options price
-          themselves against the live wallet and lock when the balance cannot
-          fund them.
+          Tell us the topic and how deep you&rsquo;d like to go — the model
+          works out which sub-niches are worth covering from there. Each depth
+          shows what it&rsquo;s likely to cost, and we&rsquo;ll flag any your
+          current balance won&rsquo;t stretch to.
         </p>
       </header>
 
       {/* ---- 1. Topic ---- */}
       <Panel>
-        <PanelHeader title="1 · Topic" hint="Pick a covered topic, or write your own" />
+        <PanelHeader title="1 · Topic" hint="Pick one we already cover, or describe your own" />
         <div className="space-y-4 p-4">
           <form
             onSubmit={(e) => {
@@ -198,17 +199,17 @@ export function NewRunPage() {
             title="What the model will cover"
             hint={
               preview.data?.source === 'dataset'
-                ? 'Areas already in the dataset for this topic'
-                : 'Proposed by the model — the run confirms or replaces them'
+                ? 'Areas we already have channels for'
+                : 'The model\u2019s first read — the run refines it'
             }
           />
           <div className="space-y-3 p-4">
             {preview.isLoading && <Skeleton rows={2} />}
             {preview.isError && (
               <p className="text-sm text-ink-2">
-                The preview could not be generated, which does not block the
-                run — the harness works the sub-niches out for itself once it
-                starts.
+                Couldn&rsquo;t generate a preview just now — that
+                won&rsquo;t hold anything up. The run works the sub-niches out
+                for itself once it starts.
               </p>
             )}
             {preview.data && (
@@ -244,9 +245,9 @@ export function NewRunPage() {
                   <span className="px-1 text-sm text-ink-3">etc…</span>
                 </div>
                 <p className="border-t border-line pt-3 text-xs leading-snug text-ink-3">
-                  A preview, not a plan you have to approve. The run expands
-                  the topic itself and will follow whatever it finds, including
-                  areas not listed here.
+                  Just a preview — nothing to approve. Once running, it
+                  explores the topic properly and follows whatever it turns up,
+                  including areas not shown here.
                 </p>
               </>
             )}
@@ -257,7 +258,7 @@ export function NewRunPage() {
       {/* ---- 2. Depth ---- */}
       {submittedTopic && (
         <Panel>
-          <PanelHeader title="2 · Depth" hint="How far the run goes before it stops" />
+          <PanelHeader title="2 · Depth" hint="How much ground the run covers" />
           <div className="p-4">
             {depths.isLoading && <Skeleton rows={3} />}
             {depths.isError && (
@@ -321,8 +322,8 @@ export function NewRunPage() {
                 <span className="font-mono text-xs text-ink-2">{launched}</span>
               </p>
               <p className="mt-1 text-xs text-ink-2">
-                It runs detached, so you can close this page. The workbook
-                appears under Workbooks when it finishes.
+                Feel free to close this page — it keeps running. The
+                workbook will appear under Workbooks when it&rsquo;s done.
               </p>
             </div>
           )}

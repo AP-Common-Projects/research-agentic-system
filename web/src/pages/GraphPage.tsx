@@ -146,9 +146,9 @@ export function GraphPage() {
           How this workbook is composed
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-2">
-          Every channel that shipped, grouped by niche family and sub-niche.
-          Open a branch to drill in, or search to jump straight to anything at
-          any level.
+          Every channel in the workbook, grouped by niche family and
+          sub-niche. Open a branch to look inside, or search to jump straight
+          to anything.
         </p>
       </header>
 
@@ -167,7 +167,7 @@ export function GraphPage() {
           <Panel>
             <PanelHeader
               title="Composition"
-              hint="Click a family to filter — click again to clear it"
+              hint="Click a family to focus on it — click again to bring the rest back"
             />
             <div className="p-4">
               <CompositionBar
@@ -187,7 +187,7 @@ export function GraphPage() {
                   ? `${shownChannels} of ${tree.data.channel_count} channels in ${pickedFamilies.size} famil${
                       pickedFamilies.size === 1 ? 'y' : 'ies'
                     }`
-                  : 'Families open, sub-niches closed'
+                  : 'Families are open; open a sub-niche to see its channels'
               }
               right={
                 <div className="flex items-center gap-2">

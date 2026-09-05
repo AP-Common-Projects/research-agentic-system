@@ -23,7 +23,11 @@ export function WorkbookPicker({
     return <div className="h-9 w-56 animate-pulse rounded-md bg-sunken" />;
   }
   if (available.length === 0) {
-    return <p className="text-sm text-ink-3">No finished workbooks yet.</p>;
+    return (
+      <p className="text-sm text-ink-3">
+        Nothing to show yet — this fills in once a run finishes.
+      </p>
+    );
   }
 
   return (
