@@ -9,7 +9,6 @@ const NAV = [
   { to: '/graph', label: 'Discovery graph', hint: 'How a workbook\'s channels were reached' },
   { to: '/spend', label: 'Spend', hint: 'What a finished workbook cost, per provider' },
   { to: '/balances', label: 'Balances', hint: 'Provider credit and what it can fund' },
-  { to: '/channels', label: 'Channels', hint: 'Everything in the structured store' },
 ];
 
 function useTheme() {

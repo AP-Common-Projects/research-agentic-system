@@ -5,7 +5,6 @@ import { WorkbooksPage } from './pages/WorkbooksPage';
 import { BalancesPage } from './pages/BalancesPage';
 import { GraphPage } from './pages/GraphPage';
 import { SpendPage } from './pages/SpendPage';
-import { ChannelsPage } from './pages/ChannelsPage';
 
 export default function App() {
   return (
@@ -17,7 +16,6 @@ export default function App() {
         <Route path="/graph" element={<GraphPage />} />
         <Route path="/spend" element={<SpendPage />} />
         <Route path="/balances" element={<BalancesPage />} />
-        <Route path="/channels" element={<ChannelsPage />} />
         <Route path="*" element={<Navigate to="/new" replace />} />
       </Route>
     </Routes>

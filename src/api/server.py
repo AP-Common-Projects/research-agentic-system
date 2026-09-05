@@ -409,18 +409,6 @@ def api_workbook_spend(workbook_id: str) -> dict[str, Any]:
     return deliverables.workbook_spend(workbook_id)
 
 
-@app.get("/api/workbooks/{workbook_id}/graph")
-def api_workbook_graph(
-    workbook_id: str, limit: int = Query(600, ge=1, le=3000)
-) -> dict[str, Any]:
-    """Discovery graph for the channels that shipped in one workbook."""
-    from src.api import deliverables
-
-    if wb_resolve(workbook_id) is None:
-        raise HTTPException(status_code=404, detail="Workbook not found.")
-    return deliverables.workbook_graph(workbook_id, limit=limit)
-
-
 @app.get("/api/workbooks/{workbook_id}/tree")
 def api_workbook_tree(workbook_id: str) -> dict[str, Any]:
     """The workbook as vertical -> family -> sub-niche -> channel."""

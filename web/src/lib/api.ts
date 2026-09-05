@@ -95,6 +95,40 @@ export interface WorkbookSpend {
   note: string;
 }
 
+export interface TreeNodeData {
+  id: string;
+  name: string;
+  kind: 'root' | 'family' | 'sub_niche' | 'channel';
+  channel_count?: number;
+  subscriber_count?: number;
+  discovery_method?: string;
+  children?: TreeNodeData[];
+}
+
+export interface WorkbookTree extends TreeNodeData {
+  workbook_id: string;
+}
+
+export interface WorkbookSpendRun {
+  run_id: string;
+  model_usd: number;
+  records: number;
+  discovery_usd: number;
+}
+
+export interface WorkbookSpend {
+  workbook_id: string;
+  run_count: number;
+  attributed_run_count: number;
+  openrouter_usd: number;
+  brightdata_usd: number;
+  brightdata_records: number;
+  total_usd: number;
+  cost_per_record_usd: number;
+  by_run: WorkbookSpendRun[];
+  note: string;
+}
+
 export interface WorkbookGraphNode {
   channel_id: string;
   title: string | null;
@@ -361,8 +395,6 @@ export const api = {
   workbooks: () => get<Workbook[]>('/api/workbooks'),
 
   workbookSpend: (id: string) => get<WorkbookSpend>(`/api/workbooks/${id}/spend`),
-
-  workbookGraph: (id: string) => get<WorkbookGraph>(`/api/workbooks/${id}/graph`),
 
   workbookTree: (id: string) => get<WorkbookTree>(`/api/workbooks/${id}/tree`),
 
