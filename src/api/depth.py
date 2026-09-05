@@ -9,7 +9,8 @@ Durations are the honest shape of these runs. A discovery pass on one
 keyword takes minutes (Bright Data snapshots ran ~3.4 min/keyword measured
 2026-09-01), hydration is ~4 channels/min, and every per-channel LLM node
 is latency-bound at roughly one call per channel. Depth is therefore
-bought in hours, not minutes, and the tier names say so plainly.
+bought in hours rather than minutes at every tier but the shortest,
+which buys a single keyword pass and says so.
 
 Cost estimates are split by provider because the two fail differently and
 are topped up separately. They come from measured spend, not list prices:
@@ -34,7 +35,7 @@ from typing import Any
 class DepthTier:
     id: str
     label: str
-    hours: int
+    hours: float
     tagline: str
     description: str
     # What the client gets, from comparable historical runs.
@@ -50,9 +51,47 @@ class DepthTier:
     def est_total_usd(self) -> float:
         return round(self.est_brightdata_usd + self.est_openrouter_usd, 2)
 
+    @property
+    def duration_label(self) -> str:
+        """How long the tier runs, in the largest unit that stays whole.
+
+        The shortest tier is half an hour, which reads as "0.5h" if the UI
+        formats it itself. Formatting here keeps every surface -- cards,
+        confirmations, the balances table -- saying the same thing.
+        """
+        if self.hours < 1:
+            return f"{round(self.hours * 60)}m"
+        return f"{self.hours:g}h"
+
 
 # Ordered shallowest to deepest; the UI renders them in this order.
 TIERS: list[DepthTier] = [
+    DepthTier(
+        id="glimpse",
+        label="Glimpse",
+        hours=0.5,
+        tagline="A quick read on whether a topic has anything in it",
+        description=(
+            "A single discovery pass on the strongest head keyword, hydrated "
+            "and classified. Enough to see the shape of a topic and the "
+            "biggest channels in it before committing to a longer run."
+        ),
+        est_channels="15-25",
+        est_videos="600-1,000",
+        est_brightdata_usd=0.90,
+        est_openrouter_usd=0.30,
+        governors={
+            "MAX_ROUNDS_PER_BRANCH": 1,
+            "MAX_TREE_DEPTH": 1,
+            "MAX_BRANCHES": 1,
+            "KEYWORD_QUERIES_PER_ROUND": 4,
+            "KEYWORD_RESULTS_PER_QUERY": 25,
+            "GRAPH_WALK_FRONTIER_PER_ROUND": 5,
+            "BRIGHTDATA_RECORD_BUDGET": 600,
+            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 1200,
+            "BUDGET_LIMIT_USD": 1.2,
+        },
+    ),
     DepthTier(
         id="scout",
         label="Scout",
@@ -242,6 +281,7 @@ def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
     for tier in TIERS:
         row = asdict(tier)
         row["est_total_usd"] = tier.est_total_usd
+        row["duration_label"] = tier.duration_label
 
         blockers: list[str] = []
         warnings: list[str] = []

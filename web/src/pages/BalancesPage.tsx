@@ -133,7 +133,7 @@ function AffordabilityTable({ tiers }: { tiers: DepthTier[] }) {
             <tr key={tier.id} className="border-b border-line last:border-0">
               <td className="px-4 py-2.5">
                 <span className="text-ink">{tier.label}</span>
-                <span className="ml-2 text-xs text-ink-3">{tier.hours}h</span>
+                <span className="ml-2 text-xs text-ink-3">{tier.duration_label}</span>
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums text-ink-2">
                 {usd(tier.est_brightdata_usd)}

@@ -38,7 +38,7 @@ function DepthCard({
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-medium text-ink">{tier.label}</span>
         <span className="rounded bg-sunken px-1.5 py-0.5 text-xs tabular-nums text-ink-2">
-          {tier.hours}h
+          {tier.duration_label}
         </span>
       </div>
 
@@ -297,7 +297,7 @@ export function NewRunPage() {
             <div className="text-sm">
               <p className="text-ink">
                 <span className="font-medium">{submittedTopic}</span> ·{' '}
-                {chosenTier.label} · {chosenTier.hours}h
+                {chosenTier.label} · {chosenTier.duration_label}
               </p>
               <p className="mt-0.5 text-xs text-ink-2">
                 Estimated {usd(chosenTier.est_total_usd)} —{' '}

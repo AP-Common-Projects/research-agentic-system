@@ -29,7 +29,34 @@ def _balances(openrouter=None, brightdata=None):
 
 class TestTierShape:
     def test_tiers_cover_the_durations_the_client_asked_for(self):
-        assert [t.hours for t in depth_mod.TIERS] == [1, 6, 12, 24, 48, 72]
+        assert [t.hours for t in depth_mod.TIERS] == [0.5, 1, 6, 12, 24, 48, 72]
+
+    def test_duration_label_never_renders_a_fraction_of_an_hour(self):
+        """The UI prints this string verbatim, so "0.5h" must not reach it."""
+        labels = [t.duration_label for t in depth_mod.TIERS]
+        assert labels == ["30m", "1h", "6h", "12h", "24h", "48h", "72h"]
+
+    def test_availability_rows_carry_the_duration_label(self):
+        rows = depth_mod.tiers_with_availability(
+            _balances(openrouter=500.0, brightdata=500.0)
+        )
+        assert next(r for r in rows if r["id"] == "glimpse")["duration_label"] == "30m"
+
+    def test_shortest_tier_is_the_cheapest_and_is_affordable_on_pocket_change(self):
+        glimpse = depth_mod.TIERS[0]
+        assert glimpse.est_total_usd == min(t.est_total_usd for t in depth_mod.TIERS)
+        rows = depth_mod.tiers_with_availability(
+            _balances(openrouter=glimpse.est_openrouter_usd,
+                      brightdata=glimpse.est_brightdata_usd)
+        )
+        assert not next(r for r in rows if r["id"] == "glimpse")["locked"]
+
+    def test_brightdata_estimate_matches_the_record_budget_it_buys(self):
+        """$0.0015/record is the measured rate; an estimate that disagrees with
+        the governor it ships with would quote the client the wrong figure."""
+        for tier in depth_mod.TIERS:
+            budget = tier.governors["BRIGHTDATA_RECORD_BUDGET"]
+            assert tier.est_brightdata_usd == round(budget * 0.0015, 2), tier.id
 
     def test_every_tier_is_named_not_just_numbered(self):
         for tier in depth_mod.TIERS:
@@ -79,8 +106,10 @@ class TestAffordability:
         assert not any(r["locked"] for r in rows)
         assert all(r["warnings"] for r in rows)
 
-    def test_cheapest_tier_survives_a_thin_but_sufficient_wallet(self):
-        scout = depth_mod.TIERS[0]
+    def test_a_tier_survives_a_thin_but_exactly_sufficient_wallet(self):
+        # Bound by id, not position -- a new shallowest tier must not silently
+        # re-point this at something cheaper.
+        scout = depth_mod.get_tier("scout")
         rows = depth_mod.tiers_with_availability(
             _balances(openrouter=scout.est_openrouter_usd,
                       brightdata=scout.est_brightdata_usd)
