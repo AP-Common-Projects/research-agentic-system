@@ -68,7 +68,9 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/runs")
 def api_list_runs() -> list[dict[str, Any]]:
-    return runs_mod.list_runs()
+    """Runs launched from this console. Log-only runs are deliberately
+    excluded -- see list_runs()."""
+    return runs_mod.list_runs(include_log_only=False)
 
 
 @app.post("/api/runs", status_code=201)

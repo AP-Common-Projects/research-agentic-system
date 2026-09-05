@@ -234,11 +234,21 @@ def known_run_ids() -> list[str]:
     return [p.stem for p in files]
 
 
-def list_runs() -> list[dict[str, Any]]:
-    """Merge the registry with any log-only runs (started from the CLI)."""
+def list_runs(include_log_only: bool = True) -> list[dict[str, Any]]:
+    """Runs from the registry, optionally plus log-only ones.
+
+    `include_log_only` folds in every run_id with a log file on disk, which
+    is how a run started from the CLI becomes visible at all. That is right
+    for anything totalling historical cost, and wrong for the console's Live
+    runs view: the logs directory holds the lineage of the delivered
+    workbooks -- ten runs that built finance.xlsx and crime.xlsx -- and
+    listing those as things to monitor presents finished provenance as
+    activity. The Spend page reads the same files for attribution, so they
+    cannot simply be deleted to clear the view.
+    """
     registry = {e["run_id"]: dict(e) for e in load_registry()}
 
-    for run_id in known_run_ids():
+    for run_id in known_run_ids() if include_log_only else []:
         if run_id not in registry:
             entries = read_run_log(run_id)
             registry[run_id] = {
@@ -283,7 +293,9 @@ def list_runs() -> list[dict[str, Any]]:
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
-    for run in list_runs():
+    # Registry-only, matching what /api/runs lists: the detail view must not
+    # resolve a run the list cannot show.
+    for run in list_runs(include_log_only=False):
         if run["run_id"] == run_id:
             return run
     return None

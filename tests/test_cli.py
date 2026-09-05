@@ -162,6 +162,52 @@ class TestExportUsesTheActualRunId:
         assert called_run_id == "run-fallback1234"  # run_id truncates hex to [:12]
 
 
+class TestLiveRunsListsOnlyConsoleLaunchedRuns:
+    """The logs directory holds the lineage of the delivered workbooks -- ten
+    runs that built finance.xlsx and crime.xlsx. Folding those into /api/runs
+    presented finished provenance as things to monitor, and they cannot just
+    be deleted to clear the view because the Spend page reads the same files
+    to attribute cost per workbook.
+    """
+
+    def _fixture(self, tmp_path, monkeypatch):
+        from src.api import runs as runs_mod
+
+        (tmp_path / "run-fromlogs.jsonl").write_text(
+            '{"node_name":"scan_niches","thread_id":"t","timestamp":"2026-01-01T00:00:00Z"}\n'
+        )
+        monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)
+        monkeypatch.setattr(runs_mod, "load_registry", lambda: [])
+        return runs_mod
+
+    def test_log_only_runs_are_excluded_when_asked(self, tmp_path, monkeypatch):
+        runs_mod = self._fixture(tmp_path, monkeypatch)
+        assert runs_mod.list_runs(include_log_only=False) == []
+
+    def test_log_only_runs_are_still_available_for_cost_totals(self, tmp_path, monkeypatch):
+        """The default must keep working -- anything totalling historical
+        spend needs the runs that only exist as log files."""
+        runs_mod = self._fixture(tmp_path, monkeypatch)
+        ids = [r["run_id"] for r in runs_mod.list_runs()]
+        assert ids == ["run-fromlogs"]
+
+    def test_the_api_endpoint_asks_for_registry_only(self, tmp_path, monkeypatch):
+        from src.api import server
+
+        runs_mod = self._fixture(tmp_path, monkeypatch)
+        assert server.api_list_runs() == [], (
+            "/api/runs backs the Live runs page and must not list workbook lineage"
+        )
+        # ...while the module-level default is untouched.
+        assert len(runs_mod.list_runs()) == 1
+
+    def test_detail_matches_the_list(self, tmp_path, monkeypatch):
+        """get_run must not resolve a run /api/runs refuses to list, or the
+        page can link to something it cannot show."""
+        runs_mod = self._fixture(tmp_path, monkeypatch)
+        assert runs_mod.get_run("run-fromlogs") is None
+
+
 class TestFinishedRunsStopBeingReportedAsRunning:
     """launch_run starts each run with Popen and discards the handle, so
     nothing ever wait()s on it. A finished run therefore stays in the process

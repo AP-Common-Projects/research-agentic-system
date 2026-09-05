@@ -141,15 +141,34 @@ class TestListRuns:
 
         assert runs[0]["status"] == "stopped"
 
-    def test_picks_up_cli_started_runs_absent_from_registry(self, client, log_home):
+    def test_endpoint_does_not_list_cli_started_runs(self, client, log_home):
+        """Deliberate change of intent, not lost coverage.
+
+        /api/runs used to fold in every run_id with a log file, which is how
+        a CLI-started run became visible. It now backs the console's Live
+        runs view, and the logs directory holds the lineage of the delivered
+        workbooks -- ten runs behind finance.xlsx and crime.xlsx. Listing
+        those presented finished provenance as things to monitor. They can't
+        be deleted to clear the view either: the Spend page reads the same
+        files to attribute cost per workbook.
+        """
         _write_log(log_home, "run-cli", [{"node_name": "scan_niches", "thread_id": "t-cli"}])
 
         with patch.object(runs_mod, "is_process_running", return_value=False):
             runs = client.get("/api/runs").json()
 
-        ids = {r["run_id"] for r in runs}
-        assert "run-cli" in ids
-        assert next(r for r in runs if r["run_id"] == "run-cli")["thread_id"] == "t-cli"
+        assert {r["run_id"] for r in runs} == set()
+
+    def test_the_underlying_discovery_still_works_for_cost_totals(self, log_home):
+        """The capability the endpoint stopped using is still there and still
+        correct -- anything totalling historical spend depends on it."""
+        _write_log(log_home, "run-cli", [{"node_name": "scan_niches", "thread_id": "t-cli"}])
+
+        with patch.object(runs_mod, "is_process_running", return_value=False):
+            runs = runs_mod.list_runs()
+
+        row = next(r for r in runs if r["run_id"] == "run-cli")
+        assert row["thread_id"] == "t-cli"
 
 
 # ---------------------------------------------------------------------------
