@@ -3,6 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, type DepthTier } from '../lib/api';
 import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
 
+// The preview is a taste of the model's read on a topic, not its scope.
+const PREVIEW_LIMIT = 10;
+
 function usd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
@@ -210,8 +213,11 @@ export function NewRunPage() {
             )}
             {preview.data && (
               <>
-                <div className="flex flex-wrap gap-1.5">
-                  {preview.data.subniches.map((s) => (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {/* Ten is a sample, not the scope. The run explores far more
+                      than this, so the trailing "etc…" is load-bearing: a
+                      closed list of ten would read as the whole plan. */}
+                  {preview.data.subniches.slice(0, PREVIEW_LIMIT).map((s) => (
                     <span
                       key={s.slug}
                       title={s.rationale}
@@ -235,6 +241,7 @@ export function NewRunPage() {
                       )}
                     </span>
                   ))}
+                  <span className="px-1 text-sm text-ink-3">etc…</span>
                 </div>
                 <p className="border-t border-line pt-3 text-xs leading-snug text-ink-3">
                   A preview, not a plan you have to approve. The run expands

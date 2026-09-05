@@ -24,11 +24,14 @@ function CompositionBar({
   families,
   total,
   onPick,
+  picked,
 }: {
   families: TreeNodeData[];
   total: number;
-  onPick: (name: string) => void;
+  onPick: (id: string) => void;
+  picked: Set<string>;
 }) {
+  const filtering = picked.size > 0;
   return (
     <div>
       <div className="flex h-8 w-full overflow-hidden rounded-md border border-line">
@@ -38,12 +41,15 @@ function CompositionBar({
             <button
               key={family.id}
               type="button"
-              onClick={() => onPick(family.name)}
+              onClick={() => onPick(family.id)}
               title={`${family.name} — ${family.channel_count} channels (${share.toFixed(1)}%)`}
-              className="h-full transition-opacity hover:opacity-80"
+              className="h-full transition-opacity hover:opacity-90"
               style={{
                 width: `${share}%`,
                 background: FAMILY_TINTS[i % FAMILY_TINTS.length],
+                // Dim the unpicked rather than hiding them: the bar is a
+                // part-to-whole read, so the whole has to stay visible.
+                opacity: filtering && !picked.has(family.id) ? 0.25 : 1,
               }}
               aria-label={`${family.name}, ${family.channel_count} channels`}
             />
@@ -51,22 +57,33 @@ function CompositionBar({
         })}
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-        {families.slice(0, 8).map((family, i) => (
-          <button
-            key={family.id}
-            type="button"
-            onClick={() => onPick(family.name)}
-            className="flex items-center gap-1.5 text-xs text-ink-2 hover:text-ink"
-          >
-            <span
-              aria-hidden
-              className="size-2 rounded-sm"
-              style={{ background: FAMILY_TINTS[i % FAMILY_TINTS.length] }}
-            />
-            {family.name}
-            <span className="tabular-nums text-ink-3">{family.channel_count}</span>
-          </button>
-        ))}
+        {families.map((family, i) => {
+          const on = picked.has(family.id);
+          return (
+            <button
+              key={family.id}
+              type="button"
+              onClick={() => onPick(family.id)}
+              aria-pressed={on}
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                on
+                  ? 'border-[var(--focus)] bg-raised text-ink'
+                  : 'border-line text-ink-2 hover:text-ink'
+              }`}
+            >
+              <span
+                aria-hidden
+                className="size-2 rounded-sm"
+                style={{
+                  background: FAMILY_TINTS[i % FAMILY_TINTS.length],
+                  opacity: filtering && !on ? 0.35 : 1,
+                }}
+              />
+              {family.name}
+              <span className="tabular-nums text-ink-3">{family.channel_count}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -75,9 +92,27 @@ function CompositionBar({
 export function GraphPage() {
   const [workbookId, setWorkbookId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [pickedFamilies, setPickedFamilies] = useState<Set<string>>(new Set());
 
   const workbooks = useQuery({ queryKey: ['workbooks'], queryFn: api.workbooks });
   const active = workbookId ?? workbooks.data?.find((w) => w.available)?.id ?? null;
+
+  function selectWorkbook(id: string) {
+    setWorkbookId(id);
+    // Family ids are per-vertical, so a Finance selection means nothing in
+    // Crime and would silently filter everything out.
+    setPickedFamilies(new Set());
+    setQuery('');
+  }
+
+  function toggleFamily(id: string) {
+    setPickedFamilies((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const tree = useQuery({
     queryKey: ['workbook-tree', active],
@@ -99,6 +134,9 @@ export function GraphPage() {
   }, [tree.data]);
 
   const families = tree.data?.children ?? [];
+  const shownChannels = families
+    .filter((f) => pickedFamilies.size === 0 || pickedFamilies.has(f.id))
+    .reduce((sum, f) => sum + (f.channel_count ?? 0), 0);
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-6">
@@ -114,7 +152,7 @@ export function GraphPage() {
         </p>
       </header>
 
-      <WorkbookPicker value={active} onChange={setWorkbookId} />
+      <WorkbookPicker value={active} onChange={selectWorkbook} />
 
       {tree.isLoading && <Skeleton rows={5} />}
       {tree.isError && (
@@ -129,13 +167,14 @@ export function GraphPage() {
           <Panel>
             <PanelHeader
               title="Composition"
-              hint={`${tree.data.channel_count} channels across ${families.length} families`}
+              hint="Click a family to filter — click again to clear it"
             />
             <div className="p-4">
               <CompositionBar
                 families={families}
                 total={tree.data.channel_count ?? 0}
-                onPick={setQuery}
+                onPick={toggleFamily}
+                picked={pickedFamilies}
               />
             </div>
           </Panel>
@@ -143,7 +182,13 @@ export function GraphPage() {
           <Panel>
             <PanelHeader
               title="Explore"
-              hint="Families open, sub-niches closed"
+              hint={
+                pickedFamilies.size > 0
+                  ? `${shownChannels} of ${tree.data.channel_count} channels in ${pickedFamilies.size} famil${
+                      pickedFamilies.size === 1 ? 'y' : 'ies'
+                    }`
+                  : 'Families open, sub-niches closed'
+              }
               right={
                 <div className="flex items-center gap-2">
                   {Object.entries(trackCounts).map(([method, count]) => {
@@ -177,17 +222,30 @@ export function GraphPage() {
                 aria-label="Search the workbook"
                 className="w-full rounded-md border border-line bg-raised px-3 py-2 text-sm text-ink outline-none placeholder:text-ink-3 focus:border-[var(--focus)]"
               />
-              {query && (
-                <button
-                  type="button"
-                  onClick={() => setQuery('')}
-                  className="mt-2 text-xs text-[var(--focus)] hover:underline"
-                >
-                  Clear search
-                </button>
+              {(query || pickedFamilies.size > 0) && (
+                <div className="mt-2 flex gap-3">
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery('')}
+                      className="text-xs text-[var(--focus)] hover:underline"
+                    >
+                      Clear search
+                    </button>
+                  )}
+                  {pickedFamilies.size > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setPickedFamilies(new Set())}
+                      className="text-xs text-[var(--focus)] hover:underline"
+                    >
+                      Show all families
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-            <TreeExplorer root={tree.data} query={query} />
+            <TreeExplorer root={tree.data} query={query} families={pickedFamilies} />
           </Panel>
         </>
       )}

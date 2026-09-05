@@ -21,6 +21,8 @@ import { TRACK_META } from './primitives';
 interface Props {
   root: TreeNodeData;
   query: string;
+  /** Family ids to show. Empty means no filter, not "show nothing". */
+  families?: Set<string>;
 }
 
 const INDENT = 18;
@@ -157,7 +159,7 @@ function Row({
   );
 }
 
-export function TreeExplorer({ root, query }: Props) {
+export function TreeExplorer({ root, query, families: familyFilter }: Props) {
   // Families open, sub-niches closed: the family level is where the shape of
   // a workbook actually reads, and opening all 206 sub-niches at once is a
   // wall of one-channel rows.
@@ -168,10 +170,17 @@ export function TreeExplorer({ root, query }: Props) {
   const q = query.trim().toLowerCase();
   const total = root.channel_count ?? 0;
 
-  const families = useMemo(
-    () => (root.children ?? []).filter((f) => matches(f, q)),
-    [root, q],
-  );
+  const families = useMemo(() => {
+    const all = root.children ?? [];
+    // An empty filter set means "no family filter applied". Treating it as
+    // "show none" would blank the page the moment someone cleared the last
+    // chip, which reads as a bug rather than a reset.
+    const picked =
+      familyFilter && familyFilter.size > 0
+        ? all.filter((f) => familyFilter.has(f.id))
+        : all;
+    return picked.filter((f) => matches(f, q));
+  }, [root, q, familyFilter]);
 
   function toggle(id: string) {
     setOpenIds((prev) => {
@@ -185,7 +194,13 @@ export function TreeExplorer({ root, query }: Props) {
   if (families.length === 0) {
     return (
       <p className="px-4 py-8 text-center text-sm text-ink-2">
-        Nothing matches “{query}”.
+        {query
+          ? `Nothing matches “${query}”${
+              familyFilter && familyFilter.size > 0
+                ? ' in the selected families'
+                : ''
+            }.`
+          : 'No families selected.'}
       </p>
     );
   }
