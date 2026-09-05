@@ -50,6 +50,7 @@ from tenacity import (
 
 from src.config import get_config
 from src.observability.logging_config import record_spend_intent
+from src.tools import deadline as run_deadline
 
 logger = structlog.get_logger(__name__)
 
@@ -376,6 +377,14 @@ class BrightDataClient:
             return self._replay(collector)
 
         dataset_id = self._dataset_ids[collector]
+        # Do not commit money to a snapshot the run has no time left to use:
+        # the POST below is the moment it starts billing, and a job triggered
+        # past the deadline is paid for and then discarded.
+        if run_deadline.passed():
+            raise BrightDataError(
+                f"{collector} trigger skipped: the run's "
+                f"{run_deadline.deadline_seconds()}s deadline has passed"
+            )
         deadline = time.monotonic() + self._cfg.poll_max_seconds
 
         # Written BEFORE the POST. The trigger is the moment money is
@@ -425,6 +434,17 @@ class BrightDataClient:
                         raise BrightDataError(
                             f"snapshot {snapshot_id} still {status!r} after "
                             f"{self._cfg.poll_max_seconds}s"
+                        )
+                    # The run's own wall-clock ceiling, checked every poll.
+                    # A snapshot can legitimately take minutes; without this
+                    # the run overshoots its stated duration by however long
+                    # the collector happens to take, which is exactly what
+                    # made the console's durations unreliable.
+                    if run_deadline.passed():
+                        raise BrightDataError(
+                            f"snapshot {snapshot_id} abandoned at the run's "
+                            f"{run_deadline.deadline_seconds()}s deadline "
+                            f"(status={status!r})"
                         )
                     await asyncio.sleep(self._cfg.poll_interval_seconds)
 

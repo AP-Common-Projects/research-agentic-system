@@ -16,6 +16,7 @@ from langgraph.graph import StateGraph, START, END
 
 from src.state import HarnessState, create_initial_state, create_augmented_state, migrate_state
 from src.observability import write_node_logs
+from src.tools import deadline as run_deadline
 from src.tools.niche_scanner import scan_niches
 from src.tools.keyword_search import keyword_search
 from src.tools.graph_walk import graph_walk
@@ -85,6 +86,27 @@ def _guarded(fn, name: str):
     """
 
     async def wrapper(state: dict) -> dict:
+        # Admission control. These five are the Bright Data fan-out: each
+        # commits money at its trigger and then polls for minutes. Starting
+        # one with no time left buys records the run will never use and
+        # still bills for them, and pushes the run past the duration the
+        # client was quoted. The terminal path -- check_saturation,
+        # compact_branch, finalize_dataset -- is deliberately not wrapped
+        # here, so a run that stops on its deadline still exports.
+        if run_deadline.passed():
+            return {
+                f"{name}_done": True,
+                "node_logs": [
+                    {
+                        "node_name": name,
+                        "thread_id": state.get("thread_id", ""),
+                        "input_summary": {
+                            "skipped": "run_deadline_seconds",
+                            "elapsed_s": int(run_deadline.run_elapsed_seconds()),
+                        },
+                    }
+                ],
+            }
         try:
             return await fn(state)
         except Exception as exc:

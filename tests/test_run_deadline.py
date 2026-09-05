@@ -1,0 +1,199 @@
+"""The wall-clock ceiling, at every depth it is enforced.
+
+The console names each depth by duration, so duration has to be a real
+ceiling. Enforcing it in one place was not enough to make it precise:
+checked only in check_saturation -- which runs once per branch cycle, after
+discovery, hydration and classification -- a "30-minute" tier stopped at
+whatever the first full cycle happened to cost. Measured at 55+ minutes on
+a real run, and the overshoot grows with the tier.
+
+So it is enforced at three depths, and each is asserted here:
+
+  admission   an expensive node no-ops rather than starting work that
+              cannot land (and, for Bright Data, cannot be paid for twice)
+  iteration   the two loops that run for minutes yield near the limit
+  termination check_saturation converts it into the clean budget-exhausted
+              exit, so a deadline still produces a workbook
+"""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+from src.config import HarnessConfig
+from src.tools import deadline as dl
+
+
+def _cfg(seconds: int):
+    """A config object shaped like the one get_config() returns."""
+    return type("C", (), {"harness": HarnessConfig(run_deadline_seconds=seconds)})()
+
+
+class TestDeadlineArithmetic:
+    def test_uncapped_by_default_so_a_bare_cli_run_is_unaffected(self):
+        with patch.object(dl, "get_config", lambda: _cfg(0)):
+            assert dl.deadline_seconds() == 0
+            assert dl.remaining_seconds() is None
+            assert dl.passed() is False
+            assert dl.would_exceed(10_000) is False
+
+    def test_remaining_counts_down_and_never_goes_negative(self):
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 140.0):
+            assert dl.remaining_seconds() == 0.0
+            assert dl.passed() is True
+
+    def test_not_passed_while_time_remains(self):
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 40.0):
+            assert dl.remaining_seconds() == pytest.approx(60.0)
+            assert dl.passed() is False
+
+    def test_would_exceed_is_about_fitting_not_about_having_passed(self):
+        """Admission control's whole point: 60s left is not passed, but it
+        cannot host a five-minute snapshot."""
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 40.0):
+            assert dl.passed() is False
+            assert dl.would_exceed(300) is True
+            assert dl.would_exceed(30) is False
+
+    def test_an_unreadable_config_leaves_the_run_uncapped(self):
+        """A config that cannot be read must not terminate a run that was
+        going to succeed -- uncapped is the pre-existing behaviour."""
+        def _boom():
+            raise RuntimeError("no config")
+
+        with patch.object(dl, "get_config", _boom):
+            assert dl.deadline_seconds() == 0
+            assert dl.passed() is False
+
+
+class TestAdmissionControlOnDiscovery:
+    """The five Bright Data fan-out nodes commit money at their trigger and
+    then poll for minutes. Starting one past the deadline buys records the
+    run will never use and still bills for them."""
+
+    def _guarded_node(self):
+        from src.graph import _guarded
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        return _guarded(_node, "keyword_search"), calls
+
+    def test_a_discovery_node_does_not_start_past_the_deadline(self):
+        node, calls = self._guarded_node()
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 200.0):
+            out = asyncio.run(node({"thread_id": "t"}))
+
+        assert calls == [], "the node body must not run"
+        assert out["keyword_search_done"] is True, "but the branch must still complete"
+        assert out["node_logs"][0]["input_summary"]["skipped"] == "run_deadline_seconds"
+
+    def test_a_discovery_node_runs_normally_inside_the_deadline(self):
+        node, calls = self._guarded_node()
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 10.0):
+            out = asyncio.run(node({"thread_id": "t"}))
+
+        assert len(calls) == 1
+        assert out == {"keyword_search_done": True}
+
+    def test_an_uncapped_run_is_never_skipped(self):
+        node, calls = self._guarded_node()
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 10_000_000.0):
+            asyncio.run(node({"thread_id": "t"}))
+        assert len(calls) == 1
+
+
+class TestClassifierYieldsAtTheDeadline:
+    """One LLM call per channel, measured at ~21 minutes per batch of 50.
+    Checked per channel so the run yields within ~25 seconds of its limit
+    rather than at the batch's own natural end."""
+
+    def test_the_loop_stops_and_says_why(self):
+        from src.nodes import classify_channel as mod
+
+        src = open(mod.__file__).read()
+        # Asserted against the source rather than by running the node, which
+        # needs Postgres and an LLM: what matters is that the check sits
+        # INSIDE the per-channel loop, not before or after it.
+        loop_start = src.index("for ch_id in eligible:")
+        try_start = src.index("try:", loop_start)
+        between = src[loop_start:try_start]
+        assert "run_deadline.passed()" in between, (
+            "the deadline check must be inside the per-channel loop"
+        )
+        assert "stopped_on" in src, "a truncated pass must say why in its log"
+
+
+class TestBrightDataAbandonsAtTheDeadline:
+    def test_the_poll_loop_checks_the_run_deadline(self):
+        from src.tools import bright_data as mod
+
+        src = open(mod.__file__).read()
+        loop = src[src.index("while True:"):src.index("rows = await self._fetch")]
+        assert "run_deadline.passed()" in loop, (
+            "a snapshot can poll for minutes; without this the run overshoots "
+            "by however long the collector takes"
+        )
+
+    def test_a_trigger_is_not_fired_past_the_deadline(self):
+        """The POST is the moment money is committed."""
+        from src.tools import bright_data as mod
+
+        src = open(mod.__file__).read()
+        head = src[src.index("dataset_id = self._dataset_ids[collector]"):src.index("async with self._semaphore")]
+        assert "run_deadline.passed()" in head
+
+
+class TestHydrationYieldsAtTheDeadline:
+    """Measured at ~16 minutes for 285 channels, and it is not part of the
+    _guarded fan-out, so without a check here a run that hits its deadline
+    during discovery still spends that whole time hydrating before anything
+    notices -- most of a short tier's entire window."""
+
+    def test_the_loop_stops_and_says_why(self):
+        # `from src.tools import hydrate_metadata` binds the FUNCTION of that
+        # name, not the module -- go through sys.modules for the file.
+        import sys
+
+        import src.tools.hydrate_metadata  # noqa: F401
+
+        src = open(sys.modules["src.tools.hydrate_metadata"].__file__).read()
+        loop_start = src.index("for ch in channels:")
+        body = src[loop_start:src.index("ch[\"discovery_method\"] =", loop_start)]
+        assert "run_deadline.passed()" in body, (
+            "the deadline check must be inside the per-channel loop"
+        )
+        assert '"stopped_on"' in src, "a truncated pass must say why in its log"
+
+
+class TestTerminationStillExports:
+    def test_the_terminal_path_is_not_subject_to_admission_control(self):
+        """check_saturation, compact_branch and finalize_dataset must run
+        even past the deadline -- they are how the run exports what it
+        reached. Only the discovery fan-out is wrapped in _guarded."""
+        from src import graph as mod
+
+        src = open(mod.__file__).read()
+        guarded = {
+            line.split('"')[1]
+            for line in src.splitlines()
+            if "add_node(" in line and "_guarded(" in line
+        }
+        assert guarded == {
+            "keyword_search", "graph_walk", "breakout_scanner",
+            "underperformer_discovery", "new_channel_discovery",
+        }
+        for terminal in ("check_saturation", "compact_branch", "finalize_dataset"):
+            assert terminal not in guarded

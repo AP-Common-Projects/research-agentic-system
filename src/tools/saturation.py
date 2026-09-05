@@ -31,15 +31,10 @@ from src.state import NodeLog
 from src.tools.budget import lineage_share
 
 
-#: When this process began. The deadline is per-invocation rather than read
-#: from state on purpose: a resumed run should get its own full window, not
-#: inherit an original start that would trip the ceiling immediately.
-_PROCESS_STARTED_AT = time.monotonic()
-
-
-def run_elapsed_seconds() -> float:
-    """Wall-clock seconds since this process started. Seam for tests."""
-    return time.monotonic() - _PROCESS_STARTED_AT
+# The clock lives in src.tools.deadline, which every enforcement point
+# shares -- re-deriving it here would let the node-level checks and the
+# terminating check disagree about how long the run has been going.
+from src.tools.deadline import run_elapsed_seconds  # noqa: E402
 
 
 def check_saturation(state: dict) -> dict:

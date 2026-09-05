@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.tools import deadline as run_deadline
 from src.tools.youtube_api import YouTubeAPIClient
 from src.tools.outlier_score import score_channel_videos
 from src.tools.dedup import persist_channel, persist_video, persist_channel_v3, persist_channel_snapshot, persist_video_v3
@@ -260,7 +261,17 @@ def hydrate_metadata(state: dict) -> dict:
     # The client's 50k rule, read once rather than per channel.
     from src.config import get_config as _get_config
     floor = int(_get_config().harness.subscriber_floor)
+    stopped_on_deadline = False
     for ch in channels:
+        # Per-channel video fetching, measured at ~16 minutes for 285
+        # channels. Without a check here a run that hits its deadline during
+        # discovery still spends that whole time hydrating before anything
+        # notices, which is most of a short tier's entire window. Channels
+        # left unhydrated are simply not in the export -- partial data the
+        # run paid for, rather than an overrun the client did not ask for.
+        if run_deadline.passed():
+            stopped_on_deadline = True
+            break
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)
         # v4 competitor_ecosystem: channels resolved from competitor-benchmark
         # seeds get a distinct label (plan §10 item 3)
@@ -492,16 +503,22 @@ def hydrate_metadata(state: dict) -> dict:
     newly_hydrated = set(ch["channel_id"] for ch in channels)
     quota_spent = client.quota_consumed_this_call(quota_baseline)
 
+    hydration_summary = {
+        "channels_hydrated": len(channels),
+        "videos_fetched": len(all_video_ids),
+        "quota_spent_this_round": quota_spent,
+        "quota_used_total": client.get_quota_used(),
+        "hydration_errors": len(errors),
+    }
+    if stopped_on_deadline:
+        # Reads as "time ran out" on the Live runs stream rather than as
+        # channels quietly going missing from the export.
+        hydration_summary["stopped_on"] = "run_deadline_seconds"
+
     node_log = NodeLog(
         node_name="hydrate_metadata",
         thread_id=thread_id,
-        input_summary={
-            "channels_hydrated": len(channels),
-            "videos_fetched": len(all_video_ids),
-            "quota_spent_this_round": quota_spent,
-            "quota_used_total": client.get_quota_used(),
-            "hydration_errors": len(errors),
-        },
+        input_summary=hydration_summary,
         latency_ms=None,
         cost_usd=0.0,
     )

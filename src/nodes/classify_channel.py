@@ -209,8 +209,18 @@ def classify_channel(state: dict) -> dict:
     channels_enriched = 0
     total_cost = 0.0
     from src.tools.dedup import persist_channel_v3, persist_channel_niche_membership
+    from src.tools import deadline as run_deadline
 
+    stopped_on_deadline = False
     for ch_id in eligible:
+        # One LLM call per channel, measured at ~21 minutes per batch of 50.
+        # Checked per channel rather than per batch so the run yields within
+        # ~25 seconds of its deadline instead of finishing the whole batch
+        # -- the difference between a duration that is stated and one that
+        # is merely intended.
+        if run_deadline.passed():
+            stopped_on_deadline = True
+            break
         try:
             cur = conn.cursor()
             # thumbnail_has_face lives on `videos`, not `channels` — selecting
@@ -372,8 +382,19 @@ def classify_channel(state: dict) -> dict:
             continue
 
     put_connection(conn)
+    summary = {
+        "classified": classified,
+        "eligible": len(eligible),
+        "cost_usd": round(total_cost, 6),
+    }
+    if stopped_on_deadline:
+        # Visible in the run log and on the console's Live runs stream, so a
+        # short classification pass reads as "time ran out" rather than as
+        # channels silently going unclassified.
+        summary["stopped_on"] = "run_deadline_seconds"
+        summary["unclassified"] = len(eligible) - classified
     return {
-        "node_logs": _log({"classified": classified, "eligible": len(eligible), "cost_usd": round(total_cost, 6)}),
+        "node_logs": _log(summary),
         "channels_enriched_this_run": channels_enriched,
         "errors": errors,
         "budget_spent_usd": total_cost,
