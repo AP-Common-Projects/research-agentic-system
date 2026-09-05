@@ -41,6 +41,8 @@ app.add_middleware(
 
 class LaunchRequest(BaseModel):
     niches: list[str] = Field(..., min_length=1)
+    # Optional so an existing caller keeps working on the .env profile.
+    depth: str | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +76,28 @@ def api_launch_run(req: LaunchRequest) -> dict[str, Any]:
     niches = [n.strip() for n in req.niches if n.strip()]
     if not niches:
         raise HTTPException(status_code=422, detail="At least one non-empty niche is required.")
+    if req.depth:
+        # Re-check affordability at launch, not just when the picker was
+        # rendered. A balance can fall between page load and click, and the
+        # front end is not the place that decision can be trusted.
+        from src.api.balances import all_balances
+        from src.api.depth import get_tier, tiers_with_availability
+
+        if get_tier(req.depth) is None:
+            raise HTTPException(status_code=422, detail=f"Unknown depth: {req.depth}")
+        current = {t["id"]: t for t in tiers_with_availability(all_balances())}
+        row = current.get(req.depth, {})
+        if row.get("locked"):
+            raise HTTPException(
+                status_code=409,
+                detail="; ".join(row.get("blockers") or ["Insufficient balance."]),
+            )
+
     try:
-        return runs_mod.launch_run(niches)
-    except (OSError, ValueError) as exc:
+        return runs_mod.launch_run(niches, depth=req.depth)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not launch run: {exc}") from exc
 
 
@@ -321,6 +342,71 @@ def api_costs() -> dict[str, Any]:
         row["cost_usd"] = round(row["cost_usd"], 6)
 
     return {"total_usd": round(total, 6), "by_node": node_rows, "by_run": run_rows}
+
+
+# ---------------------------------------------------------------------------
+# Wallet, depth, topics, workbooks
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/balances")
+def api_balances(force: bool = Query(False)) -> dict[str, Any]:
+    """Live provider balances. `force` bypasses the 60s cache."""
+    from src.api.balances import all_balances
+
+    return all_balances(force=force)
+
+
+@app.get("/api/depths")
+def api_depths() -> list[dict[str, Any]]:
+    """Depth tiers, each annotated with whether the wallet can fund it."""
+    from src.api.balances import all_balances
+    from src.api.depth import tiers_with_availability
+
+    return tiers_with_availability(all_balances())
+
+
+@app.get("/api/topics")
+def api_topics() -> list[dict[str, Any]]:
+    from src.api import topics as topics_mod
+
+    return topics_mod.catalog()
+
+
+@app.get("/api/topics/suggest")
+def api_topic_suggest(q: str = Query(..., min_length=2)) -> dict[str, Any]:
+    """Sub-niches for a topic: measured from the dataset, or model-proposed."""
+    from src.api import topics as topics_mod
+
+    try:
+        return topics_mod.suggest(q)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Could not suggest sub-niches: {exc}"
+        ) from exc
+
+
+@app.get("/api/workbooks")
+def api_workbooks() -> list[dict[str, Any]]:
+    from src.api import workbooks as wb_mod
+
+    return wb_mod.list_workbooks()
+
+
+@app.get("/api/workbooks/{workbook_id}/download")
+def api_workbook_download(workbook_id: str) -> FileResponse:
+    from src.api import workbooks as wb_mod
+
+    path = wb_mod.resolve_path(workbook_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Workbook not found.")
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

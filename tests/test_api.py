@@ -171,7 +171,9 @@ class TestLaunchRun:
 
         assert resp.status_code == 201
         assert resp.json()["run_id"] == "run-x"
-        mock_launch.assert_called_once_with(["3d printing"])
+        # depth is passed explicitly and defaults to None, so a request
+        # without one still runs on the .env profile exactly as before.
+        mock_launch.assert_called_once_with(["3d printing"], depth=None)
 
 
 # ---------------------------------------------------------------------------

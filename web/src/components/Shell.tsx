@@ -4,7 +4,10 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 
 const NAV = [
-  { to: '/runs', label: 'Runs', hint: 'Launch and follow research runs' },
+  { to: '/new', label: 'New run', hint: 'Choose a topic and how deep to go' },
+  { to: '/workbooks', label: 'Workbooks', hint: 'Finished Excel deliverables' },
+  { to: '/balances', label: 'Balances', hint: 'Provider credit and what it can fund' },
+  { to: '/runs', label: 'Runs', hint: 'Follow research runs in progress' },
   { to: '/reports', label: 'Reports', hint: 'Every finished, evidence-graded report' },
   { to: '/graph', label: 'Discovery graph', hint: 'Which track reached which channel' },
   { to: '/channels', label: 'Channels', hint: 'Everything in the structured store' },

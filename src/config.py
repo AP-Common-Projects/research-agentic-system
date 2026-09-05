@@ -261,6 +261,14 @@ class HarnessConfig(BaseSettings):
     # $1.50 per 1,000 records, Bright Data pay-as-you-go list rate.
     brightdata_cost_per_record_usd: float = 0.0015
 
+    # Bright Data exposes a balance endpoint, but only to tokens carrying
+    # billing permission; the collector tokens this harness uses get 403.
+    # When that happens the console derives a balance from this figure minus
+    # the record ledger, and labels the number "derived" rather than passing
+    # an estimate off as a live reading. 0 means "no starting figure known",
+    # and the console then shows the spend without a remaining balance.
+    brightdata_starting_balance_usd: float = 0.0
+
     # Account-level ceiling, across ALL runs. brightdata_record_budget stops a
     # single run; nothing stopped the Nth run from spending the same budget
     # again, which is how a 5,000-record allowance went with no individual run

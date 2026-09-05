@@ -82,15 +82,33 @@ def is_process_running(pid: int | None) -> bool:
     return True
 
 
-def launch_run(niches: list[str]) -> dict[str, Any]:
+def launch_run(niches: list[str], depth: str | None = None) -> dict[str, Any]:
     """Start a detached harness run and register it. Returns the registry entry.
 
-    Budget is a circuit breaker, not a per-run dial (master plan §1) — it comes
-    from HarnessConfig/.env like every other harness setting, not from this
-    call, so there is one place to tune it rather than one per launch surface.
+    Budget remains a circuit breaker rather than a per-run dial (master plan
+    §1): .env still sets the account-level ceiling and nothing here can raise
+    it. `depth` selects a named tier from src/api/depth.py, which sets the
+    same governors PROFILES already define -- rounds, tree depth, branches,
+    query breadth, record and quota budgets -- for this one run, passed as
+    environment to the subprocess so the child resolves them through the
+    normal config path instead of a second one.
+
+    A run launched without a depth behaves exactly as before, on the profile
+    from .env.
     """
     if not niches:
         raise ValueError("At least one candidate niche is required.")
+
+    env = os.environ.copy()
+    tier = None
+    if depth:
+        from src.api.depth import get_tier
+
+        tier = get_tier(depth)
+        if tier is None:
+            raise ValueError(f"Unknown depth tier: {depth!r}")
+        for key, value in tier.governors.items():
+            env[key] = str(value)
 
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     thread_id = f"thread-{uuid.uuid4().hex[:12]}"
@@ -105,6 +123,7 @@ def launch_run(niches: list[str]) -> dict[str, Any]:
             stdout=stdout_f,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
 
     entry = {
@@ -113,6 +132,9 @@ def launch_run(niches: list[str]) -> dict[str, Any]:
         "niches": niches,
         "pid": proc.pid,
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "depth": tier.id if tier else None,
+        "depth_label": tier.label if tier else None,
+        "depth_hours": tier.hours if tier else None,
     }
     _append_registry(entry)
     return entry

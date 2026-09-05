@@ -2,6 +2,87 @@
 
 const BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
+// --- Wallet, depth, topics, workbooks -------------------------------------
+
+export type BalanceSource = 'live' | 'derived' | 'unavailable';
+
+export interface ProviderBalance {
+  provider: 'openrouter' | 'brightdata';
+  available_usd: number | null;
+  source: BalanceSource;
+  detail: string;
+  spent_usd: number | null;
+  limit_usd: number | null;
+  remediation: string;
+}
+
+export interface Balances {
+  providers: ProviderBalance[];
+  checked_at: number;
+}
+
+export interface DepthTier {
+  id: string;
+  label: string;
+  hours: number;
+  tagline: string;
+  description: string;
+  est_channels: string;
+  est_videos: string;
+  est_brightdata_usd: number;
+  est_openrouter_usd: number;
+  est_total_usd: number;
+  governors: Record<string, number>;
+  locked: boolean;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface Topic {
+  id: string;
+  label: string;
+  niche_count: number;
+  channel_count: number;
+  has_dataset: boolean;
+}
+
+export interface SubNiche {
+  name: string;
+  slug: string;
+  channel_count: number | null;
+  source: 'dataset' | 'proposed';
+  rationale: string;
+}
+
+export interface SubNicheSuggestion {
+  topic: string;
+  source: 'dataset' | 'proposed' | 'none';
+  note?: string;
+  subniches: SubNiche[];
+}
+
+export interface WorkbookSheet {
+  name: string;
+  rows: number;
+}
+
+export interface Workbook {
+  id: string;
+  title: string;
+  vertical: string;
+  description: string;
+  filename: string;
+  available: boolean;
+  download_url: string;
+  size_bytes?: number;
+  modified_at?: number;
+  sheets?: WorkbookSheet[];
+  channel_count?: number;
+  video_count?: number;
+  error?: string;
+}
+
+
 export type RunStatus = 'running' | 'complete' | 'stopped' | 'pending';
 
 export interface Run {
@@ -208,11 +289,23 @@ export const api = {
 
   costs: () => get<Costs>('/api/costs'),
 
-  launchRun: async (niches: string[]): Promise<Run> => {
+  balances: (force = false) =>
+    get<Balances>(`/api/balances${force ? '?force=true' : ''}`),
+
+  depths: () => get<DepthTier[]>('/api/depths'),
+
+  topics: () => get<Topic[]>('/api/topics'),
+
+  suggestSubNiches: (q: string) =>
+    get<SubNicheSuggestion>(`/api/topics/suggest?q=${encodeURIComponent(q)}`),
+
+  workbooks: () => get<Workbook[]>('/api/workbooks'),
+
+  launchRun: async (niches: string[], depth?: string): Promise<Run> => {
     const res = await fetch(`${BASE}/api/runs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ niches }),
+      body: JSON.stringify(depth ? { niches, depth } : { niches }),
     });
     if (!res.ok) {
       let detail = `Could not start the run (${res.status})`;
