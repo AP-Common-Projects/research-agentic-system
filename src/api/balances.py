@@ -6,10 +6,12 @@ separately rather than as one number:
   OpenRouter  pays for LLM calls. Its /credits endpoint is authoritative and
               needs no special scope, so this is always a real balance.
 
-  Bright Data pays for discovery records. Its balance endpoint requires a
-              token with billing permission; the collector tokens this
-              harness normally uses return 403. When that happens the number
-              is DERIVED -- a configured starting balance minus the record
+  Bright Data pays for discovery records. Its balance endpoint needs a
+              key scoped Admin or Finance (a Bright Data API key is one of
+              five scopes: Admin, Finance, Ops, Limit, User); the collector
+              keys this harness discovers with are deliberately scoped
+              Ops/User and get a 403. When that happens the number is
+              DERIVED -- a configured starting balance minus the record
               ledger the harness itself keeps -- and is labelled as such, so
               the console never presents an estimate as a live reading.
 
@@ -169,10 +171,15 @@ def _derived_brightdata(why: str) -> dict[str, Any]:
         spent_usd=spent,
         limit_usd=start or None,
         remediation=(
-            f"Live balance unavailable ({why}). Grant the Bright Data token "
-            "billing permission at brightdata.com/cp/setting/users for a live "
-            "reading, or set BRIGHTDATA_STARTING_BALANCE_USD in .env to track "
-            "against a known starting figure."
+            f"Live balance unavailable ({why}). A Bright Data API key has one "
+            "of five permission scopes -- Admin, Finance, Ops, Limit, User -- "
+            "and only Admin or Finance can read billing; the collector key "
+            "this harness discovers with is scoped Ops/User on purpose, so it "
+            "can never do this itself. An account admin can generate a "
+            "Finance-scoped key at brightdata.com/cp/setting/users (only "
+            "admins can generate keys at all) and paste it into Connect "
+            "below, or set BRIGHTDATA_STARTING_BALANCE_USD in .env to track "
+            "against a known starting figure instead."
         ),
     ))
 
@@ -184,11 +191,13 @@ def connect_brightdata(api_key: str) -> dict[str, Any]:
     """Swap in a Bright Data token with billing permission, without a restart.
 
     Bright Data has no OAuth handshake to "connect" -- the only way a token
-    gets billing permission is a user toggling it at brightdata.com/cp, and
-    the only way this harness learns of a new token is being given it. So
-    this validates the token LIVE before accepting it: a typo or a token that
-    still lacks the permission returns 422 and changes nothing, rather than
-    persisting a key that will just fail the same way next time.
+    gets billing access is an account admin generating one scoped Admin or
+    Finance (of the five scopes a key can have -- Admin, Finance, Ops, Limit,
+    User -- only those two can read balance), and the only way this harness
+    learns of it is being given it. So this validates the token LIVE before
+    accepting it: a typo, or a token that is still scoped Ops/User, returns
+    422 and changes nothing, rather than persisting a key that will just
+    fail the same way next time.
     """
     key = (api_key or "").strip()
     if not key:

@@ -154,11 +154,14 @@ function ConnectBrightData() {
       className="mt-4 border-t border-line pt-4"
     >
       <label htmlFor="bd-token" className="text-xs font-medium text-ink-2">
-        Connect a token with billing permission
+        Connect a token scoped Admin or Finance
       </label>
       <p className="mt-1 text-xs leading-snug text-ink-3">
-        The token this harness runs discovery with can&rsquo;t read billing.
-        Generate one that can at{' '}
+        A Bright Data key has one of five scopes — Admin, Finance, Ops,
+        Limit, User — and only Admin or Finance can read balance. The token
+        this harness discovers with is scoped Ops/User on purpose, so it
+        will always fail here; that&rsquo;s expected, not an error to fix.
+        An account admin can generate a Finance-scoped key at{' '}
         <a
           href="https://brightdata.com/cp/setting/users"
           target="_blank"
@@ -166,8 +169,9 @@ function ConnectBrightData() {
           className="text-[var(--focus)] hover:underline"
         >
           brightdata.com/cp/setting/users
-        </a>
-        , then paste it here — we check it before using it.
+        </a>{' '}
+        — only admins can generate keys there — then paste it below; we
+        check it live before using it.
       </p>
       <div className="mt-2 flex gap-2">
         <input
