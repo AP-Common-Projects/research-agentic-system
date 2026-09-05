@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, type DepthTier } from '../lib/api';
 import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
+import { duration } from '../lib/format';
 
 // The preview is a taste of the model's read on a topic, not its scope.
 const PREVIEW_LIMIT = 10;
@@ -38,7 +39,7 @@ function DepthCard({
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-medium text-ink">{tier.label}</span>
         <span className="rounded bg-sunken px-1.5 py-0.5 text-xs tabular-nums text-ink-2">
-          {tier.duration_label}
+          {duration(tier.duration_label, tier.hours)}
         </span>
       </div>
 
@@ -289,7 +290,7 @@ export function NewRunPage() {
             <div className="text-sm">
               <p className="text-ink">
                 <span className="font-medium">{submittedTopic}</span> ·{' '}
-                {chosenTier.label} · {chosenTier.duration_label}
+                {chosenTier.label} · {duration(chosenTier.duration_label, chosenTier.hours)}
               </p>
               <p className="mt-0.5 text-xs text-ink-2">
                 Estimated {usd(chosenTier.est_total_usd)} —{' '}

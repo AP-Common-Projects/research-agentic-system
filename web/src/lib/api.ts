@@ -25,8 +25,8 @@ export interface DepthTier {
   id: string;
   label: string;
   hours: number;
-  /** Server-formatted: "30m", "1h", "72h". */
-  duration_label: string;
+  /** Server-formatted: "30m", "1h", "72h". Absent on older servers. */
+  duration_label?: string;
   tagline: string;
   description: string;
   est_channels: string;

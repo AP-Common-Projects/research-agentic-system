@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type DepthTier, type ProviderBalance } from '../lib/api';
 import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
+import { duration } from '../lib/format';
 
 const PROVIDER_META: Record<string, { label: string; funds: string; topUp: string }> = {
   openrouter: {
@@ -133,7 +134,9 @@ function AffordabilityTable({ tiers }: { tiers: DepthTier[] }) {
             <tr key={tier.id} className="border-b border-line last:border-0">
               <td className="px-4 py-2.5">
                 <span className="text-ink">{tier.label}</span>
-                <span className="ml-2 text-xs text-ink-3">{tier.duration_label}</span>
+                <span className="ml-2 text-xs text-ink-3">
+                  {duration(tier.duration_label, tier.hours)}
+                </span>
               </td>
               <td className="px-4 py-2.5 text-right tabular-nums text-ink-2">
                 {usd(tier.est_brightdata_usd)}

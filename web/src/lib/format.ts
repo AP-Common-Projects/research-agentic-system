@@ -11,6 +11,19 @@ export function decimal(n: number | null | undefined, digits = 2): string {
   return n.toFixed(digits);
 }
 
+/** How long a depth tier runs.
+ *
+ * The server sends a formatted `duration_label`; this is the fallback for
+ * when it does not, which in practice means a server older than the field.
+ * Rendering the raw `hours` there would print "0.5h", and rendering the
+ * missing label printed an empty badge -- both worse than formatting it here.
+ */
+export function duration(label: string | undefined, hours: number): string {
+  if (label) return label;
+  if (!Number.isFinite(hours)) return '—';
+  return hours < 1 ? `${Math.round(hours * 60)}m` : `${+hours.toFixed(2)}h`;
+}
+
 /** Costs are small enough that rounding to cents hides real spend. */
 export function usd(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '—';
