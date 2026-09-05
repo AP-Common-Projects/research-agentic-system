@@ -162,6 +162,78 @@ class TestExportUsesTheActualRunId:
         assert called_run_id == "run-fallback1234"  # run_id truncates hex to [:12]
 
 
+class TestFinishedRunsStopBeingReportedAsRunning:
+    """launch_run starts each run with Popen and discards the handle, so
+    nothing ever wait()s on it. A finished run therefore stays in the process
+    table as a zombie -- and os.kill(pid, 0) SUCCEEDS on a zombie, so the
+    console reported every completed run as "running", permanently.
+
+    Caught live: a run was stopped, `ps` showed it gone, and the Live runs
+    page still showed it running with its pid resolving to a <defunct> entry.
+    """
+
+    def test_a_zombie_is_not_running(self, monkeypatch):
+        from src.api import runs as runs_mod
+
+        monkeypatch.setattr(runs_mod.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(runs_mod, "_is_zombie", lambda pid: True)
+        reaped = []
+        monkeypatch.setattr(
+            runs_mod.os, "waitpid",
+            lambda pid, flags: reaped.append(pid) or (pid, 0),
+        )
+
+        assert runs_mod.is_process_running(4242) is False
+        assert reaped == [4242], "a zombie should also be reaped, not just reported"
+
+    def test_a_live_process_is_still_running(self, monkeypatch):
+        from src.api import runs as runs_mod
+
+        monkeypatch.setattr(runs_mod.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(runs_mod, "_is_zombie", lambda pid: False)
+        assert runs_mod.is_process_running(4242) is True
+
+    def test_a_dead_pid_is_not_running(self, monkeypatch):
+        from src.api import runs as runs_mod
+
+        def _boom(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(runs_mod.os, "kill", _boom)
+        assert runs_mod.is_process_running(4242) is False
+
+    def test_no_pid_is_not_running(self):
+        from src.api import runs as runs_mod
+
+        assert runs_mod.is_process_running(None) is False
+        assert runs_mod.is_process_running(0) is False
+
+    def test_zombie_detection_parses_a_comm_containing_spaces_and_parens(self, tmp_path, monkeypatch):
+        """/proc/<pid>/stat puts the state after `comm`, which is
+        parenthesised and may itself contain ')' -- splitting on whitespace
+        or the FIRST ')' misreads the state for such a process."""
+        from src.api import runs as runs_mod
+
+        class _FakePath:
+            def __init__(self, _p): pass
+            def read_text(self): return "4242 (we (ird) proc) Z 1 4242 0"
+
+        monkeypatch.setattr(runs_mod, "Path", _FakePath)
+        assert runs_mod._is_zombie(4242) is True
+
+    def test_a_missing_proc_entry_is_not_treated_as_a_zombie(self, monkeypatch):
+        """On a non-Linux host there is no /proc; the os.kill result has to
+        stand rather than every run being declared finished."""
+        from src.api import runs as runs_mod
+
+        class _FakePath:
+            def __init__(self, _p): pass
+            def read_text(self): raise FileNotFoundError
+
+        monkeypatch.setattr(runs_mod, "Path", _FakePath)
+        assert runs_mod._is_zombie(4242) is False
+
+
 class TestRunIdOverride:
     """The console's launch/monitor link.
 

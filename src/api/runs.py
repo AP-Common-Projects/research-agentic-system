@@ -72,6 +72,26 @@ def _append_registry(entry: dict[str, Any]) -> None:
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def _is_zombie(pid: int) -> bool:
+    """True if `pid` has exited but has not been reaped.
+
+    launch_run starts each run with Popen and discards the handle, so nothing
+    ever wait()s on it. A finished child therefore stays in the process table
+    as a zombie for as long as the server lives -- and os.kill(pid, 0)
+    SUCCEEDS on a zombie, because the entry still exists. Existence alone is
+    not liveness.
+    """
+    try:
+        # `comm` is parenthesised and may itself contain spaces or ')', so
+        # the state field is the first token after the LAST ')'.
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        return stat[stat.rindex(")") + 1:].split()[0] == "Z"
+    except (OSError, ValueError, IndexError):
+        # Not Linux, or the entry vanished between calls. Either way this is
+        # not evidence of a zombie, and the caller's os.kill result stands.
+        return False
+
+
 def is_process_running(pid: int | None) -> bool:
     if not pid:
         return False
@@ -79,6 +99,18 @@ def is_process_running(pid: int | None) -> bool:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
+
+    if _is_zombie(pid):
+        # Reap it while we are here, so the entry does not sit in the table
+        # until the server exits. Only works if this process is the parent,
+        # which it is for anything launch_run started; a run inherited from a
+        # previous server is simply reported as finished, which it is.
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+        return False
+
     return True
 
 
