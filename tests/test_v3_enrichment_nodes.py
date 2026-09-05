@@ -459,6 +459,76 @@ class TestUploadCadenceHandlesRealTimestamps:
         assert _compute_upload_stats(videos)["uploads_per_week_avg"] > 0
 
 
+class TestUploadRateCannotOverflowItsColumn:
+    """channels.uploads_per_week_avg is NUMERIC(6,2) -- it stops at 9,999.99.
+
+    A burst upload divided by a near-zero span blew straight past that, and
+    Postgres rejects the value rather than truncating it, so the whole
+    persist_channel_v3 call for that channel aborted: its signal row AND its
+    video signals were lost, and the loop moved on. 13 channels went that way
+    in one run before this was caught, with the only trace an error record on
+    the run itself. `span_days <= 0` only guarded an exactly-simultaneous
+    batch; these spans were small but non-zero.
+    """
+
+    def _burst(self, n: int, seconds_apart: float):
+        from datetime import datetime, timedelta, timezone
+
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        return [
+            {"published_at": start + timedelta(seconds=seconds_apart * i)}
+            for i in range(n)
+        ]
+
+    def test_the_exact_observed_bursts_stay_in_range(self):
+        """All three reproduce channels seen live on 2026-09-05."""
+        from src.nodes.extract_metadata_signals import _compute_upload_stats
+
+        # 10 videos across 35 seconds -> computed 183,272/week
+        # 2 videos across 26 seconds -> computed 40,320/week
+        # 16 videos across ~15 minutes -> computed 10,338/week
+        for n, span_seconds in [(10, 35), (2, 26), (16, 932)]:
+            stats = _compute_upload_stats(
+                self._burst(n, span_seconds / max(1, n - 1))
+            )
+            assert stats["uploads_per_week_avg"] <= 9999.99, (n, span_seconds)
+
+    def test_a_sub_day_burst_reports_no_cadence_rather_than_a_huge_one(self):
+        """A back catalogue published in one sitting says nothing about how
+        often the channel uploads, so it takes the same answer as every other
+        insufficient-data path here rather than a clamped-but-fictional rate."""
+        from src.nodes.extract_metadata_signals import _compute_upload_stats
+
+        stats = _compute_upload_stats(self._burst(20, 1.0))  # 20 videos, 19s
+        assert stats["uploads_per_week_avg"] == 0
+        assert stats["upload_consistency_score"] == 0
+
+    def test_a_real_cadence_is_still_measured_normally(self):
+        """The guard must not swallow ordinary channels -- it is a floor on
+        the sampling window, not on the upload rate."""
+        from datetime import datetime, timedelta, timezone
+        from src.nodes.extract_metadata_signals import _compute_upload_stats
+
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # 3 videos a day for 10 days = 21/week, high but entirely real.
+        videos = [
+            {"published_at": start + timedelta(days=d, hours=8 * v)}
+            for d in range(10) for v in range(3)
+        ]
+        stats = _compute_upload_stats(videos)
+        assert 15 < stats["uploads_per_week_avg"] < 30
+
+    def test_the_clamp_holds_even_if_the_span_guard_is_bypassed(self):
+        """Belt and braces: the column ceiling is enforced independently of
+        the meaning-level guard, so no future arithmetic path can hand
+        Postgres a value it will reject."""
+        from src.nodes import extract_metadata_signals as mod
+
+        # Span passes the day floor, but an absurd count pushes the rate up.
+        stats = mod._compute_upload_stats(self._burst(2_000_000, 0.1))
+        assert stats["uploads_per_week_avg"] == mod._MAX_UPLOADS_PER_WEEK
+
+
 class TestUploadConsistencyDoesNotFloorLowCadenceChannels:
     """Fixed 7-day buckets broke down for any channel averaging under ~1
     upload/week: a Poisson-ish process's own sampling noise gives stdev

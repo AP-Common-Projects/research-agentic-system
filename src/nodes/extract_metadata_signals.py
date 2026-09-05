@@ -112,6 +112,14 @@ def _detect_monetization(title: str, description: str) -> dict:
     }
 
 
+# Shortest sampled window a per-week rate can honestly be derived from.
+_MIN_SPAN_DAYS_FOR_RATE = 1.0
+# channels.uploads_per_week_avg is NUMERIC(6,2): anything >= 10^4 is rejected
+# by Postgres outright, so this is the column's ceiling, not a judgement about
+# what upload rate is plausible.
+_MAX_UPLOADS_PER_WEEK = 9999.99
+
+
 def _compute_upload_stats(videos: list[dict]) -> dict:
     """Upload cadence: average per week and consistency (1 - normalized variance)."""
     from datetime import datetime, timezone
@@ -151,9 +159,24 @@ def _compute_upload_stats(videos: list[dict]) -> dict:
         return {"uploads_per_week_avg": 0, "upload_consistency_score": 0}
     dates.sort()
     span_days = (dates[-1] - dates[0]).total_seconds() / 86400
-    if span_days <= 0:
+    # A weekly cadence cannot be inferred from a window shorter than a day:
+    # dividing by a near-zero span extrapolates a burst into a rate that is
+    # not just wrong but out of the column's range. Observed live on 2026-09-05
+    # -- 10 videos sharing a 35-second span produced 183,272 uploads/week, and
+    # 2 videos 26 seconds apart produced 40,320, against a NUMERIC(6,2) column
+    # that stops at 9,999.99. Each overflow aborted persist_channel_v3 for that
+    # channel, losing its whole signal row AND its video signals, 13 channels
+    # in one run. `span_days <= 0` only caught an exactly-simultaneous batch.
+    #
+    # These are bulk uploads -- a back catalogue published in one sitting --
+    # so the honest answer is that this sample says nothing about cadence,
+    # which is what the other insufficient-data paths above already return.
+    if span_days < _MIN_SPAN_DAYS_FOR_RATE:
         return {"uploads_per_week_avg": 0, "upload_consistency_score": 0}
-    uploads_per_week = round(len(dates) / (span_days / 7.0), 2)
+    # Clamped to the column's own domain as a structural backstop: the guard
+    # above is about meaning, this is about never handing Postgres a value
+    # the column cannot hold, whatever future arithmetic lands here.
+    uploads_per_week = min(round(len(dates) / (span_days / 7.0), 2), _MAX_UPLOADS_PER_WEEK)
 
     # Consistency used to be the coefficient of variation of raw gaps
     # BETWEEN individual uploads. That statistic is dominated by intraday
