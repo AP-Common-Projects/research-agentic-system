@@ -1,62 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import { api, ApiError, type DepthTier, type SubNiche } from '../lib/api';
+import { api, ApiError, type DepthTier } from '../lib/api';
 import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
 
-/** Money, at the precision a person reading a wallet actually wants. */
 function usd(value: number): string {
   return `$${value.toFixed(2)}`;
-}
-
-/**
- * Sub-niche chip. A dataset-backed suggestion carries a real channel count
- * and is styled as evidence; a model-proposed one is visibly lighter, because
- * presenting a guess with the same authority as a measurement is how someone
- * picks a sub-niche that turns out to have four channels in it.
- */
-function SubNicheChip({
-  item,
-  selected,
-  onToggle,
-}: {
-  item: SubNiche;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const measured = item.source === 'dataset';
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-pressed={selected}
-      title={item.rationale}
-      className={`group flex items-center gap-2 rounded-full border px-3 py-1.5 text-left text-sm transition-colors ${
-        selected
-          ? 'border-transparent bg-[var(--focus)] text-white'
-          : 'border-line bg-raised text-ink-2 hover:border-[var(--focus)] hover:text-ink'
-      }`}
-    >
-      <span
-        aria-hidden
-        className={`size-1.5 rounded-full ${
-          selected
-            ? 'bg-white/80'
-            : measured
-              ? 'bg-[var(--track-graph)]'
-              : 'bg-[var(--track-keyword)]'
-        }`}
-      />
-      <span>{item.name}</span>
-      {measured && item.channel_count != null && (
-        <span
-          className={`tabular-nums text-xs ${selected ? 'text-white/75' : 'text-ink-3'}`}
-        >
-          {item.channel_count}
-        </span>
-      )}
-    </button>
-  );
 }
 
 /** One depth option. Locked tiers stay visible and explain themselves. */
@@ -110,8 +58,7 @@ function DepthCard({
 
       {locked && (
         <p className="mt-3 rounded border border-line bg-sunken px-2 py-1.5 text-xs leading-snug text-ink-2">
-          <span className="font-medium text-ink">Locked.</span>{' '}
-          {tier.blockers[0]}
+          <span className="font-medium text-ink">Locked.</span> {tier.blockers[0]}
         </p>
       )}
     </button>
@@ -119,13 +66,12 @@ function DepthCard({
 }
 
 export function NewRunPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [topic, setTopic] = useState('');
   const [submittedTopic, setSubmittedTopic] = useState('');
-  const [selected, setSelected] = useState<string[]>([]);
   const [depth, setDepth] = useState<string | null>(null);
+  const [launched, setLaunched] = useState<string | null>(null);
 
   const topics = useQuery({ queryKey: ['topics'], queryFn: api.topics });
   const depths = useQuery({
@@ -136,7 +82,11 @@ export function NewRunPage() {
     refetchInterval: 60_000,
   });
 
-  const suggestions = useQuery({
+  // Shown, not chosen. Working out which sub-niches are worth covering is the
+  // model's job -- both here as a preview and again inside the run, where the
+  // taxonomy step expands the topic for real. Presenting it as a checklist
+  // made the client responsible for the part they are paying us to do.
+  const preview = useQuery({
     queryKey: ['subniches', submittedTopic],
     queryFn: () => api.suggestSubNiches(submittedTopic),
     enabled: submittedTopic.length >= 2,
@@ -144,10 +94,10 @@ export function NewRunPage() {
   });
 
   const launch = useMutation({
-    mutationFn: () => api.launchRun(selected, depth ?? undefined),
+    mutationFn: () => api.launchRun([submittedTopic], depth ?? undefined),
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ['runs'] });
-      navigate(`/runs/${run.run_id}`);
+      setLaunched(run.run_id);
     },
   });
 
@@ -156,21 +106,15 @@ export function NewRunPage() {
     [depths.data, depth],
   );
 
-  function toggle(name: string) {
-    setSelected((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
-    );
-  }
-
   function submitTopic(value: string) {
     const next = value.trim();
     if (next.length < 2) return;
     setTopic(next);
     setSubmittedTopic(next);
-    setSelected([]);
+    setLaunched(null);
   }
 
-  const canLaunch = selected.length > 0 && depth != null && !launch.isPending;
+  const canLaunch = !!submittedTopic && depth != null && !launch.isPending;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -180,15 +124,16 @@ export function NewRunPage() {
           What should the harness map?
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-2">
-          Pick a topic, choose the sub-niches worth covering, then decide how
-          deep to go. Depth options price themselves against the live wallet
-          and lock when the balance cannot fund them.
+          Choose a topic and how deep to go. Finding the sub-niches worth
+          covering is the model&rsquo;s job, not yours. Depth options price
+          themselves against the live wallet and lock when the balance cannot
+          fund them.
         </p>
       </header>
 
       {/* ---- 1. Topic ---- */}
       <Panel>
-        <PanelHeader title="1 · Topic" hint="Choose a covered topic, or write your own" />
+        <PanelHeader title="1 · Topic" hint="Pick a covered topic, or write your own" />
         <div className="space-y-4 p-4">
           <form
             onSubmit={(e) => {
@@ -209,7 +154,7 @@ export function NewRunPage() {
               disabled={topic.trim().length < 2}
               className="rounded-md bg-[var(--focus)] px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40"
             >
-              Find sub-niches
+              Use this topic
             </button>
           </form>
 
@@ -243,51 +188,58 @@ export function NewRunPage() {
         </div>
       </Panel>
 
-      {/* ---- 2. Sub-niches ---- */}
+      {/* ---- What the model intends to cover (read-only) ---- */}
       {submittedTopic && (
         <Panel>
           <PanelHeader
-            title="2 · Sub-niches"
+            title="What the model will cover"
             hint={
-              suggestions.data?.source === 'dataset'
-                ? 'Measured from the dataset — counts are real'
-                : 'Proposed by the model — unverified until a run confirms them'
+              preview.data?.source === 'dataset'
+                ? 'Areas already in the dataset for this topic'
+                : 'Proposed by the model — the run confirms or replaces them'
             }
           />
           <div className="space-y-3 p-4">
-            {suggestions.isLoading && <Skeleton rows={2} />}
-            {suggestions.isError && (
-              <ErrorState
-                title="Could not suggest sub-niches"
-                detail={(suggestions.error as Error)?.message}
-              />
+            {preview.isLoading && <Skeleton rows={2} />}
+            {preview.isError && (
+              <p className="text-sm text-ink-2">
+                The preview could not be generated, which does not block the
+                run — the harness works the sub-niches out for itself once it
+                starts.
+              </p>
             )}
-            {suggestions.data && (
+            {preview.data && (
               <>
-                {suggestions.data.note && (
-                  <p className="text-xs leading-snug text-ink-3">
-                    {suggestions.data.note}
-                  </p>
-                )}
                 <div className="flex flex-wrap gap-1.5">
-                  {suggestions.data.subniches.map((s) => (
-                    <SubNicheChip
+                  {preview.data.subniches.map((s) => (
+                    <span
                       key={s.slug}
-                      item={s}
-                      selected={selected.includes(s.name)}
-                      onToggle={() => toggle(s.name)}
-                    />
+                      title={s.rationale}
+                      className="flex items-center gap-2 rounded-full border border-line bg-raised px-3 py-1.5 text-sm text-ink-2"
+                    >
+                      <span
+                        aria-hidden
+                        className="size-1.5 rounded-full"
+                        style={{
+                          background:
+                            s.source === 'dataset'
+                              ? 'var(--track-graph)'
+                              : 'var(--track-keyword)',
+                        }}
+                      />
+                      {s.name}
+                      {s.channel_count != null && (
+                        <span className="tabular-nums text-xs text-ink-3">
+                          {s.channel_count}
+                        </span>
+                      )}
+                    </span>
                   ))}
                 </div>
-                {suggestions.data.subniches.length === 0 && (
-                  <p className="text-sm text-ink-2">
-                    Nothing came back for that topic. Try wording it the way a
-                    viewer would describe the channels.
-                  </p>
-                )}
-                <p className="border-t border-line pt-3 text-xs text-ink-3">
-                  {selected.length} selected
-                  {selected.length > 0 && ` — ${selected.join(', ')}`}
+                <p className="border-t border-line pt-3 text-xs leading-snug text-ink-3">
+                  A preview, not a plan you have to approve. The run expands
+                  the topic itself and will follow whatever it finds, including
+                  areas not listed here.
                 </p>
               </>
             )}
@@ -295,13 +247,10 @@ export function NewRunPage() {
         </Panel>
       )}
 
-      {/* ---- 3. Depth ---- */}
-      {selected.length > 0 && (
+      {/* ---- 2. Depth ---- */}
+      {submittedTopic && (
         <Panel>
-          <PanelHeader
-            title="3 · Depth"
-            hint="How far the run goes before it stops"
-          />
+          <PanelHeader title="2 · Depth" hint="How far the run goes before it stops" />
           <div className="p-4">
             {depths.isLoading && <Skeleton rows={3} />}
             {depths.isError && (
@@ -339,9 +288,8 @@ export function NewRunPage() {
           <div className="flex flex-wrap items-center justify-between gap-4 p-4">
             <div className="text-sm">
               <p className="text-ink">
-                <span className="font-medium">{chosenTier.label}</span> ·{' '}
-                {chosenTier.hours}h · {selected.length} sub-niche
-                {selected.length === 1 ? '' : 's'}
+                <span className="font-medium">{submittedTopic}</span> ·{' '}
+                {chosenTier.label} · {chosenTier.hours}h
               </p>
               <p className="mt-0.5 text-xs text-ink-2">
                 Estimated {usd(chosenTier.est_total_usd)} —{' '}
@@ -358,6 +306,20 @@ export function NewRunPage() {
               {launch.isPending ? 'Starting…' : 'Start run'}
             </button>
           </div>
+
+          {launched && (
+            <div className="border-t border-line p-4">
+              <p className="text-sm text-ink">
+                Run started —{' '}
+                <span className="font-mono text-xs text-ink-2">{launched}</span>
+              </p>
+              <p className="mt-1 text-xs text-ink-2">
+                It runs detached, so you can close this page. The workbook
+                appears under Workbooks when it finishes.
+              </p>
+            </div>
+          )}
+
           {launch.isError && (
             <div className="border-t border-line p-4">
               <ErrorState
