@@ -190,3 +190,70 @@ class TestGovernorsReachTheRun:
         assert resolved["max_rounds_per_branch"] == tier.governors["MAX_ROUNDS_PER_BRANCH"]
         assert resolved["max_branches"] == tier.governors["MAX_BRANCHES"]
         assert resolved["brightdata_record_budget"] == tier.governors["BRIGHTDATA_RECORD_BUDGET"]
+
+
+class TestTopicSuggestions:
+    """The launcher's sub-niche preview: what it shows and where it comes from."""
+
+    def test_only_the_delivered_verticals_read_from_the_dataset(self):
+        from src.api import topics as topics_mod
+
+        assert topics_mod.DELIVERED_TOPICS == {"finance", "crime"}
+
+    def test_every_other_catalog_topic_has_a_curated_map(self, monkeypatch):
+        """A catalog topic with no curated map falls through to a live model
+        call, which is a 30-second wait in the launcher."""
+        from src.api import topics as topics_mod
+
+        for topic, items in topics_mod.CURATED_SUBNICHES.items():
+            assert topic not in topics_mod.DELIVERED_TOPICS, topic
+            assert len(items) >= 8, f"{topic}: only {len(items)} sub-niches"
+            for name, why in items:
+                assert name and name[0].isupper(), (topic, name)
+                assert why, (topic, name)
+
+    def test_curated_topics_never_reach_the_model(self, monkeypatch):
+        from src.api import topics as topics_mod
+
+        def _boom(_topic):
+            raise AssertionError("a curated topic must not call the model")
+
+        monkeypatch.setattr(topics_mod, "_proposed_subniches", _boom)
+        out = topics_mod.suggest("Gaming")
+        assert out["source"] == "proposed"
+        assert len(out["subniches"]) >= 8
+        assert all(s["channel_count"] is None for s in out["subniches"])
+
+    def test_curated_lookup_is_insensitive_to_how_the_topic_is_written(self):
+        from src.api import topics as topics_mod
+
+        names = {
+            s["name"]
+            for s in topics_mod.suggest("science explainer")["subniches"]
+        }
+        assert names == {
+            s["name"] for s in topics_mod.suggest("science_explainer")["subniches"]
+        }
+        assert names
+
+    def test_dataset_rows_carry_no_channel_count_rationale(self, monkeypatch):
+        """The rationale was the channel count in prose; the console stopped
+        showing counts, and a tooltip is still showing."""
+        from src.api import topics as topics_mod
+
+        monkeypatch.setattr(
+            topics_mod,
+            "_dataset_subniches",
+            lambda _t: [
+                {
+                    "name": "True Crime Documentary",
+                    "slug": "true_crime_documentary",
+                    "channel_count": 300,
+                    "source": "dataset",
+                    "rationale": "",
+                }
+            ],
+        )
+        out = topics_mod.suggest("crime")
+        assert out["source"] == "dataset"
+        assert all(not s["rationale"] for s in out["subniches"])
