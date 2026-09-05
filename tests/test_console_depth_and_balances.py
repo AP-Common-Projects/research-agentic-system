@@ -208,6 +208,35 @@ class TestBrightDataConnect:
         assert "OTHER=1" in lines
         assert len(lines) == 4, "adds one new line for the billing key, edits nothing else"
 
+    def test_the_accepted_key_reaches_child_processes(self, tmp_path, monkeypatch):
+        """os.environ, not just the config object and .env.
+
+        launch_run() hands each run os.environ.copy(), and load_dotenv() does
+        not override a name already present there -- so updating only the
+        config object and the file leaves every child inheriting whatever
+        this process started with. That is exactly how a stale key survived
+        both a Connect call and a .env rewrite and still reached a live run,
+        which then failed 401 on every single discovery call while the run
+        itself carried on reporting no error.
+        """
+        import os
+
+        from src.api import balances as bal
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("BRIGHTDATA_API_KEY=collector-key\n")
+        monkeypatch.setattr(bal, "ENV_PATH", env_file)
+        monkeypatch.delenv("BRIGHTDATA_BILLING_API_KEY", raising=False)
+        bal._cache.clear()
+
+        with patch.object(
+            bal.httpx, "get",
+            return_value=self._fake_response(200, {"balance": 1.0, "pending_costs": 0.0}),
+        ):
+            bal.connect_brightdata("good-token")
+
+        assert os.environ["BRIGHTDATA_BILLING_API_KEY"] == "good-token"
+
     def test_billing_key_takes_priority_over_the_collector_key_when_reading_balance(self, monkeypatch):
         from src.api import balances as bal
 

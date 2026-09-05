@@ -96,13 +96,12 @@ class BrightDataConfig(BaseSettings):
     api_key: str = ""
     # Separate from api_key on purpose. api_key authenticates
     # datasets/v3/trigger -- the collector calls that do actual discovery --
-    # and Bright Data rejects it outright (401, not 403) against
-    # /customer/balance unless it happens to also carry Admin/Finance scope,
-    # which a collector key normally should not. Conflating the two here
-    # once meant "connecting" a balance-capable key silently became the
-    # collector key too: every discovery call in the run underway at the
-    # time started failing 401, discovering zero channels while still
-    # spending real OpenRouter cost on branches with nothing in them.
+    # and needs a scope that permits collection; customer/balance needs
+    # Admin or Finance. One Admin key can satisfy both (verified
+    # 2026-09-05), but a Finance-scoped key only the second. Keeping them in
+    # one field meant the console's Connect form wrote a balance token into
+    # the field discovery authenticates with, betting the pipeline on the
+    # pasted token's scope.
     billing_api_key: str = ""
     channels_dataset_id: str = "gd_lk538t2k2p1k3oos71"
     videos_dataset_id: str = "gd_lk56epmy2i5g7lzu0k"

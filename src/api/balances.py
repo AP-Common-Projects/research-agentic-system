@@ -8,20 +8,16 @@ separately rather than as one number:
 
   Bright Data pays for discovery records. Its balance endpoint needs a
               key scoped Admin or Finance (a Bright Data API key is one of
-              five scopes: Admin, Finance, Ops, Limit, User); the collector
-              key this harness discovers with is deliberately scoped
-              Ops/User and gets a 403. That collector key -- BRIGHTDATA_
-              API_KEY -- is NEVER what gets checked or replaced here: a
-              separate BRIGHTDATA_BILLING_API_KEY slot exists specifically
-              so a billing-capable key can be added without touching the
-              one discovery calls authenticate with. Conflating the two
-              once meant "connecting" a balance key silently became the
-              collector key too, and every discovery call in the run
-              underway at the time started failing 401. When no billing
-              key is set the number is DERIVED -- a configured starting
-              balance minus the record ledger the harness itself keeps --
-              and is labelled as such, so the console never presents an
-              estimate as a live reading.
+              five scopes: Admin, Finance, Ops, Limit, User); a key scoped
+              only for collection gets a 403. BRIGHTDATA_BILLING_API_KEY
+              holds that billing-capable key and is checked first;
+              BRIGHTDATA_API_KEY -- the one discovery authenticates with --
+              is the fallback and is never written by the console, so a
+              billing-only token can never end up authenticating
+              collection. When neither can read the balance the number is
+              DERIVED -- a configured starting balance minus the record
+              ledger the harness itself keeps -- and is labelled as such,
+              so the console never presents an estimate as a live reading.
 
 Every result carries `source` ("live" | "derived" | "unavailable") and the
 UI is expected to show it. A wrong balance silently presented as live is
@@ -30,6 +26,7 @@ how a run gets launched against money that is not there.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -205,22 +202,20 @@ ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 def connect_brightdata(api_key: str) -> dict[str, Any]:
     """Add a DEDICATED Bright Data billing token, without a restart.
 
-    This must never touch cfg.brightdata.api_key. That key authenticates
-    datasets/v3/trigger -- the collector calls every discovery node makes --
-    and Bright Data's Account Management API (a Finance/Admin-scoped key)
-    is a genuinely different credential, not just a different permission on
-    the same one: a request to /datasets/v3/trigger with an Admin/Finance
-    token comes back 401, not 403. This function once wrote the accepted
-    token into api_key, which meant "connecting" a billing-capable key
-    silently became the collector key too -- a run in progress at the time
-    started failing 401 on every discovery call, discovering nothing while
-    still spending real OpenRouter cost on branches that could never fill.
+    This must never touch cfg.brightdata.api_key, which authenticates
+    datasets/v3/trigger -- the collector calls every discovery node makes.
+    An Admin-scoped key happens to satisfy both endpoints (verified
+    2026-09-05: the same key returns 200 from customer/balance and a real
+    snapshot_id from datasets/v3/trigger), but a Finance-scoped one is only
+    guaranteed the billing half. Writing whatever is pasted here into the
+    field discovery depends on stakes the whole pipeline on a guess about
+    the token's scope, so the two live in separate slots and this one only
+    ever writes the billing slot.
 
     Bright Data has no OAuth handshake to "connect" -- the only way this
-    harness learns a token exists is being given it, and the only way that
-    token is USABLE here is a separate config slot. So this validates the
-    token LIVE before accepting it (a typo, or a token still scoped
-    Ops/User, returns 422 and changes nothing) and then persists it to
+    harness learns a token exists is being given it. So this validates the
+    token LIVE before accepting it (a typo, or a token scoped Ops/User,
+    returns 422 and changes nothing) and then persists it to
     billing_api_key / BRIGHTDATA_BILLING_API_KEY -- never api_key.
     """
     key = (api_key or "").strip()
@@ -241,6 +236,13 @@ def connect_brightdata(api_key: str) -> dict[str, Any]:
     pending = float(data.get("pending_costs") or 0.0)
 
     get_config().brightdata.billing_api_key = key
+    # os.environ too, not just the config object and .env. launch_run() hands
+    # os.environ.copy() to each run, and load_dotenv() does NOT override a
+    # name already present there -- so a child would keep inheriting whatever
+    # this process started with, and a corrected .env would never reach it.
+    # That is how a stale key survived a Connect call and a .env rewrite and
+    # still reached a live run, which then failed 401 on every discovery call.
+    os.environ["BRIGHTDATA_BILLING_API_KEY"] = key
     _persist_env_key("BRIGHTDATA_BILLING_API_KEY", key)
     _cache.pop("brightdata", None)
 
