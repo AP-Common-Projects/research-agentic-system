@@ -1,4 +1,5 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type DepthTier, type ProviderBalance } from '../lib/api';
 import {
   Panel,
@@ -47,7 +48,13 @@ function SourceBadge({ source }: { source: ProviderBalance['source'] }) {
   );
 }
 
-function ProviderCard({ balance }: { balance: ProviderBalance }) {
+function ProviderCard({
+  balance,
+  children,
+}: {
+  balance: ProviderBalance;
+  children?: ReactNode;
+}) {
   const meta = PROVIDER_META[balance.provider] ?? {
     label: balance.provider,
     funds: '',
@@ -113,8 +120,85 @@ function ProviderCard({ balance }: { balance: ProviderBalance }) {
             Top up {meta.label} →
           </a>
         )}
+
+        {children}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * The only "connect" Bright Data has: paste a token, validated live on the
+ * spot. Shown only while the reading is not live, so a working connection
+ * never has to look at this again.
+ */
+function ConnectBrightData() {
+  const queryClient = useQueryClient();
+  const [key, setKey] = useState('');
+
+  const connect = useMutation({
+    mutationFn: () => api.connectBrightData(key.trim()),
+    onSuccess: () => {
+      setKey('');
+      queryClient.invalidateQueries({ queryKey: ['balances'] });
+      queryClient.invalidateQueries({ queryKey: ['depths'] });
+    },
+  });
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (key.trim()) connect.mutate();
+      }}
+      className="mt-4 border-t border-line pt-4"
+    >
+      <label htmlFor="bd-token" className="text-xs font-medium text-ink-2">
+        Connect a token with billing permission
+      </label>
+      <p className="mt-1 text-xs leading-snug text-ink-3">
+        The token this harness runs discovery with can&rsquo;t read billing.
+        Generate one that can at{' '}
+        <a
+          href="https://brightdata.com/cp/setting/users"
+          target="_blank"
+          rel="noreferrer"
+          className="text-[var(--focus)] hover:underline"
+        >
+          brightdata.com/cp/setting/users
+        </a>
+        , then paste it here — we check it before using it.
+      </p>
+      <div className="mt-2 flex gap-2">
+        <input
+          id="bd-token"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="Bright Data API token"
+          className="flex-1 rounded-md border border-line bg-raised px-3 py-1.5 text-sm text-ink outline-none placeholder:text-ink-3 focus:border-[var(--focus)]"
+        />
+        <button
+          type="submit"
+          disabled={key.trim().length < 8 || connect.isPending}
+          className="shrink-0 rounded-md bg-[var(--focus)] px-3 py-1.5 text-sm font-medium text-white transition-opacity disabled:opacity-40"
+        >
+          {connect.isPending ? 'Checking…' : 'Connect'}
+        </button>
+      </div>
+      {connect.isError && (
+        <p className="mt-2 text-xs text-[var(--status-critical)]">
+          {(connect.error as Error).message}
+        </p>
+      )}
+      {connect.isSuccess && (
+        <p className="mt-2 text-xs text-[var(--grade-strong)]">
+          Connected — showing the live balance now.
+        </p>
+      )}
+    </form>
   );
 }
 
@@ -218,7 +302,11 @@ export function BalancesPage() {
       {balances.data && (
         <div className="grid gap-4 sm:grid-cols-2">
           {balances.data.providers.map((p) => (
-            <ProviderCard key={p.provider} balance={p} />
+            <ProviderCard key={p.provider} balance={p}>
+              {p.provider === 'brightdata' && p.source !== 'live' ? (
+                <ConnectBrightData />
+              ) : null}
+            </ProviderCard>
           ))}
         </div>
       )}

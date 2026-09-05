@@ -355,6 +355,25 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const parsed = await res.json();
+      if (typeof parsed?.detail === 'string') detail = parsed.detail;
+    } catch {
+      /* non-JSON error body — keep the status message */
+    }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   health: () =>
     get<{ status: string; store_reachable: boolean; store_error: string | null }>('/api/health'),
@@ -386,6 +405,9 @@ export const api = {
 
   balances: (force = false) =>
     get<Balances>(`/api/balances${force ? '?force=true' : ''}`),
+
+  connectBrightData: (apiKey: string) =>
+    post<ProviderBalance>('/api/balances/brightdata/connect', { api_key: apiKey }),
 
   depths: () => get<DepthTier[]>('/api/depths'),
 

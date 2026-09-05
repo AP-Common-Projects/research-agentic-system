@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -174,6 +175,70 @@ def _derived_brightdata(why: str) -> dict[str, Any]:
             "against a known starting figure."
         ),
     ))
+
+
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
+def connect_brightdata(api_key: str) -> dict[str, Any]:
+    """Swap in a Bright Data token with billing permission, without a restart.
+
+    Bright Data has no OAuth handshake to "connect" -- the only way a token
+    gets billing permission is a user toggling it at brightdata.com/cp, and
+    the only way this harness learns of a new token is being given it. So
+    this validates the token LIVE before accepting it: a typo or a token that
+    still lacks the permission returns 422 and changes nothing, rather than
+    persisting a key that will just fail the same way next time.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("API key is empty.")
+
+    resp = httpx.get(
+        "https://api.brightdata.com/customer/balance",
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        detail = resp.text.strip() or f"HTTP {resp.status_code}"
+        raise ValueError(f"Bright Data rejected this token: {detail}")
+
+    data = resp.json() or {}
+    balance = float(data.get("balance") or 0.0)
+    pending = float(data.get("pending_costs") or 0.0)
+
+    get_config().brightdata.api_key = key
+    _persist_env_key("BRIGHTDATA_API_KEY", key)
+    _cache.pop("brightdata", None)
+
+    return _store("brightdata", asdict(Balance(
+        provider="brightdata",
+        available_usd=round(balance - pending, 4),
+        source="live",
+        detail="Bright Data /customer/balance",
+    )))
+
+
+def _persist_env_key(name: str, value: str) -> None:
+    """Rewrite one KEY=value line in .env, in place, touching nothing else.
+
+    Best-effort: a run launched from this key still works even if .env is
+    read-only or missing, since the in-memory config was already updated.
+    """
+    try:
+        if not ENV_PATH.exists():
+            return
+        lines = ENV_PATH.read_text().splitlines(keepends=True)
+        prefix = f"{name}="
+        for i, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[i] = f"{prefix}{value}\n"
+                ENV_PATH.write_text("".join(lines))
+                return
+        with ENV_PATH.open("a") as f:
+            f.write(f"{prefix}{value}\n")
+    except OSError:
+        pass
 
 
 def all_balances(force: bool = False) -> dict[str, Any]:

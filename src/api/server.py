@@ -357,6 +357,21 @@ def api_balances(force: bool = Query(False)) -> dict[str, Any]:
     return all_balances(force=force)
 
 
+class ConnectBrightDataRequest(BaseModel):
+    api_key: str
+
+
+@app.post("/api/balances/brightdata/connect")
+def api_connect_brightdata(body: ConnectBrightDataRequest) -> dict[str, Any]:
+    """Swap in a Bright Data token, live-validated before it is accepted."""
+    from src.api.balances import connect_brightdata
+
+    try:
+        return connect_brightdata(body.api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/depths")
 def api_depths() -> list[dict[str, Any]]:
     """Depth tiers, each annotated with whether the wallet can fund it."""

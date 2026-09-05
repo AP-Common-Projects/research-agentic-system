@@ -138,6 +138,70 @@ class TestBalanceHonesty:
         assert row["source"] == "unavailable"
 
 
+class TestBrightDataConnect:
+    """The Balances page's only path to a live Bright Data reading: paste a
+    token, and it is validated live before it is trusted or persisted."""
+
+    def _fake_response(self, status_code, payload=None, text=""):
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.text = text
+            def json(self):
+                return self._payload
+        return _Resp()
+
+    def test_rejects_a_bad_token_without_touching_config_or_env(self, tmp_path, monkeypatch):
+        from src.api import balances as bal
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("BRIGHTDATA_API_KEY=old-key\n")
+        monkeypatch.setattr(bal, "ENV_PATH", env_file)
+
+        before = bal.get_config().brightdata.api_key
+        with patch.object(
+            bal.httpx, "get",
+            return_value=self._fake_response(403, text="Invalid credentials"),
+        ):
+            with pytest.raises(ValueError, match="rejected"):
+                bal.connect_brightdata("bad-token")
+
+        assert bal.get_config().brightdata.api_key == before
+        assert env_file.read_text() == "BRIGHTDATA_API_KEY=old-key\n"
+
+    def test_accepts_a_good_token_and_persists_it(self, tmp_path, monkeypatch):
+        from src.api import balances as bal
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("BRIGHTDATA_MODE=live\nBRIGHTDATA_API_KEY=old-key\nOTHER=1\n")
+        monkeypatch.setattr(bal, "ENV_PATH", env_file)
+        bal._cache.clear()
+
+        with patch.object(
+            bal.httpx, "get",
+            return_value=self._fake_response(200, {"balance": 100.0, "pending_costs": 12.5}),
+        ):
+            row = bal.connect_brightdata("good-token")
+
+        assert row["source"] == "live"
+        assert row["available_usd"] == 87.5
+        assert bal.get_config().brightdata.api_key == "good-token"
+        lines = env_file.read_text().splitlines()
+        assert "BRIGHTDATA_API_KEY=good-token" in lines
+        assert "BRIGHTDATA_MODE=live" in lines
+        assert "OTHER=1" in lines
+        assert len(lines) == 3, "must edit the one line, not append a duplicate"
+
+    def test_empty_token_is_rejected_before_any_network_call(self):
+        from src.api import balances as bal
+
+        with patch.object(bal.httpx, "get") as mock_get:
+            with pytest.raises(ValueError, match="empty"):
+                bal.connect_brightdata("   ")
+        mock_get.assert_not_called()
+
+
 class TestLaunchGate:
     def test_launch_run_rejects_an_unknown_depth(self):
         from src.api.runs import launch_run
