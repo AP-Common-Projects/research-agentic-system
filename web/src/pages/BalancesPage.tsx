@@ -161,7 +161,9 @@ function ConnectBrightData() {
         Limit, User — and only Admin or Finance can read balance. The token
         this harness discovers with is scoped Ops/User on purpose, so it
         will always fail here; that&rsquo;s expected, not an error to fix.
-        An account admin can generate a Finance-scoped key at{' '}
+        This is stored as a separate credential and never touches the one
+        discovery runs with. An account admin can generate a Finance-scoped
+        key at{' '}
         <a
           href="https://brightdata.com/cp/setting/users"
           target="_blank"

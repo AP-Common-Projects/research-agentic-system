@@ -9,11 +9,19 @@ separately rather than as one number:
   Bright Data pays for discovery records. Its balance endpoint needs a
               key scoped Admin or Finance (a Bright Data API key is one of
               five scopes: Admin, Finance, Ops, Limit, User); the collector
-              keys this harness discovers with are deliberately scoped
-              Ops/User and get a 403. When that happens the number is
-              DERIVED -- a configured starting balance minus the record
-              ledger the harness itself keeps -- and is labelled as such, so
-              the console never presents an estimate as a live reading.
+              key this harness discovers with is deliberately scoped
+              Ops/User and gets a 403. That collector key -- BRIGHTDATA_
+              API_KEY -- is NEVER what gets checked or replaced here: a
+              separate BRIGHTDATA_BILLING_API_KEY slot exists specifically
+              so a billing-capable key can be added without touching the
+              one discovery calls authenticate with. Conflating the two
+              once meant "connecting" a balance key silently became the
+              collector key too, and every discovery call in the run
+              underway at the time started failing 401. When no billing
+              key is set the number is DERIVED -- a configured starting
+              balance minus the record ledger the harness itself keeps --
+              and is labelled as such, so the console never presents an
+              estimate as a live reading.
 
 Every result carries `source` ("live" | "derived" | "unavailable") and the
 UI is expected to show it. A wrong balance silently presented as live is
@@ -101,14 +109,20 @@ def openrouter_balance(force: bool = False) -> dict[str, Any]:
 
 
 def brightdata_balance(force: bool = False) -> dict[str, Any]:
-    """Live where the token allows it; otherwise derived from the ledger."""
+    """Live where a token allows it; otherwise derived from the ledger.
+
+    Tries the dedicated billing key first (set via Connect, on the console,
+    or BRIGHTDATA_BILLING_API_KEY in .env), then the collector key in case
+    it happens to also carry Admin/Finance scope. Never the reverse -- the
+    collector key must stay whatever it is regardless of what this returns.
+    """
     if not force:
         hit = _cached("brightdata")
         if hit:
             return hit
 
     cfg = get_config()
-    key = (cfg.brightdata.api_key or "").strip()
+    key = (cfg.brightdata.billing_api_key or cfg.brightdata.api_key or "").strip()
     if not key:
         return _store("brightdata", asdict(Balance(
             provider="brightdata", available_usd=None, source="unavailable",
@@ -178,8 +192,9 @@ def _derived_brightdata(why: str) -> dict[str, Any]:
             "can never do this itself. An account admin can generate a "
             "Finance-scoped key at brightdata.com/cp/setting/users (only "
             "admins can generate keys at all) and paste it into Connect "
-            "below, or set BRIGHTDATA_STARTING_BALANCE_USD in .env to track "
-            "against a known starting figure instead."
+            "below -- it is stored separately and never touches the "
+            "discovery key -- or set BRIGHTDATA_STARTING_BALANCE_USD in "
+            ".env to track against a known starting figure instead."
         ),
     ))
 
@@ -188,16 +203,25 @@ ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
 def connect_brightdata(api_key: str) -> dict[str, Any]:
-    """Swap in a Bright Data token with billing permission, without a restart.
+    """Add a DEDICATED Bright Data billing token, without a restart.
 
-    Bright Data has no OAuth handshake to "connect" -- the only way a token
-    gets billing access is an account admin generating one scoped Admin or
-    Finance (of the five scopes a key can have -- Admin, Finance, Ops, Limit,
-    User -- only those two can read balance), and the only way this harness
-    learns of it is being given it. So this validates the token LIVE before
-    accepting it: a typo, or a token that is still scoped Ops/User, returns
-    422 and changes nothing, rather than persisting a key that will just
-    fail the same way next time.
+    This must never touch cfg.brightdata.api_key. That key authenticates
+    datasets/v3/trigger -- the collector calls every discovery node makes --
+    and Bright Data's Account Management API (a Finance/Admin-scoped key)
+    is a genuinely different credential, not just a different permission on
+    the same one: a request to /datasets/v3/trigger with an Admin/Finance
+    token comes back 401, not 403. This function once wrote the accepted
+    token into api_key, which meant "connecting" a billing-capable key
+    silently became the collector key too -- a run in progress at the time
+    started failing 401 on every discovery call, discovering nothing while
+    still spending real OpenRouter cost on branches that could never fill.
+
+    Bright Data has no OAuth handshake to "connect" -- the only way this
+    harness learns a token exists is being given it, and the only way that
+    token is USABLE here is a separate config slot. So this validates the
+    token LIVE before accepting it (a typo, or a token still scoped
+    Ops/User, returns 422 and changes nothing) and then persists it to
+    billing_api_key / BRIGHTDATA_BILLING_API_KEY -- never api_key.
     """
     key = (api_key or "").strip()
     if not key:
@@ -216,8 +240,8 @@ def connect_brightdata(api_key: str) -> dict[str, Any]:
     balance = float(data.get("balance") or 0.0)
     pending = float(data.get("pending_costs") or 0.0)
 
-    get_config().brightdata.api_key = key
-    _persist_env_key("BRIGHTDATA_API_KEY", key)
+    get_config().brightdata.billing_api_key = key
+    _persist_env_key("BRIGHTDATA_BILLING_API_KEY", key)
     _cache.pop("brightdata", None)
 
     return _store("brightdata", asdict(Balance(

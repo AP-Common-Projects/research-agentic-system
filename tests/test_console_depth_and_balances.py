@@ -156,10 +156,11 @@ class TestBrightDataConnect:
         from src.api import balances as bal
 
         env_file = tmp_path / ".env"
-        env_file.write_text("BRIGHTDATA_API_KEY=old-key\n")
+        env_file.write_text("BRIGHTDATA_API_KEY=collector-key\n")
         monkeypatch.setattr(bal, "ENV_PATH", env_file)
 
-        before = bal.get_config().brightdata.api_key
+        collector_before = bal.get_config().brightdata.api_key
+        billing_before = bal.get_config().brightdata.billing_api_key
         with patch.object(
             bal.httpx, "get",
             return_value=self._fake_response(403, text="Invalid credentials"),
@@ -167,15 +168,25 @@ class TestBrightDataConnect:
             with pytest.raises(ValueError, match="rejected"):
                 bal.connect_brightdata("bad-token")
 
-        assert bal.get_config().brightdata.api_key == before
-        assert env_file.read_text() == "BRIGHTDATA_API_KEY=old-key\n"
+        assert bal.get_config().brightdata.api_key == collector_before
+        assert bal.get_config().brightdata.billing_api_key == billing_before
+        assert env_file.read_text() == "BRIGHTDATA_API_KEY=collector-key\n"
 
-    def test_accepts_a_good_token_and_persists_it(self, tmp_path, monkeypatch):
+    def test_accepts_a_good_token_as_a_separate_billing_key(self, tmp_path, monkeypatch):
+        """The one regression this whole endpoint exists to prevent: a
+        balance-capable token must never become the collector key. It did,
+        once -- a live test run's every discovery call started failing 401
+        the moment a Connect call landed, because both lived in `api_key`."""
         from src.api import balances as bal
 
         env_file = tmp_path / ".env"
-        env_file.write_text("BRIGHTDATA_MODE=live\nBRIGHTDATA_API_KEY=old-key\nOTHER=1\n")
+        env_file.write_text("BRIGHTDATA_MODE=live\nBRIGHTDATA_API_KEY=collector-key\nOTHER=1\n")
         monkeypatch.setattr(bal, "ENV_PATH", env_file)
+        # Pin the in-memory collector key too, so this asserts against a known
+        # baseline rather than whatever the real process environment happens
+        # to hold -- ambient state is exactly what let this regression through
+        # live, undetected, the first time.
+        monkeypatch.setattr(bal.get_config().brightdata, "api_key", "collector-key")
         bal._cache.clear()
 
         with patch.object(
@@ -186,12 +197,35 @@ class TestBrightDataConnect:
 
         assert row["source"] == "live"
         assert row["available_usd"] == 87.5
-        assert bal.get_config().brightdata.api_key == "good-token"
+        assert bal.get_config().brightdata.billing_api_key == "good-token"
+        assert bal.get_config().brightdata.api_key == "collector-key", (
+            "connect_brightdata must never touch the collector key"
+        )
         lines = env_file.read_text().splitlines()
-        assert "BRIGHTDATA_API_KEY=good-token" in lines
+        assert "BRIGHTDATA_API_KEY=collector-key" in lines, "collector key untouched in .env too"
+        assert "BRIGHTDATA_BILLING_API_KEY=good-token" in lines
         assert "BRIGHTDATA_MODE=live" in lines
         assert "OTHER=1" in lines
-        assert len(lines) == 3, "must edit the one line, not append a duplicate"
+        assert len(lines) == 4, "adds one new line for the billing key, edits nothing else"
+
+    def test_billing_key_takes_priority_over_the_collector_key_when_reading_balance(self, monkeypatch):
+        from src.api import balances as bal
+
+        bal._cache.clear()
+        cfg = bal.get_config().brightdata
+        monkeypatch.setattr(cfg, "api_key", "collector-key", raising=False)
+        monkeypatch.setattr(cfg, "billing_api_key", "billing-key", raising=False)
+
+        seen_keys = []
+        def _fake_get(url, headers=None, timeout=None):
+            seen_keys.append(headers["Authorization"])
+            return self._fake_response(200, {"balance": 5.0, "pending_costs": 0.0})
+
+        with patch.object(bal.httpx, "get", side_effect=_fake_get):
+            row = bal.brightdata_balance(force=True)
+
+        assert row["source"] == "live"
+        assert seen_keys == ["Bearer billing-key"]
 
     def test_empty_token_is_rejected_before_any_network_call(self):
         from src.api import balances as bal
