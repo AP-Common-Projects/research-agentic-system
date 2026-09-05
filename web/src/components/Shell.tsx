@@ -154,18 +154,35 @@ export function Shell() {
           collapsed ? 'w-[60px]' : 'w-[212px]'
         }`}
       >
-        <div className={`flex items-center gap-2.5 px-4 py-4 ${collapsed ? 'justify-center px-0' : ''}`}>
-          <Mark />
-          {!collapsed && (
-            <div className="min-w-0 leading-tight">
-              <p className="truncate font-display text-sm font-semibold tracking-tight text-ink">
-                Niche Harness
-              </p>
-              <p className="truncate font-mono text-[10px] tracking-wide text-ink-3">
-                research console
-              </p>
-            </div>
-          )}
+        <div
+          className={`flex items-center gap-2.5 px-4 py-4 ${
+            collapsed ? 'flex-col justify-center gap-2 px-0' : 'justify-between'
+          }`}
+        >
+          <div className={`flex min-w-0 items-center gap-2.5 ${collapsed ? 'justify-center' : ''}`}>
+            <Mark />
+            {!collapsed && (
+              <div className="min-w-0 leading-tight">
+                <p className="truncate font-display text-sm font-semibold tracking-tight text-ink">
+                  Niche Harness
+                </p>
+                <p className="truncate font-mono text-[10px] tracking-wide text-ink-3">
+                  research console
+                </p>
+              </div>
+            )}
+          </div>
+
+          <Tooltip label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} side="right">
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              className="flex shrink-0 items-center justify-center rounded-md border border-line p-1 text-ink-3 transition-colors hover:bg-sunken hover:text-ink"
+            >
+              <CollapseGlyph collapsed={collapsed} className="size-3.5 shrink-0" />
+            </button>
+          </Tooltip>
         </div>
 
         <nav className="flex-1 px-2 py-2" aria-label="Sections">
@@ -179,7 +196,7 @@ export function Shell() {
                       to={item.to}
                       aria-label={collapsed ? item.label : undefined}
                       className={({ isActive }) =>
-                        `flex items-center gap-2.5 rounded-md text-sm transition-colors ${
+                        `flex w-full items-center gap-2.5 rounded-md text-sm transition-colors ${
                           collapsed ? 'justify-center px-0 py-2' : 'px-2.5 py-2'
                         } ${
                           isActive
@@ -228,19 +245,6 @@ export function Shell() {
             </button>
           </Tooltip>
 
-          <Tooltip label={collapsed ? 'Expand sidebar' : undefined} side="right" className="w-full">
-            <button
-              type="button"
-              onClick={toggleCollapsed}
-              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              className={`mt-1.5 w-full rounded-md border border-line text-xs text-ink-2 transition-colors hover:bg-sunken hover:text-ink ${
-                collapsed ? 'flex justify-center px-0 py-1.5' : 'flex items-center gap-1.5 px-2 py-1.5'
-              }`}
-            >
-              <CollapseGlyph collapsed={collapsed} className="size-3.5 shrink-0" />
-              {!collapsed && <span>Collapse sidebar</span>}
-            </button>
-          </Tooltip>
         </div>
       </aside>
 

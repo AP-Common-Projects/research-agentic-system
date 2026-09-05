@@ -74,6 +74,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* A native <button> defaults to `cursor: default` in every browser -- only
+ * an <a href> gets the pointer for free. Every clickable control in this app
+ * (tier cards, tab chips, the connect form, nav rows) is a <button> or a
+ * button-like element, so without this the whole app would read as static
+ * except where the mouse happened to cross real link text. */
+button:not(:disabled):not([aria-disabled='true']),
+[role='button']:not([aria-disabled='true']),
+label[for] {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
