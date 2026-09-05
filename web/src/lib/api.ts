@@ -61,6 +61,20 @@ export interface SubNicheSuggestion {
   subniches: SubNiche[];
 }
 
+export interface TreeNodeData {
+  id: string;
+  name: string;
+  kind: 'root' | 'family' | 'sub_niche' | 'channel';
+  channel_count?: number;
+  subscriber_count?: number;
+  discovery_method?: string;
+  children?: TreeNodeData[];
+}
+
+export interface WorkbookTree extends TreeNodeData {
+  workbook_id: string;
+}
+
 export interface WorkbookSpendRun {
   run_id: string;
   model_usd: number;
@@ -349,6 +363,8 @@ export const api = {
   workbookSpend: (id: string) => get<WorkbookSpend>(`/api/workbooks/${id}/spend`),
 
   workbookGraph: (id: string) => get<WorkbookGraph>(`/api/workbooks/${id}/graph`),
+
+  workbookTree: (id: string) => get<WorkbookTree>(`/api/workbooks/${id}/tree`),
 
   launchRun: async (niches: string[], depth?: string): Promise<Run> => {
     const res = await fetch(`${BASE}/api/runs`, {

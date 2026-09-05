@@ -273,3 +273,97 @@ def workbook_graph(workbook_id: str, limit: int = 600) -> dict[str, Any]:
         "internal_edge_count": sum(1 for e in edges if e["internal"]),
         "by_track": tracks,
     }
+
+
+def workbook_tree(workbook_id: str) -> dict[str, Any]:
+    """The workbook as a hierarchy: vertical -> family -> sub-niche -> channel.
+
+    This is the shape the discovery actually has. A run starts from a
+    vertical, the taxonomy splits it into families (primary_topic), each
+    family holds sub-niches, and channels sit at the leaves. Rendering it as
+    a tree shows how a deliverable is composed in a way a force graph cannot
+    -- 236 of Crime's 240 channels have no edge to another channel in the
+    set, so a link diagram of them is 240 dots.
+
+    Counts are carried on every branch so a collapsed node still says how
+    much is underneath it.
+    """
+    ids = workbook_channel_ids(workbook_id)
+    if not ids:
+        return {"workbook_id": workbook_id, "name": workbook_id, "children": []}
+
+    from src.db.connection import get_connection, put_connection
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT DISTINCT ON (c.channel_id)
+                      c.channel_id,
+                      c.title,
+                      c.subscriber_count,
+                      c.discovery_method,
+                      COALESCE(NULLIF(c.primary_topic, ''), 'Unclassified')
+                          AS family,
+                      COALESCE(NULLIF(nt.niche_name, ''), 'unspecified')
+                          AS sub_niche
+               FROM channels c
+               LEFT JOIN channel_niches cn
+                      ON cn.channel_id = c.channel_id AND cn.is_primary
+               LEFT JOIN niche_taxonomy nt ON nt.niche_id = cn.niche_id
+               WHERE c.channel_id = ANY(%s)
+               ORDER BY c.channel_id""",
+            (ids,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        put_connection(conn)
+
+    # family -> sub_niche -> [channels]
+    tree: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for channel_id, title, subs, method, family, sub_niche in rows:
+        tree.setdefault(family, {}).setdefault(sub_niche, []).append(
+            {
+                "id": channel_id,
+                "name": title or channel_id,
+                "kind": "channel",
+                "subscriber_count": subs or 0,
+                "discovery_method": method or "unattributed",
+            }
+        )
+
+    families = []
+    for family, subs_map in tree.items():
+        sub_nodes = []
+        for sub_niche, channels in subs_map.items():
+            channels.sort(key=lambda c: -(c["subscriber_count"] or 0))
+            sub_nodes.append(
+                {
+                    "id": f"{family}/{sub_niche}",
+                    "name": sub_niche.replace("_", " "),
+                    "kind": "sub_niche",
+                    "channel_count": len(channels),
+                    "children": channels,
+                }
+            )
+        sub_nodes.sort(key=lambda n: -n["channel_count"])
+        families.append(
+            {
+                "id": family,
+                "name": family,
+                "kind": "family",
+                "channel_count": sum(n["channel_count"] for n in sub_nodes),
+                "children": sub_nodes,
+            }
+        )
+    families.sort(key=lambda n: -n["channel_count"])
+
+    return {
+        "workbook_id": workbook_id,
+        "id": workbook_id,
+        "name": workbook_id.title(),
+        "kind": "root",
+        "channel_count": len(rows),
+        "children": families,
+    }

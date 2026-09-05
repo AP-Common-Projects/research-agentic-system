@@ -421,6 +421,16 @@ def api_workbook_graph(
     return deliverables.workbook_graph(workbook_id, limit=limit)
 
 
+@app.get("/api/workbooks/{workbook_id}/tree")
+def api_workbook_tree(workbook_id: str) -> dict[str, Any]:
+    """The workbook as vertical -> family -> sub-niche -> channel."""
+    from src.api import deliverables
+
+    if wb_resolve(workbook_id) is None:
+        raise HTTPException(status_code=404, detail="Workbook not found.")
+    return deliverables.workbook_tree(workbook_id)
+
+
 @app.get("/api/workbooks/{workbook_id}/download")
 def api_workbook_download(workbook_id: str) -> FileResponse:
     from src.api import workbooks as wb_mod
