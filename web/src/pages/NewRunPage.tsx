@@ -181,9 +181,6 @@ export function NewRunPage() {
                     }`}
                   >
                     {t.label}
-                    <span className="ml-1.5 tabular-nums text-xs text-ink-3">
-                      {t.channel_count.toLocaleString()}
-                    </span>
                   </button>
                 ))}
               </div>
@@ -235,11 +232,6 @@ export function NewRunPage() {
                         }}
                       />
                       {s.name}
-                      {s.channel_count != null && (
-                        <span className="tabular-nums text-xs text-ink-3">
-                          {s.channel_count}
-                        </span>
-                      )}
                     </span>
                   ))}
                   <span className="px-1 text-sm text-ink-3">etc…</span>
