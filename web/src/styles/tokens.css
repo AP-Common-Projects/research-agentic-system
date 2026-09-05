@@ -41,6 +41,9 @@
 
   --focus: #0e7490;
   --shadow: 0 1px 2px rgb(12 23 32 / 0.06), 0 8px 24px -12px rgb(12 23 32 / 0.18);
+  /* A tooltip floats above panels that already carry --shadow, so it needs
+   * to read as a further layer up rather than as part of the surface. */
+  --shadow-pop: 0 2px 4px rgb(12 23 32 / 0.08), 0 12px 32px -8px rgb(12 23 32 / 0.28);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -68,6 +71,7 @@
 
     --focus: #4bc5d8;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.7);
+    --shadow-pop: 0 2px 4px rgb(0 0 0 / 0.5), 0 12px 32px -8px rgb(0 0 0 / 0.8);
   }
 }
 
@@ -95,6 +99,7 @@
 
   --focus: #4bc5d8;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.7);
+  --shadow-pop: 0 2px 4px rgb(0 0 0 / 0.5), 0 12px 32px -8px rgb(0 0 0 / 0.8);
 }
 
 /* Status palette — fixed in both modes, never themed, never reused as a

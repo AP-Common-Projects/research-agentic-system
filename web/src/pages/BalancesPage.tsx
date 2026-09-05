@@ -1,6 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type DepthTier, type ProviderBalance } from '../lib/api';
-import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
+import {
+  Panel,
+  PanelHeader,
+  Eyebrow,
+  ErrorState,
+  Skeleton,
+  Tooltip,
+} from '../components/primitives';
 import { duration } from '../lib/format';
 
 const PROVIDER_META: Record<string, { label: string; funds: string; topUp: string }> = {
@@ -149,9 +156,11 @@ function AffordabilityTable({ tiers }: { tiers: DepthTier[] }) {
               </td>
               <td className="px-4 py-2.5">
                 {tier.locked ? (
-                  <span className="text-xs text-ink-3" title={tier.blockers.join(' ')}>
-                    Needs more credit
-                  </span>
+                  <Tooltip label={tier.blockers.join(' ')}>
+                    <span className="text-xs text-ink-3 underline decoration-line decoration-dotted underline-offset-4">
+                      Needs more credit
+                    </span>
+                  </Tooltip>
                 ) : (
                   <span className="text-xs text-[var(--grade-strong)]">Ready to run</span>
                 )}

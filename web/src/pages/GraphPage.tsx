@@ -9,6 +9,7 @@ import {
   Eyebrow,
   ErrorState,
   Skeleton,
+  Tooltip,
   TRACK_META,
 } from '../components/primitives';
 
@@ -196,11 +197,8 @@ export function GraphPage() {
                       TRACK_META[method as DiscoveryMethod] ??
                       TRACK_META.unattributed;
                     return (
-                      <span
-                        key={method}
-                        className="flex items-center gap-1.5 text-xs text-ink-2"
-                        title={meta.note}
-                      >
+                      <Tooltip key={method} label={meta.note} side="bottom">
+                        <span className="flex items-center gap-1.5 text-xs text-ink-2">
                         <span
                           aria-hidden
                           className="size-2 rounded-full"
@@ -208,7 +206,8 @@ export function GraphPage() {
                         />
                         {meta.label}
                         <span className="tabular-nums text-ink-3">{count}</span>
-                      </span>
+                        </span>
+                      </Tooltip>
                     );
                   })}
                 </div>

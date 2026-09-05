@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, type DepthTier } from '../lib/api';
-import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
+import {
+  Panel,
+  PanelHeader,
+  Eyebrow,
+  ErrorState,
+  Skeleton,
+  Tooltip,
+} from '../components/primitives';
 import { duration } from '../lib/format';
 
 // The preview is a taste of the model's read on a topic, not its scope.
@@ -230,14 +237,11 @@ export function NewRunPage() {
                       than this, so the trailing "etc…" is load-bearing: a
                       closed list of ten would read as the whole plan. */}
                   {preview.data.subniches.slice(0, PREVIEW_LIMIT).map((s) => (
-                    <span
-                      key={s.slug}
-                      // Dataset rows carry no rationale -- the only thing
-                      // there was to say was the channel count, which this
-                      // page deliberately does not show.
-                      title={s.rationale || undefined}
-                      className="flex items-center gap-2 rounded-full border border-line bg-raised px-3 py-1.5 text-sm text-ink-2"
-                    >
+                    // Dataset rows carry no rationale -- the only thing there
+                    // was to say was the channel count, which this page
+                    // deliberately does not show, so no tooltip appears.
+                    <Tooltip key={s.slug} label={s.rationale || undefined}>
+                      <span className="flex items-center gap-2 rounded-full border border-line bg-raised px-3 py-1.5 text-sm text-ink-2">
                       <span
                         aria-hidden
                         className="size-1.5 rounded-full"
@@ -249,7 +253,8 @@ export function NewRunPage() {
                         }}
                       />
                       {s.name}
-                    </span>
+                      </span>
+                    </Tooltip>
                   ))}
                   <span className="px-1 text-sm text-ink-3">etc…</span>
                 </div>
