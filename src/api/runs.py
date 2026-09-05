@@ -118,7 +118,18 @@ def launch_run(niches: list[str], depth: str | None = None) -> dict[str, Any]:
 
     with stdout_path.open("w", encoding="utf-8") as stdout_f:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "src.cli", *niches, "--json"],
+            # --run-id/--thread-id pin the child to the ids just minted above,
+            # not ones of its own -- cli.py otherwise mints its own on every
+            # invocation, which left every console-launched run's registry
+            # entry pointing at a run_id and thread_id the child never wrote
+            # a single log line under. The child's own NodeLog, checkpoint
+            # and export all land under these ids as a result; only the
+            # in-process log file naming and the LangGraph thread ever read
+            # them, so this changes nothing for a plain CLI invocation.
+            [
+                sys.executable, "-m", "src.cli", *niches, "--json",
+                "--run-id", run_id, "--thread-id", thread_id,
+            ],
             cwd=str(REPO_ROOT),
             stdout=stdout_f,
             stderr=subprocess.STDOUT,

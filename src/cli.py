@@ -35,9 +35,20 @@ def _preflight_quota_check(config_path: str) -> bool:
     return True
 
 
-async def _run(niches: list[str], resume_thread_id: str | None, run_mode: str = "cold_start") -> dict:
-    run_id = f"run-{uuid.uuid4().hex[:12]}"
-    thread_id = resume_thread_id or f"thread-{uuid.uuid4().hex[:12]}"
+async def _run(
+    niches: list[str],
+    resume_thread_id: str | None,
+    run_mode: str = "cold_start",
+    run_id_override: str | None = None,
+    thread_id_override: str | None = None,
+) -> dict:
+    # A caller that already registered this run under an id of its own (the
+    # console does, before this process even starts) passes it in here so
+    # the id it is tracking is the same one this process logs and exports
+    # under. Left unset, both are minted fresh exactly as before -- the
+    # override exists for callers, not for interactive use.
+    run_id = run_id_override or f"run-{uuid.uuid4().hex[:12]}"
+    thread_id = resume_thread_id or thread_id_override or f"thread-{uuid.uuid4().hex[:12]}"
 
     ensure_schema()
     checkpointer = await get_async_checkpointer()
@@ -160,6 +171,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube niche research harness")
     parser.add_argument("niches", nargs="+", help="Candidate niche topic strings (10-30 recommended)")
     parser.add_argument("--resume", metavar="THREAD_ID", help="Resume a prior run by thread_id")
+    parser.add_argument(
+        "--run-id", metavar="RUN_ID",
+        help="Use this run_id instead of minting one (for a caller that already registered it)",
+    )
+    parser.add_argument(
+        "--thread-id", metavar="THREAD_ID",
+        help="Use this thread_id for a fresh run (ignored with --resume, which supplies its own)",
+    )
     parser.add_argument("--augment", action="store_true", help="Augment existing dataset (frontier pre-hydrated from Postgres)")
     parser.add_argument("--snapshot", action="store_true", help="Snapshot-only run: bulk API refresh, no discovery")
     parser.add_argument("--json", action="store_true", help="Emit final state as JSON")
@@ -188,9 +207,14 @@ def main() -> None:
     if args.snapshot and (args.resume or args.augment):
         print("Error: --snapshot is standalone — it runs bulk refresh only, not alongside --resume or --augment.")
         raise SystemExit(1)
+    if args.thread_id and args.resume:
+        print("Error: --thread-id and --resume are mutually exclusive -- --resume supplies the thread_id being resumed.")
+        raise SystemExit(1)
 
     run_mode = "snapshot_refresh" if args.snapshot else ("augment" if args.augment else "cold_start")
-    final = asyncio.run(_run(args.niches, args.resume, run_mode))
+    final = asyncio.run(
+        _run(args.niches, args.resume, run_mode, args.run_id, args.thread_id)
+    )
 
     if args.json:
         print(json.dumps(final, indent=2, default=str))
