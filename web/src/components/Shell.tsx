@@ -6,12 +6,10 @@ import { api } from '../lib/api';
 const NAV = [
   { to: '/new', label: 'New run', hint: 'Choose a topic and how deep to go' },
   { to: '/workbooks', label: 'Workbooks', hint: 'Finished Excel deliverables' },
+  { to: '/graph', label: 'Discovery graph', hint: 'How a workbook\'s channels were reached' },
+  { to: '/spend', label: 'Spend', hint: 'What a finished workbook cost, per provider' },
   { to: '/balances', label: 'Balances', hint: 'Provider credit and what it can fund' },
-  { to: '/runs', label: 'Runs', hint: 'Follow research runs in progress' },
-  { to: '/reports', label: 'Reports', hint: 'Every finished, evidence-graded report' },
-  { to: '/graph', label: 'Discovery graph', hint: 'Which track reached which channel' },
   { to: '/channels', label: 'Channels', hint: 'Everything in the structured store' },
-  { to: '/spend', label: 'Spend', hint: 'Cost and latency per node' },
 ];
 
 function useTheme() {

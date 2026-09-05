@@ -1,109 +1,152 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import {
-  ErrorState,
-  Eyebrow,
-  Panel,
-  PanelHeader,
-  Skeleton,
-  StatTile,
-} from '../components/primitives';
-import { BarList } from '../components/charts';
-import { ms, usd } from '../lib/format';
+import { WorkbookPicker } from '../components/WorkbookPicker';
+import { Panel, PanelHeader, Eyebrow, ErrorState, Skeleton } from '../components/primitives';
 
-export function SpendPage() {
-  const costs = useQuery({ queryKey: ['costs'], queryFn: api.costs, refetchInterval: 15_000 });
+function usd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
 
-  if (costs.isLoading) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <Skeleton rows={5} />
+/** One provider's contribution to a workbook's cost. */
+function ProviderTotal({
+  label,
+  amount,
+  total,
+  detail,
+  tint,
+}: {
+  label: string;
+  amount: number;
+  total: number;
+  detail: string;
+  tint: string;
+}) {
+  const share = total > 0 ? (amount / total) * 100 : 0;
+  return (
+    <div className="rounded-lg border border-line bg-raised p-4">
+      <div className="flex items-baseline justify-between">
+        <span className="text-sm text-ink-2">{label}</span>
+        <span className="tabular-nums text-xs text-ink-3">{share.toFixed(0)}%</span>
       </div>
-    );
-  }
-
-  if (costs.isError || !costs.data) {
-    return (
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <ErrorState
-          title="Could not load spend"
-          detail={costs.error instanceof Error ? costs.error.message : undefined}
+      <p className="mt-1 text-2xl font-medium tabular-nums text-ink">{usd(amount)}</p>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sunken">
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${share}%`, background: tint }}
         />
       </div>
-    );
-  }
+      <p className="mt-2 text-xs leading-snug text-ink-3">{detail}</p>
+    </div>
+  );
+}
 
-  const { total_usd, by_node, by_run } = costs.data;
-  const paidNodes = by_node.filter((n) => n.cost_usd > 0);
-  const slowest = [...by_node]
-    .filter((n) => n.avg_latency_ms !== null)
-    .sort((a, b) => (b.avg_latency_ms ?? 0) - (a.avg_latency_ms ?? 0))
-    .slice(0, 8);
+export function SpendPage() {
+  const [workbookId, setWorkbookId] = useState<string | null>(null);
+  const workbooks = useQuery({ queryKey: ['workbooks'], queryFn: api.workbooks });
+
+  // Default to the first available workbook so the page is never empty.
+  const active =
+    workbookId ?? workbooks.data?.find((w) => w.available)?.id ?? null;
+
+  const spend = useQuery({
+    queryKey: ['workbook-spend', active],
+    queryFn: () => api.workbookSpend(active as string),
+    enabled: !!active,
+  });
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <header className="mb-6">
-        <Eyebrow>Console</Eyebrow>
-        <h1 className="mt-1 font-display text-2xl font-semibold tracking-tight text-balance text-ink">Spend</h1>
-        <p className="mt-1.5 max-w-2xl text-sm text-ink-2">
-          Model spend recorded per node across every run on this machine. Retry attempts that
-          failed are not counted — only the call that succeeded.
+    <div className="mx-auto max-w-4xl space-y-5 p-6">
+      <header>
+        <Eyebrow>Spend</Eyebrow>
+        <h1 className="mt-1 text-2xl font-medium text-ink">What a workbook cost</h1>
+        <p className="mt-1 max-w-2xl text-sm text-ink-2">
+          Discovery and model spend for one finished deliverable, attributed
+          run by run from the ledgers each run wrote.
         </p>
       </header>
 
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Total spend" value={usd(total_usd)} />
-        <StatTile label="Runs" value={by_run.length} />
-        <StatTile label="Node executions" value={by_node.reduce((sum, n) => sum + n.calls, 0)} />
-        <StatTile label="Paid nodes" value={paidNodes.length} sub="The rest are deterministic" />
-      </div>
+      <WorkbookPicker value={active} onChange={setWorkbookId} />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Panel>
-          <PanelHeader title="Spend by node" hint="Only LLM-touching nodes cost anything." />
-          <BarList
-            rows={paidNodes.map((n) => ({
-              key: n.node_name,
-              label: n.node_name,
-              value: n.cost_usd,
-              display: usd(n.cost_usd),
-              note: `${n.calls} call${n.calls === 1 ? '' : 's'}`,
-            }))}
-            emptyLabel="No model spend recorded yet."
-          />
-        </Panel>
+      {spend.isLoading && <Skeleton rows={4} />}
+      {spend.isError && (
+        <ErrorState
+          title="Could not load spend"
+          detail={(spend.error as Error)?.message}
+        />
+      )}
 
-        <Panel>
-          <PanelHeader title="Slowest nodes" hint="Mean latency per execution." />
-          <BarList
-            rows={slowest.map((n) => ({
-              key: n.node_name,
-              label: n.node_name,
-              value: n.avg_latency_ms ?? 0,
-              display: ms(n.avg_latency_ms),
-              color: 'var(--track-seed)',
-              note: `${n.calls} call${n.calls === 1 ? '' : 's'}`,
-            }))}
-            emptyLabel="No latency recorded yet."
-          />
-        </Panel>
-      </div>
+      {spend.data && (
+        <>
+          <Panel>
+            <div className="p-5">
+              <p className="text-xs text-ink-3">Total attributed</p>
+              <p className="mt-1 text-4xl font-medium tabular-nums text-ink">
+                {usd(spend.data.total_usd)}
+              </p>
+              <p className="mt-1 text-sm text-ink-2">
+                across {spend.data.attributed_run_count} run
+                {spend.data.attributed_run_count === 1 ? '' : 's'}
+                {spend.data.run_count !== spend.data.attributed_run_count &&
+                  ` (${spend.data.run_count} touched this workbook)`}
+              </p>
 
-      <div className="mt-5">
-        <Panel>
-          <PanelHeader title="Spend by run" />
-          <BarList
-            rows={by_run.map((r) => ({
-              key: r.run_id,
-              label: r.niches.length > 0 ? r.niches.join(', ') : r.run_id,
-              value: r.cost_usd,
-              display: usd(r.cost_usd),
-              note: r.run_id,
-            }))}
-            emptyLabel="No runs recorded yet."
-          />
-        </Panel>
-      </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <ProviderTotal
+                  label="Bright Data — discovery"
+                  amount={spend.data.brightdata_usd}
+                  total={spend.data.total_usd}
+                  tint="var(--track-keyword)"
+                  detail={`${spend.data.brightdata_records.toLocaleString()} records billed at $${spend.data.cost_per_record_usd}`}
+                />
+                <ProviderTotal
+                  label="OpenRouter — model"
+                  amount={spend.data.openrouter_usd}
+                  total={spend.data.total_usd}
+                  tint="var(--track-graph)"
+                  detail="Classification, enrichment and case metadata calls"
+                />
+              </div>
+
+              <p className="mt-4 rounded border border-line bg-sunken px-3 py-2 text-xs leading-snug text-ink-2">
+                {spend.data.note}
+              </p>
+            </div>
+          </Panel>
+
+          <Panel>
+            <PanelHeader title="By run" hint="Largest first" />
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-ink-3">
+                  <th className="px-4 py-2 font-normal">Run</th>
+                  <th className="px-4 py-2 text-right font-normal">Records</th>
+                  <th className="px-4 py-2 text-right font-normal">Discovery</th>
+                  <th className="px-4 py-2 text-right font-normal">Model</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spend.data.by_run.map((run) => (
+                  <tr key={run.run_id} className="border-b border-line last:border-0">
+                    <td className="px-4 py-2 font-mono text-xs text-ink-2">
+                      {run.run_id}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-ink-2">
+                      {run.records.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-ink">
+                      {usd(run.discovery_usd)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums text-ink">
+                      {usd(run.model_usd)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        </>
+      )}
     </div>
   );
 }

@@ -61,6 +61,51 @@ export interface SubNicheSuggestion {
   subniches: SubNiche[];
 }
 
+export interface WorkbookSpendRun {
+  run_id: string;
+  model_usd: number;
+  records: number;
+  discovery_usd: number;
+}
+
+export interface WorkbookSpend {
+  workbook_id: string;
+  run_count: number;
+  attributed_run_count: number;
+  openrouter_usd: number;
+  brightdata_usd: number;
+  brightdata_records: number;
+  total_usd: number;
+  cost_per_record_usd: number;
+  by_run: WorkbookSpendRun[];
+  note: string;
+}
+
+export interface WorkbookGraphNode {
+  channel_id: string;
+  title: string | null;
+  subscriber_count: number | null;
+  discovery_method: string | null;
+  sub_niche: string | null;
+}
+
+export interface WorkbookGraphEdge {
+  source: string;
+  target: string;
+  edge_type: string | null;
+  internal: boolean;
+}
+
+export interface WorkbookGraph {
+  workbook_id: string;
+  nodes: WorkbookGraphNode[];
+  edges: WorkbookGraphEdge[];
+  channel_count: number;
+  edge_count: number;
+  internal_edge_count: number;
+  by_track: Record<string, number>;
+}
+
 export interface WorkbookSheet {
   name: string;
   rows: number;
@@ -300,6 +345,10 @@ export const api = {
     get<SubNicheSuggestion>(`/api/topics/suggest?q=${encodeURIComponent(q)}`),
 
   workbooks: () => get<Workbook[]>('/api/workbooks'),
+
+  workbookSpend: (id: string) => get<WorkbookSpend>(`/api/workbooks/${id}/spend`),
+
+  workbookGraph: (id: string) => get<WorkbookGraph>(`/api/workbooks/${id}/graph`),
 
   launchRun: async (niches: string[], depth?: string): Promise<Run> => {
     const res = await fetch(`${BASE}/api/runs`, {

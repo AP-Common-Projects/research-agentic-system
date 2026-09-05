@@ -386,11 +386,39 @@ def api_topic_suggest(q: str = Query(..., min_length=2)) -> dict[str, Any]:
         ) from exc
 
 
+def wb_resolve(workbook_id: str):
+    from src.api import workbooks as wb_mod
+
+    return wb_mod.resolve_path(workbook_id)
+
+
 @app.get("/api/workbooks")
 def api_workbooks() -> list[dict[str, Any]]:
     from src.api import workbooks as wb_mod
 
     return wb_mod.list_workbooks()
+
+
+@app.get("/api/workbooks/{workbook_id}/spend")
+def api_workbook_spend(workbook_id: str) -> dict[str, Any]:
+    """Per-provider spend for one finished workbook."""
+    from src.api import deliverables
+
+    if wb_resolve(workbook_id) is None:
+        raise HTTPException(status_code=404, detail="Workbook not found.")
+    return deliverables.workbook_spend(workbook_id)
+
+
+@app.get("/api/workbooks/{workbook_id}/graph")
+def api_workbook_graph(
+    workbook_id: str, limit: int = Query(600, ge=1, le=3000)
+) -> dict[str, Any]:
+    """Discovery graph for the channels that shipped in one workbook."""
+    from src.api import deliverables
+
+    if wb_resolve(workbook_id) is None:
+        raise HTTPException(status_code=404, detail="Workbook not found.")
+    return deliverables.workbook_graph(workbook_id, limit=limit)
 
 
 @app.get("/api/workbooks/{workbook_id}/download")
