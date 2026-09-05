@@ -380,7 +380,7 @@ class BrightDataClient:
         # Do not commit money to a snapshot the run has no time left to use:
         # the POST below is the moment it starts billing, and a job triggered
         # past the deadline is paid for and then discarded.
-        if run_deadline.passed():
+        if run_deadline.research_passed():
             raise BrightDataError(
                 f"{collector} trigger skipped: the run's "
                 f"{run_deadline.deadline_seconds()}s deadline has passed"
@@ -440,7 +440,7 @@ class BrightDataClient:
                     # the run overshoots its stated duration by however long
                     # the collector happens to take, which is exactly what
                     # made the console's durations unreliable.
-                    if run_deadline.passed():
+                    if run_deadline.research_passed():
                         raise BrightDataError(
                             f"snapshot {snapshot_id} abandoned at the run's "
                             f"{run_deadline.deadline_seconds()}s deadline "

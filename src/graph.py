@@ -91,10 +91,6 @@ def _logged(fn, name: str):
 #: already paid for instead of discarding a partial pass.
 DEADLINE_SKIPPABLE_NODES = frozenset({
     "resolve_first_video_date",
-    "describe_video_titles",
-    "extract_success_failure_factors",
-    "populate_taxonomy_dimensions",
-    "populate_crime_metadata",
 })
 
 
@@ -102,7 +98,10 @@ def _deadline_aware(fn, name: str):
     """Skip `fn` entirely once the run's wall-clock ceiling has passed."""
 
     async def wrapper(state: dict) -> dict:
-        if run_deadline.passed():
+        # research_passed, not passed: this is research-phase work, and it
+        # must yield early enough that the write-up chain still fits inside
+        # the window the tier promised.
+        if run_deadline.research_passed():
             return {
                 "node_logs": [
                     {
@@ -151,7 +150,7 @@ def _guarded(fn, name: str):
         # compact_branch, finalize_dataset -- is deliberately not wrapped
         # here, so a run that stops on its deadline still exports.
         skip_reason = None
-        if run_deadline.passed():
+        if run_deadline.research_passed():
             skip_reason = "run_deadline_seconds"
         else:
             # Enough channels to fill the enrichment the run has time for.
@@ -217,8 +216,9 @@ def route_after_scan(state: dict) -> list[str]:
     return [END]
 
 
-#: Terminal states. Once a run-level ceiling has tripped, the only legal
-#: destination is finalize_dataset — see route_after_select.
+#: Terminal states: no more discovery. They do NOT mean "skip the
+#: deliverable" -- see route_after_select, which sends them through the
+#: write-up chain on the way to finalize_dataset.
 _TERMINAL_ACTIONS = {"all_done", "budget_exhausted"}
 
 
@@ -226,7 +226,11 @@ def route_after_select(state: dict) -> list[str]:
     """Dispatch the discovery fan-out, unless the run is finished or moving
     to the next niche in the cluster queue (v4, plan §7.2)."""
     if state.get("next_action") in _TERMINAL_ACTIONS:
-        return ["finalize_dataset"]
+        # The same reasoning as route_after_compaction: a run that has
+        # stopped discovering still owes a finished workbook, and jumping
+        # straight to finalize left the Niches, Success Factors and Failure
+        # Factors sheets empty.
+        return ["extract_success_failure_factors"]
     if state.get("next_action") == "next_niche":
         return ["build_taxonomy"]
     # v4: primary discovery tracks + bias-fixing supplementary passes
@@ -244,7 +248,21 @@ def route_after_saturation(state: dict) -> list[str]:
 
 def route_after_compaction(state: dict) -> list[str]:
     if state.get("next_action") == "budget_exhausted":
-        return ["finalize_dataset"]
+        # Into the write-up chain, NOT straight to finalize. A governor
+        # means "stop looking for more", not "skip the deliverable": this
+        # branch used to jump extract_success_failure_factors,
+        # describe_video_titles, populate_taxonomy_dimensions,
+        # populate_crime_metadata, populate_shared_fields and
+        # assign_cohorts in one hop. Since governors are the NORMAL way a
+        # tiered run ends, every console run shipped a workbook with the
+        # Niches, Success Factors and Failure Factors sheets empty and the
+        # taxonomy and cohort columns blank -- having already paid for the
+        # discovery that filled the rest of it.
+        #
+        # The write-up is bounded by the data already collected, and the
+        # research phase now stops at RESEARCH_SHARE of the window to
+        # leave room for it, so this costs the run nothing it was promised.
+        return ["extract_success_failure_factors"]
     tree = state.get("tree", {})
     has_pending = any(n.get("status") == "pending" for n in tree.values())
     has_proposed = any(n.get("proposed_new_nodes") for n in tree.values())
@@ -284,11 +302,11 @@ def build_graph() -> StateGraph:
     graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
     graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
-    graph.add_node("extract_success_failure_factors", _logged(_deadline_aware(extract_success_failure_factors, "extract_success_failure_factors"), "extract_success_failure_factors"))
-    graph.add_node("describe_video_titles", _logged(_deadline_aware(describe_video_titles, "describe_video_titles"), "describe_video_titles"))
+    graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
+    graph.add_node("describe_video_titles", _logged(describe_video_titles, "describe_video_titles"))
     graph.add_node("populate_shared_fields", _logged(populate_shared_fields, "populate_shared_fields"))
-    graph.add_node("populate_taxonomy_dimensions", _logged(_deadline_aware(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"), "populate_taxonomy_dimensions"))
-    graph.add_node("populate_crime_metadata", _logged(_deadline_aware(populate_crime_metadata, "populate_crime_metadata"), "populate_crime_metadata"))
+    graph.add_node("populate_taxonomy_dimensions", _logged(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"))
+    graph.add_node("populate_crime_metadata", _logged(populate_crime_metadata, "populate_crime_metadata"))
     graph.add_node("assign_cohorts", _logged(assign_cohorts, "assign_cohorts"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
@@ -302,7 +320,7 @@ def build_graph() -> StateGraph:
         "select_next_node",
         route_after_select,
         ["keyword_search", "graph_walk", "breakout_scanner", "underperformer_discovery",
-         "new_channel_discovery", "build_taxonomy", "finalize_dataset"],
+         "new_channel_discovery", "build_taxonomy", "extract_success_failure_factors"],
     )
     graph.add_edge("keyword_search", "hydrate_metadata")
     graph.add_edge("graph_walk", "hydrate_metadata")

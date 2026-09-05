@@ -269,7 +269,7 @@ def hydrate_metadata(state: dict) -> dict:
         # notices, which is most of a short tier's entire window. Channels
         # left unhydrated are simply not in the export -- partial data the
         # run paid for, rather than an overrun the client did not ask for.
-        if run_deadline.passed():
+        if run_deadline.research_passed():
             stopped_on_deadline = True
             break
         ch["discovery_method"] = _attribute(ch["channel_id"], kw_found, gw_found)

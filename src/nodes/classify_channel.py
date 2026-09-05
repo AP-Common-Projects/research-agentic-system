@@ -218,7 +218,7 @@ def classify_channel(state: dict) -> dict:
         # ~25 seconds of its deadline instead of finishing the whole batch
         # -- the difference between a duration that is stated and one that
         # is merely intended.
-        if run_deadline.passed():
+        if run_deadline.research_passed():
             stopped_on_deadline = True
             break
         try:

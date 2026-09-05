@@ -11,6 +11,8 @@ crash. Follows the same mocking patterns as tests/test_graph.py:
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
 
 import httpx
@@ -148,6 +150,40 @@ def _patch_keyword_success(mock):
     return client
 
 
+#: The write-up chain: extract_success_failure_factors through
+#: assign_cohorts. A governor stop routes THROUGH these now rather than
+#: jumping to finalize_dataset -- skipping them is what left the Niches,
+#: Success Factors and Failure Factors sheets empty -- so any pipeline test
+#: reaches them, and unmocked they make real LLM calls and hang the suite.
+#:
+#: Entered as ONE context manager rather than a dozen `with` entries:
+#: Python allows only 20 statically nested blocks, and these tests were
+#: already close to the limit.
+_WRITEUP_NODES = (
+    "extract_success_failure_factors",
+    "describe_video_titles",
+    "populate_taxonomy_dimensions",
+    "populate_crime_metadata",
+    "populate_shared_fields",
+    "assign_cohorts",
+)
+
+
+@contextlib.contextmanager
+def _writeup_chain_stubbed():
+    with contextlib.ExitStack() as stack:
+        for node in _WRITEUP_NODES:
+            module = importlib.import_module(f"src.nodes.{node}")
+            if hasattr(module, "complete_tier"):
+                stack.enter_context(patch(f"src.nodes.{node}.complete_tier"))
+            if hasattr(module, "get_connection"):
+                stack.enter_context(patch(
+                    f"src.nodes.{node}.get_connection",
+                    side_effect=Exception("test isolation: no real DB"),
+                ))
+        yield
+
+
 def _patch_keyword_fail(mock):
     client = MagicMock()
     client.discover_channels_by_keyword = AsyncMock(
@@ -172,6 +208,7 @@ async def test_keyword_search_branch_fails_graph_walk_succeeds():
         patch("src.nodes.taxonomy.complete_tier") as mock_tax,
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
+        _writeup_chain_stubbed(),
         patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
         patch("src.tools.graph_walk.BrightDataClient") as mock_bd_gw,
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,
@@ -210,6 +247,7 @@ async def test_graph_walk_branch_fails_keyword_succeeds():
         patch("src.nodes.taxonomy.complete_tier") as mock_tax,
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
+        _writeup_chain_stubbed(),
         patch("src.tools.keyword_search.BrightDataClient") as mock_bd_kw,
         patch("src.tools.graph_walk.BrightDataClient") as mock_bd_gw,
         patch("src.tools.hydrate_metadata.YouTubeAPIClient") as mock_yt,

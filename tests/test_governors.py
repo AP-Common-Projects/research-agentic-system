@@ -467,13 +467,31 @@ class TestTaxonomyWidthGovernor:
 # Findings from the six-point architecture review (2026-08-14)
 # ---------------------------------------------------------------------------
 
+#: Anything that spends discovery money. A tripped ceiling must reach none
+#: of these, whatever else it reaches.
+_DISCOVERY_DESTINATIONS = {
+    "select_next_node", "keyword_search", "graph_walk", "breakout_scanner",
+    "underperformer_discovery", "new_channel_discovery", "build_taxonomy",
+}
+
+
 class TestBudgetExhaustedIsTerminal:
     """The circuit breaker fires downstream of the spend, so routing has to
     treat it as terminal — otherwise a tripped ceiling still buys another
-    discovery round via compaction -> proposed node -> select -> fan-out."""
+    discovery round via compaction -> proposed node -> select -> fan-out.
 
-    def test_select_routes_to_synthesis_when_budget_exhausted(self):
-        assert route_after_select({"next_action": "budget_exhausted"}) == ["finalize_dataset"]
+    Terminal means no more DISCOVERY. It does not mean skipping the
+    write-up: both routers used to jump straight to finalize_dataset, and
+    because a governor is the normal way a tiered run ends, that shipped
+    every console workbook with its Niches, Success Factors and Failure
+    Factors sheets empty. These now assert the invariant that matters --
+    no further spending on discovery -- rather than one destination that
+    happened to satisfy it.
+    """
+
+    def test_select_stops_discovery_when_budget_exhausted(self):
+        dest = route_after_select({"next_action": "budget_exhausted"})
+        assert not (set(dest) & _DISCOVERY_DESTINATIONS), dest
 
     def test_select_still_fans_out_normally(self):
         assert set(route_after_select({"next_action": "expand_deeper"})) >= {
@@ -485,7 +503,16 @@ class TestBudgetExhaustedIsTerminal:
             "next_action": "budget_exhausted",
             "tree": {"n": {"status": "pending", "proposed_new_nodes": [{"label": "x"}]}},
         }
-        assert route_after_compaction(state) == ["finalize_dataset"]
+        dest = route_after_compaction(state)
+        assert not (set(dest) & _DISCOVERY_DESTINATIONS), dest
+
+    def test_a_ceiling_still_produces_the_deliverable(self):
+        """The other half: terminal must not mean the workbook is skipped."""
+        for router, state in (
+            (route_after_select, {"next_action": "budget_exhausted"}),
+            (route_after_compaction, {"next_action": "budget_exhausted", "tree": {}}),
+        ):
+            assert router(state) == ["extract_success_failure_factors"]
 
     def test_compaction_still_continues_normally(self):
         state = {

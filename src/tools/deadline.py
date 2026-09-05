@@ -42,6 +42,14 @@ from src.config import get_config
 #: few seconds into the process at most.
 _PROCESS_STARTED_AT = time.monotonic()
 
+#: Share of the window given to research (discovery, hydration,
+#: classification). The remainder is reserved for the write-up chain, which
+#: is bounded by what research collected. Set from the automotive run, where
+#: the write-up would have been a few minutes against a 30-minute window;
+#: a fifth is generous, and being generous here costs channels rather than
+#: correctness.
+RESEARCH_SHARE = 0.8
+
 
 def run_elapsed_seconds() -> float:
     """Wall-clock seconds since this process started."""
@@ -70,6 +78,28 @@ def passed() -> bool:
     """True once the run has spent its allotted wall-clock time."""
     remaining = remaining_seconds()
     return remaining is not None and remaining <= 0
+
+
+def research_passed() -> bool:
+    """True once the RESEARCH half of the window is spent.
+
+    A run has two phases and only one of them is open-ended. Discovery,
+    hydration and classification scale with whatever discovery finds and
+    are what the deadline exists to bound. The write-up that follows --
+    success and failure factors, video descriptions, taxonomy dimensions,
+    cohorts -- is bounded by the data already collected, and skipping it
+    is what produced workbooks with three empty sheets.
+
+    So the research phase stops early enough to leave the write-up room to
+    finish inside the same stated duration, rather than the write-up being
+    dropped to make the duration. A tier that promises 30 minutes still
+    means 30 minutes; it just spends the last part of them finishing the
+    deliverable instead of looking for more channels.
+    """
+    ceiling = deadline_seconds()
+    if ceiling <= 0:
+        return False
+    return run_elapsed_seconds() >= ceiling * RESEARCH_SHARE
 
 
 def would_exceed(expected_seconds: float) -> bool:

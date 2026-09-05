@@ -130,7 +130,7 @@ class TestClassifierYieldsAtTheDeadline:
         loop_start = src.index("for ch_id in eligible:")
         try_start = src.index("try:", loop_start)
         between = src[loop_start:try_start]
-        assert "run_deadline.passed()" in between, (
+        assert "run_deadline.research_passed()" in between, (
             "the deadline check must be inside the per-channel loop"
         )
         assert "stopped_on" in src, "a truncated pass must say why in its log"
@@ -142,7 +142,7 @@ class TestBrightDataAbandonsAtTheDeadline:
 
         src = open(mod.__file__).read()
         loop = src[src.index("while True:"):src.index("rows = await self._fetch")]
-        assert "run_deadline.passed()" in loop, (
+        assert "run_deadline.research_passed()" in loop, (
             "a snapshot can poll for minutes; without this the run overshoots "
             "by however long the collector takes"
         )
@@ -153,7 +153,7 @@ class TestBrightDataAbandonsAtTheDeadline:
 
         src = open(mod.__file__).read()
         head = src[src.index("dataset_id = self._dataset_ids[collector]"):src.index("async with self._semaphore")]
-        assert "run_deadline.passed()" in head
+        assert "run_deadline.research_passed()" in head
 
 
 class TestHydrationYieldsAtTheDeadline:
@@ -172,7 +172,7 @@ class TestHydrationYieldsAtTheDeadline:
         src = open(sys.modules["src.tools.hydrate_metadata"].__file__).read()
         loop_start = src.index("for ch in channels:")
         body = src[loop_start:src.index("ch[\"discovery_method\"] =", loop_start)]
-        assert "run_deadline.passed()" in body, (
+        assert "run_deadline.research_passed()" in body, (
             "the deadline check must be inside the per-channel loop"
         )
         assert '"stopped_on"' in src, "a truncated pass must say why in its log"
@@ -337,6 +337,72 @@ class TestChannelCapMatchesEnrichmentCapacity:
             }))
 
         assert len(calls) == 1
+
+
+class TestAGovernorStopStillProducesAFinishedWorkbook:
+    """A governor means "stop looking", not "skip the deliverable".
+
+    Both routers used to send a terminal action straight to
+    finalize_dataset, jumping extract_success_failure_factors,
+    describe_video_titles, populate_taxonomy_dimensions,
+    populate_crime_metadata, populate_shared_fields and assign_cohorts in
+    one hop. Governors are the NORMAL way a tiered run ends, so every
+    console run shipped a workbook with the Niches, Success Factors and
+    Failure Factors sheets empty and the taxonomy and cohort columns blank
+    -- after paying for the discovery that filled the rest of it.
+    """
+
+    def test_compaction_routes_a_governor_stop_into_the_write_up(self):
+        from src.graph import route_after_compaction
+
+        assert route_after_compaction({"next_action": "budget_exhausted"}) == [
+            "extract_success_failure_factors"
+        ]
+
+    def test_selection_routes_every_terminal_action_into_the_write_up(self):
+        from src.graph import route_after_select, _TERMINAL_ACTIONS
+
+        for action in _TERMINAL_ACTIONS:
+            assert route_after_select({"next_action": action}) == [
+                "extract_success_failure_factors"
+            ], action
+
+    def test_neither_router_can_reach_finalize_directly(self):
+        """finalize_dataset is the END of the write-up chain, never a
+        shortcut around it."""
+        from src.graph import route_after_compaction, route_after_select
+
+        for action in ("budget_exhausted", "all_done"):
+            assert "finalize_dataset" not in route_after_compaction({"next_action": action})
+            assert "finalize_dataset" not in route_after_select({"next_action": action})
+
+    def test_the_write_up_chain_is_never_deadline_skippable(self):
+        """It was, briefly, which would have reintroduced the empty sheets
+        by a different route -- the run reaches the chain and every node in
+        it no-ops."""
+        import src.graph as mod
+
+        for node in (
+            "extract_success_failure_factors", "describe_video_titles",
+            "populate_taxonomy_dimensions", "populate_crime_metadata",
+            "populate_shared_fields", "assign_cohorts",
+        ):
+            assert node not in mod.DEADLINE_SKIPPABLE_NODES, node
+
+    def test_research_stops_early_enough_to_leave_the_write_up_room(self):
+        """The write-up is paid for out of the same window, so research has
+        to yield before the hard ceiling rather than at it."""
+        assert 0 < dl.RESEARCH_SHARE < 1
+
+        with patch.object(dl, "get_config", lambda: _cfg(1000)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 850.0):
+            assert dl.research_passed() is True, "research should have yielded"
+            assert dl.passed() is False, "but the run still has time to finish up"
+
+    def test_research_share_does_not_apply_to_an_uncapped_run(self):
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 10_000_000.0):
+            assert dl.research_passed() is False
 
 
 class TestTerminationStillExports:
