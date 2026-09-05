@@ -14,6 +14,11 @@ const ICONS: Record<string, NavIcon> = {
       <path d="M10 4v12M4 10h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   ),
+  live: ({ className }) => (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden>
+      <path d="M2.5 11.5h3l2-6 3.5 11 2.5-8 1.5 3h2.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
   workbooks: ({ className }) => (
     <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden>
       <rect x="4" y="3" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
@@ -45,6 +50,7 @@ const ICONS: Record<string, NavIcon> = {
 
 const NAV = [
   { to: '/new', icon: 'new', label: 'New run', hint: 'Start a new piece of research' },
+  { to: '/live', icon: 'live', label: 'Live runs', hint: 'Follow a run while it works' },
   { to: '/workbooks', icon: 'workbooks', label: 'Workbooks', hint: 'Your finished Excel reports' },
   { to: '/graph', icon: 'graph', label: 'Discovery graph', hint: 'What a workbook is made up of' },
   { to: '/spend', icon: 'spend', label: 'Spend', hint: 'What each workbook cost to produce' },
