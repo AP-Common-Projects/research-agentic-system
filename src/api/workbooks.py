@@ -102,12 +102,82 @@ def _entry(spec: dict[str, str]) -> dict[str, Any]:
     return row
 
 
+def discovered_specs() -> list[dict[str, str]]:
+    """Workbooks produced by runs, newest first.
+
+    CATALOG holds the two curated deliverables, which live outside the
+    per-run export layout and are pinned by hand. Everything a run exports
+    lands at exports/<run_id>/<run_id>.xlsx, and before this those files
+    existed on disk but could never appear in the console -- a client
+    launched a run, it finished, and the Workbooks page still showed only
+    the two originals.
+    """
+    root = REPO_ROOT / "exports"
+    if not root.is_dir():
+        return []
+
+    pinned = {spec["path"] for spec in CATALOG}
+    # Only runs this console launched. exports/ still holds directories from
+    # CLI-era runs whose history was deliberately cleared from the app, and
+    # listing their workbooks would put back exactly what that removed.
+    try:
+        from src.api.runs import load_registry
+
+        known = {e.get("run_id") for e in load_registry()}
+    except Exception:
+        known = set()
+
+    found: list[tuple[float, dict[str, str]]] = []
+    for xlsx in root.glob("*/*.xlsx"):
+        rel = xlsx.relative_to(REPO_ROOT).as_posix()
+        if rel in pinned:
+            continue
+        run_id = xlsx.parent.name
+        if run_id not in known:
+            continue
+        try:
+            mtime = xlsx.stat().st_mtime
+        except OSError:
+            continue
+        found.append((mtime, {
+            "id": run_id,
+            "title": _title_for_run(run_id),
+            "vertical": "",
+            "path": rel,
+            "description": f"Exported by {run_id}",
+        }))
+
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return [spec for _, spec in found]
+
+
+def _title_for_run(run_id: str) -> str:
+    """The topic the run was asked to research, falling back to its id.
+
+    A page listing "run-c6c45a3e91b2" tells the reader nothing; the seed
+    niche is what they typed to start it.
+    """
+    try:
+        from src.export import run_seed_niches
+
+        seeds = run_seed_niches(run_id)
+    except Exception:
+        seeds = []
+    if not seeds:
+        return run_id
+    return ", ".join(s.replace("_", " ").title() for s in seeds)
+
+
+def _all_specs() -> list[dict[str, str]]:
+    return [*CATALOG, *discovered_specs()]
+
+
 def list_workbooks() -> list[dict[str, Any]]:
-    return [_entry(spec) for spec in CATALOG]
+    return [_entry(spec) for spec in _all_specs()]
 
 
 def resolve_path(workbook_id: str) -> Path | None:
-    for spec in CATALOG:
+    for spec in _all_specs():
         if spec["id"] == workbook_id:
             path = REPO_ROOT / spec["path"]
             return path if path.exists() else None

@@ -178,6 +178,69 @@ class TestHydrationYieldsAtTheDeadline:
         assert '"stopped_on"' in src, "a truncated pass must say why in its log"
 
 
+class TestEveryExpensiveNodeIsGuarded:
+    """The first attempt guarded only the nodes measured slow on ONE run.
+    The next run then spent 26 of its 33 overshoot minutes in two nodes
+    nobody had guarded -- score_thumbnail_signals (22 min, since removed)
+    and resolve_first_video_date (4 min). Guarding by anecdote does not
+    converge; this pins the set.
+    """
+
+    def test_the_declared_skippable_set_is_actually_wired(self):
+        import src.graph as mod
+
+        src = open(mod.__file__).read()
+        for name in mod.DEADLINE_SKIPPABLE_NODES:
+            assert f'_deadline_aware({name}, "{name}")' in src, (
+                f"{name} is declared skippable but not wrapped"
+            )
+
+    def test_the_terminal_path_is_never_skippable(self):
+        """These are how a deadline-stopped run still produces a workbook."""
+        import src.graph as mod
+
+        for name in (
+            "check_saturation", "cluster_branch", "compact_branch",
+            "assign_cohorts", "finalize_dataset", "select_next_node",
+        ):
+            assert name not in mod.DEADLINE_SKIPPABLE_NODES
+
+    def test_nodes_that_yield_internally_are_not_skipped_wholesale(self):
+        """hydrate_metadata and classify_channel check the deadline inside
+        their own loops, keeping the work already paid for. Skipping them
+        outright would throw that away."""
+        import src.graph as mod
+
+        assert "hydrate_metadata" not in mod.DEADLINE_SKIPPABLE_NODES
+        assert "classify_channel" not in mod.DEADLINE_SKIPPABLE_NODES
+
+    def test_a_skippable_node_no_ops_past_the_deadline(self):
+        from src.graph import _deadline_aware
+
+        calls = []
+        node = _deadline_aware(lambda state: calls.append(1) or {"ok": True}, "resolve_first_video_date")
+
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 200.0):
+            out = asyncio.run(node({"thread_id": "t"}))
+
+        assert calls == []
+        assert out["node_logs"][0]["input_summary"]["skipped"] == "run_deadline_seconds"
+
+    def test_a_skippable_node_runs_normally_inside_the_deadline(self):
+        from src.graph import _deadline_aware
+
+        calls = []
+        node = _deadline_aware(lambda state: calls.append(1) or {"ok": True}, "resolve_first_video_date")
+
+        with patch.object(dl, "get_config", lambda: _cfg(100)), \
+             patch.object(dl, "run_elapsed_seconds", lambda: 10.0):
+            out = asyncio.run(node({"thread_id": "t"}))
+
+        assert calls == [1]
+        assert out == {"ok": True}
+
+
 class TestTerminationStillExports:
     def test_the_terminal_path_is_not_subject_to_admission_control(self):
         """check_saturation, compact_branch and finalize_dataset must run

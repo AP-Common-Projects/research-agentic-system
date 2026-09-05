@@ -1,5 +1,5 @@
 """Regression tests for a real bug class found across three v3 nodes:
-classify_channel, score_thumbnail_signals, and extract_success_failure_factors
+classify_channel and extract_success_failure_factors
 all called estimate_cost() (or received cost_usd from complete_tier) and then
 discarded it, returning budget_spent_usd=0.0 or omitting the key entirely.
 check_saturation's budget_limit_usd breaker reads budget_spent_usd — with it
@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.nodes.classify_channel import classify_channel
-from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 from src.nodes.describe_video_titles import describe_video_titles
 from src.nodes.resolve_first_video_date import resolve_first_video_date
@@ -174,27 +173,34 @@ class TestClassifyChannelNicheDiscovery:
         mock_membership.assert_called_once_with(conn, "ch1", 5, is_primary=True, confidence=0.8)
 
 
-class TestScoreThumbnailSignalsBudgetTracking:
-    def test_reports_real_cost_not_zero(self):
-        cursor = MagicMock()
-        cursor.fetchall.side_effect = [
-            [("ch1",)],  # eligible channels
-            [("v1", '{"high": {"url": "http://thumb.jpg"}}')],  # video_rows
-        ]
-        conn = _mock_conn(cursor)
+class TestThumbnailVisionNodeIsGone:
+    """score_thumbnail_signals was removed, not disabled.
 
-        with patch("src.nodes.score_thumbnail_signals.get_connection", return_value=conn), \
-             patch("src.nodes.score_thumbnail_signals.put_connection"), \
-             patch("src.nodes.score_thumbnail_signals.complete_tier") as mock_complete, \
-             patch("src.tools.dedup.persist_video_v3"), \
-             patch("src.tools.dedup.persist_channel_v3"):
-            mock_complete.return_value = _llm_response(
-                '[{"does_face": true, "text_density": "low"}]', cost_usd=0.045,
-            )
-            result = score_thumbnail_signals({"run_id": "run-1", "thread_id": "t-1"})
+    It sent thumbnail URLs to the vision tier as PLAIN TEXT -- the model was
+    asked to judge images it was never given -- so it returned nothing
+    parseable and raised JSONDecodeError per batch. Observed on a live run:
+    50 errors and 22 minutes of billed vision calls, and since it sat
+    between score_signals and classify_channel it burned that time inside
+    every run. Its only outputs were thumbnail_has_face and
+    thumbnail_text_density, both since dropped from the deliverable, and
+    face_status, which classify_channel derives independently from channel
+    text.
+    """
 
-        assert result["budget_spent_usd"] == 0.045
-        assert result["budget_spent_usd"] != 0.0
+    def test_the_node_is_not_importable(self):
+        with pytest.raises(ModuleNotFoundError):
+            __import__("src.nodes.score_thumbnail_signals")
+
+    def test_the_graph_does_not_reference_it(self):
+        import src.graph as graph_mod
+
+        assert "score_thumbnail_signals" not in open(graph_mod.__file__).read()
+
+    def test_the_floor_gate_now_leads_straight_to_classification(self):
+        from src.graph import route_after_floor
+
+        assert route_after_floor({"floor_gate_eligible": True}) == ["classify_channel"]
+        assert route_after_floor({"floor_gate_eligible": False}) == ["check_saturation"]
 
 
 class TestExtractSuccessFailureFactorsBudgetTracking:

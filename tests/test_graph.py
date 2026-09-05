@@ -204,7 +204,7 @@ async def test_end_to_end_run_completes():
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
         # v3 added three more LLM-calling nodes to the graph
-        # (classify_channel, score_thumbnail_signals,
+        # (classify_channel,
         # extract_success_failure_factors) but this file's mocks were never
         # extended to cover them. Harmless against an empty test DB — but
         # their eligibility queries carry no run_id scoping at all, so
@@ -213,7 +213,6 @@ async def test_end_to_end_run_completes():
         # complete_tier here means the test suite silently starts making
         # real, slow LLM calls and can hang for tens of minutes.
         patch("src.nodes.classify_channel.complete_tier") as mock_classify,
-        patch("src.nodes.score_thumbnail_signals.complete_tier") as mock_thumb,
         patch("src.nodes.extract_success_failure_factors.complete_tier") as mock_factors,
         patch("src.nodes.describe_video_titles.complete_tier") as mock_describe,
         # complete_tier being mocked stops the LLM-cost/hang risk, but these
@@ -230,7 +229,6 @@ async def test_end_to_end_run_completes():
         patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
-        patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
@@ -244,7 +242,6 @@ async def test_end_to_end_run_completes():
         _mock_llm_tier(mock_comp)
         _mock_llm_tier(mock_syn)
         _mock_llm_tier(mock_classify)
-        _mock_llm_tier(mock_thumb)
         _mock_llm_tier(mock_factors)
         _mock_llm_tier(mock_describe)
 
@@ -280,7 +277,7 @@ async def test_graph_terminates_with_budget_breaker():
         patch("src.nodes.compact_branch.complete_tier") as mock_comp,
         patch("src.nodes.synthesize.complete_tier") as mock_syn,
         # v3 added three more LLM-calling nodes to the graph
-        # (classify_channel, score_thumbnail_signals,
+        # (classify_channel,
         # extract_success_failure_factors) but this file's mocks were never
         # extended to cover them. Harmless against an empty test DB — but
         # their eligibility queries carry no run_id scoping at all, so
@@ -289,7 +286,6 @@ async def test_graph_terminates_with_budget_breaker():
         # complete_tier here means the test suite silently starts making
         # real, slow LLM calls and can hang for tens of minutes.
         patch("src.nodes.classify_channel.complete_tier") as mock_classify,
-        patch("src.nodes.score_thumbnail_signals.complete_tier") as mock_thumb,
         patch("src.nodes.extract_success_failure_factors.complete_tier") as mock_factors,
         patch("src.nodes.describe_video_titles.complete_tier") as mock_describe,
         # complete_tier being mocked stops the LLM-cost/hang risk, but these
@@ -306,7 +302,6 @@ async def test_graph_terminates_with_budget_breaker():
         patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
-        patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
         patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
@@ -320,7 +315,6 @@ async def test_graph_terminates_with_budget_breaker():
         _mock_llm_tier(mock_comp)
         _mock_llm_tier(mock_syn)
         _mock_llm_tier(mock_classify)
-        _mock_llm_tier(mock_thumb)
         _mock_llm_tier(mock_factors)
         _mock_llm_tier(mock_describe)
 
@@ -380,7 +374,6 @@ def test_graph_compiles_and_has_expected_nodes():
         "resolve_geo_language",
         "extract_metadata_signals",
         "score_signals",
-        "score_thumbnail_signals",
         "classify_channel",
         "check_saturation",
         "cluster_branch",

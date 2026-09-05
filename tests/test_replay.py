@@ -154,7 +154,6 @@ class TestReplayEndToEnd:
             # unmocked complete_tier here means real, slow LLM calls and a
             # multi-minute hang instead of a fast unit test.
             patch("src.nodes.classify_channel.complete_tier") as classify,
-            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
             patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
             patch("src.nodes.describe_video_titles.complete_tier") as describe,
             # These six nodes' own eligibility queries are unscoped SELECTs
@@ -170,7 +169,6 @@ class TestReplayEndToEnd:
             patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
-            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
@@ -185,7 +183,6 @@ class TestReplayEndToEnd:
             _llm(comp)
             _llm(syn)
             _llm(classify)
-            _llm(thumb)
             _llm(factors)
             _llm(describe)
             yt_client = MagicMock()
@@ -231,7 +228,6 @@ class TestReplayEndToEnd:
             # unmocked complete_tier here means real, slow LLM calls and a
             # multi-minute hang instead of a fast unit test.
             patch("src.nodes.classify_channel.complete_tier") as classify,
-            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
             patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
             patch("src.nodes.describe_video_titles.complete_tier") as describe,
             # These six nodes' own eligibility queries are unscoped SELECTs
@@ -247,7 +243,6 @@ class TestReplayEndToEnd:
             patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
-            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
@@ -262,7 +257,6 @@ class TestReplayEndToEnd:
             _llm(comp)
             _llm(syn)
             _llm(classify)
-            _llm(thumb)
             _llm(factors)
             _llm(describe)
             yt_client = MagicMock()
@@ -307,7 +301,6 @@ class TestReplayEndToEnd:
             # unmocked complete_tier here means real, slow LLM calls and a
             # multi-minute hang instead of a fast unit test.
             patch("src.nodes.classify_channel.complete_tier") as classify,
-            patch("src.nodes.score_thumbnail_signals.complete_tier") as thumb,
             patch("src.nodes.extract_success_failure_factors.complete_tier") as factors,
             patch("src.nodes.describe_video_titles.complete_tier") as describe,
             # These six nodes' own eligibility queries are unscoped SELECTs
@@ -323,7 +316,6 @@ class TestReplayEndToEnd:
             patch("src.nodes.resolve_geo_language.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_metadata_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.classify_channel.get_connection", side_effect=Exception("test isolation: no real DB")),
-            patch("src.nodes.score_thumbnail_signals.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.extract_success_failure_factors.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.describe_video_titles.get_connection", side_effect=Exception("test isolation: no real DB")),
             patch("src.nodes.resolve_first_video_date.get_connection", side_effect=Exception("test isolation: no real DB")),
@@ -338,7 +330,6 @@ class TestReplayEndToEnd:
             _llm(comp)
             _llm(syn)
             _llm(classify)
-            _llm(thumb)
             _llm(factors)
             _llm(describe)
             yt_client = MagicMock()

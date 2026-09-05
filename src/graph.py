@@ -33,7 +33,6 @@ from src.nodes.finalize_dataset import finalize_dataset
 from src.nodes.select_next_node import select_next_node
 from src.nodes.resolve_geo_language import resolve_geo_language
 from src.nodes.extract_metadata_signals import extract_metadata_signals
-from src.nodes.score_thumbnail_signals import score_thumbnail_signals
 from src.nodes.classify_channel import classify_channel
 from src.nodes.resolve_first_video_date import resolve_first_video_date
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
@@ -75,6 +74,54 @@ def _logged(fn, name: str):
 
     sync_wrapper.__name__ = name
     return sync_wrapper
+
+
+#: Nodes that may be skipped once the run is out of time. Each does
+#: per-item work whose cost scales with what discovery found, and none is
+#: needed to close the run out.
+#:
+#: Chosen from measured latencies rather than intuition: on the run that
+#: exposed this, resolve_first_video_date alone spent 239s entirely past
+#: the deadline. The terminal path -- check_saturation, cluster_branch,
+#: compact_branch, assign_cohorts, finalize_dataset -- is deliberately
+#: absent, because that is how a deadline-stopped run still exports.
+#:
+#: hydrate_metadata and classify_channel are absent for a different reason:
+#: they check the deadline INSIDE their own loops, so they keep the work
+#: already paid for instead of discarding a partial pass.
+DEADLINE_SKIPPABLE_NODES = frozenset({
+    "resolve_first_video_date",
+    "describe_video_titles",
+    "extract_success_failure_factors",
+    "populate_taxonomy_dimensions",
+    "populate_crime_metadata",
+})
+
+
+def _deadline_aware(fn, name: str):
+    """Skip `fn` entirely once the run's wall-clock ceiling has passed."""
+
+    async def wrapper(state: dict) -> dict:
+        if run_deadline.passed():
+            return {
+                "node_logs": [
+                    {
+                        "node_name": name,
+                        "thread_id": state.get("thread_id", ""),
+                        "input_summary": {
+                            "skipped": "run_deadline_seconds",
+                            "elapsed_s": int(run_deadline.run_elapsed_seconds()),
+                        },
+                    }
+                ],
+            }
+        result = fn(state)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    wrapper.__name__ = name
+    return wrapper
 
 
 def _guarded(fn, name: str):
@@ -184,9 +231,9 @@ def route_after_compaction(state: dict) -> list[str]:
 
 
 def route_after_floor(state: dict) -> list[str]:
-    """v3 floor gate: only qualifying channels get expensive LLM/vision."""
+    """v3 floor gate: only qualifying channels get the expensive LLM pass."""
     if state.get("floor_gate_eligible"):
-        return ["score_thumbnail_signals"]
+        return ["classify_channel"]
     return ["check_saturation"]
 
 
@@ -206,17 +253,16 @@ def build_graph() -> StateGraph:
     graph.add_node("resolve_geo_language", _logged(resolve_geo_language, "resolve_geo_language"))
     graph.add_node("extract_metadata_signals", _logged(extract_metadata_signals, "extract_metadata_signals"))
     graph.add_node("score_signals", _logged(score_signals, "score_signals"))
-    graph.add_node("score_thumbnail_signals", _logged(score_thumbnail_signals, "score_thumbnail_signals"))
     graph.add_node("classify_channel", _logged(classify_channel, "classify_channel"))
-    graph.add_node("resolve_first_video_date", _logged(resolve_first_video_date, "resolve_first_video_date"))
+    graph.add_node("resolve_first_video_date", _logged(_deadline_aware(resolve_first_video_date, "resolve_first_video_date"), "resolve_first_video_date"))
     graph.add_node("check_saturation", _logged(check_saturation, "check_saturation"))
     graph.add_node("cluster_branch", _logged(cluster_branch, "cluster_branch"))
     graph.add_node("compact_branch", _logged(compact_branch, "compact_branch"))
-    graph.add_node("extract_success_failure_factors", _logged(extract_success_failure_factors, "extract_success_failure_factors"))
-    graph.add_node("describe_video_titles", _logged(describe_video_titles, "describe_video_titles"))
+    graph.add_node("extract_success_failure_factors", _logged(_deadline_aware(extract_success_failure_factors, "extract_success_failure_factors"), "extract_success_failure_factors"))
+    graph.add_node("describe_video_titles", _logged(_deadline_aware(describe_video_titles, "describe_video_titles"), "describe_video_titles"))
     graph.add_node("populate_shared_fields", _logged(populate_shared_fields, "populate_shared_fields"))
-    graph.add_node("populate_taxonomy_dimensions", _logged(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"))
-    graph.add_node("populate_crime_metadata", _logged(populate_crime_metadata, "populate_crime_metadata"))
+    graph.add_node("populate_taxonomy_dimensions", _logged(_deadline_aware(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"), "populate_taxonomy_dimensions"))
+    graph.add_node("populate_crime_metadata", _logged(_deadline_aware(populate_crime_metadata, "populate_crime_metadata"), "populate_crime_metadata"))
     graph.add_node("assign_cohorts", _logged(assign_cohorts, "assign_cohorts"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
@@ -243,9 +289,8 @@ def build_graph() -> StateGraph:
     # v3 floor gate: expensive LLM/vision only for qualifying channels
     graph.add_conditional_edges(
         "score_signals", route_after_floor,
-        ["score_thumbnail_signals", "check_saturation"],
+        ["classify_channel", "check_saturation"],
     )
-    graph.add_edge("score_thumbnail_signals", "classify_channel")
     graph.add_edge("classify_channel", "resolve_first_video_date")
     graph.add_edge("resolve_first_video_date", "check_saturation")
     graph.add_conditional_edges(

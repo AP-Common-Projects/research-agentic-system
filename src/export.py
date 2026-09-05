@@ -1751,6 +1751,92 @@ def _format_duration_minutes(seconds: Any) -> Any:
     return f"{hours}h {rem}m"
 
 
+#: Dropped from every deliverable, whatever the category. Each is either
+#: never populated by the pipeline or was produced by a node that did not
+#: work: thumbnail_has_face and thumbnail_text_density came from the vision
+#: pass, which was handed image URLs as plain text and so never saw a
+#: thumbnail at all.
+ALWAYS_DROPPED_COLUMNS = frozenset({
+    "sub_growth_30d",
+    "sub_growth_90d",
+    "views_30d",
+    "views_90d",
+    "has_affiliate_signal",
+    "is_comparison_pool",
+    "thumbnail_has_face",
+    "thumbnail_text_density",
+})
+
+#: Meaningful only for true-crime research, and empty noise on every other
+#: vertical -- an automotive workbook has no use for a victim_type column.
+CRIME_ONLY_COLUMNS = frozenset({
+    "crime_type",
+    "victim_type",
+    "suspect_relationship",
+    "investigation_type",
+    "evidence_type_primary",
+    "case_status",
+    "case_fame_level",
+    "case_country",
+    "case_year",
+    "interrogation_available",
+    "bodycam_available",
+    "cctv_available",
+    "call_911_available",
+    "court_footage_available",
+    "reveal_mechanisms",
+})
+
+
+def _dropped_columns(is_crime: bool) -> frozenset[str]:
+    return ALWAYS_DROPPED_COLUMNS if is_crime else (
+        ALWAYS_DROPPED_COLUMNS | CRIME_ONLY_COLUMNS
+    )
+
+
+def _prune_columns(
+    rows: list[dict[str, Any]], dropped: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Strip unwanted keys before the sheet writer reads its headers.
+
+    Done here rather than in each SELECT because the crime set is
+    conditional on the export's category, and threading that through five
+    query builders would put the same decision in five places.
+    """
+    if not rows:
+        return rows
+    return [{k: v for k, v in row.items() if k not in dropped} for row in rows]
+
+
+def _is_crime_export(manifest: dict[str, Any]) -> bool:
+    """True only when this deliverable is SCOPED to the crime vertical.
+
+    Read from the resolved export category, not from the categories that
+    happen to appear in the data. An automotive run that re-saw one stray
+    true-crime channel has "crime" among its niches, and keying off that
+    put fifteen empty crime columns into an automotive workbook.
+
+    No category (the export was not scoped to one) means not a crime
+    deliverable, so the crime columns stay out.
+    """
+    if "category" in manifest:
+        return str(manifest.get("category") or "").strip().lower() == "crime"
+    # Callers that build a workbook without going through export_excel.
+    raw = str(manifest.get("niche") or "")
+    return "crime" in {part.strip().lower() for part in raw.split(",")}
+
+
+def run_seed_niches(run_id: str) -> list[str]:
+    """What the run was asked to research, as recorded at launch."""
+    try:
+        rows = _fetch("SELECT seed_niches FROM harness_runs WHERE run_id = %s", (run_id,))
+    except Exception:
+        return []
+    if not rows:
+        return []
+    return [str(n) for n in (rows[0].get("seed_niches") or [])]
+
+
 def build_excel_workbook_v3(
     manifest: dict[str, Any],
     channels: list[dict[str, Any]],
@@ -1772,6 +1858,14 @@ def build_excel_workbook_v3(
     from openpyxl.styles import Font
 
     wb = Workbook()
+
+    dropped = _dropped_columns(_is_crime_export(manifest))
+    channels = _prune_columns(channels, dropped)
+    videos = _prune_columns(videos, dropped)
+    niches = _prune_columns(niches, dropped)
+    success_factors = _prune_columns(success_factors, dropped)
+    failure_factors = _prune_columns(failure_factors, dropped)
+
     long_form, shorts = _split_shorts(videos)
 
     ws = wb.active
@@ -1824,29 +1918,71 @@ def build_excel_workbook_v3(
     return wb
 
 
+#: A category has to be earned. Below this many of the run's OWN classified
+#: channels there is no majority to read, only stragglers.
+_MIN_CHANNELS_FOR_CATEGORY = 5
+
+
 def dominant_run_category(run_id: str) -> str | None:
-    """The parent_category most of this run's qualifying channels landed in.
+    """The parent_category most of the channels THIS RUN DISCOVERED landed in.
 
     A run seeded on one topic still discovers off-topic channels, and the
     classifier labels them honestly — so "the category this run is about"
     is a fact about the data, readable directly, rather than something the
     caller has to remember and pass in.
+
+    Two conditions on that reading, both learned the hard way. It counts
+    only channels this run first discovered: a run also re-tags channels
+    found by earlier runs, and those carry the earlier run's labels.
+    And it demands a real signal — enough classified channels to have a
+    majority, and a strict winner.
+
+    Observed 2026-09-05, an automotive run: its deadline stopped
+    classification at 0 of 273 discovered channels, so the only channels
+    with any category were four strangers re-seen from previous runs — one
+    crime, one entertainment, one finance, one politics. ORDER BY n DESC
+    LIMIT 1 broke that four-way tie of ones arbitrarily, export filtered
+    the whole workbook to `crime`, and the client received an automotive
+    deliverable containing a single true-crime channel.
+
+    Returning None is the honest answer when the data cannot say, and the
+    caller treats it as "do not filter by category" — a workbook holding
+    everything the run found beats one confidently labelled wrong.
     """
     rows = _fetch(
         f"""
         SELECT nt.parent_category, COUNT(*) AS n
         FROM channels c
-        JOIN category_tags t
-          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
-        WHERE t.run_id = %s AND c.subscriber_count >= {_floor()}
+        WHERE c.first_discovered_run_id = %s
+          AND c.subscriber_count >= {_floor()}
         GROUP BY nt.parent_category
         ORDER BY n DESC
-        LIMIT 1
         """,
         (run_id,),
     )
-    return rows[0]["parent_category"] if rows else None
+    if not rows:
+        return None
+
+    top = rows[0]
+    if int(top["n"]) < _MIN_CHANNELS_FOR_CATEGORY:
+        logger.warning(
+            "dominant_category_too_thin",
+            run_id=run_id,
+            top_category=top["parent_category"],
+            n=int(top["n"]),
+            minimum=_MIN_CHANNELS_FOR_CATEGORY,
+        )
+        return None
+    if len(rows) > 1 and int(rows[1]["n"]) == int(top["n"]):
+        logger.warning(
+            "dominant_category_tied",
+            run_id=run_id,
+            tied=[r["parent_category"] for r in rows if int(r["n"]) == int(top["n"])],
+            n=int(top["n"]),
+        )
+        return None
+    return top["parent_category"]
 
 
 def export_excel(
@@ -1913,9 +2049,21 @@ def export_excel(
     except Exception as exc:  # pragma: no cover - environment dependent
         logger.warning("export_excel_run_cost_unavailable", run_id=run_id, error=str(exc))
 
+    # The workbook's own title. The run's seed niche is what it was ASKED to
+    # research and is right even when nothing classified; the categories
+    # present in the data are a fallback, and titled an automotive run
+    # "crime, entertainment, finance, politics" off four stray channels.
+    seeds = run_seed_niches(run_id)
+    title = category or ", ".join(seeds) or ", ".join(
+        sorted({n["category"] for n in niches})
+    ) or run_id
+
     manifest = {
         "run_id": run_id,
-        "niche": ", ".join(sorted({n["category"] for n in niches})) or run_id,
+        # Explicit, and deliberately present even when None: it is what
+        # decides whether the crime-only columns belong in this workbook.
+        "category": category,
+        "niche": title,
         "channels": len(channels),
         "videos": len(videos),
         "niches_covered": len(niches),
