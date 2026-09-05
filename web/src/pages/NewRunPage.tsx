@@ -119,6 +119,18 @@ export function NewRunPage() {
     setLaunched(null);
   }
 
+  // Typing and picking from the list both land in `topic`; the button is the
+  // only thing that commits it. Clicking a chip used to commit on its own,
+  // which left the button writing a value it already held -- React drops an
+  // identical state write, so it read as a dead button in that path alone.
+  const isCommitted = topic.trim().length >= 2 && topic.trim() === submittedTopic;
+  const canSubmitTopic = topic.trim().length >= 2 && !isCommitted;
+
+  // The input can be edited past what was committed, so the preview names the
+  // topic it actually describes rather than whatever is currently typed.
+  const committedLabel =
+    topics.data?.find((t) => t.id === submittedTopic)?.label ?? submittedTopic;
+
   const canLaunch = !!submittedTopic && depth != null && !launch.isPending;
 
   return (
@@ -138,7 +150,7 @@ export function NewRunPage() {
 
       {/* ---- 1. Topic ---- */}
       <Panel>
-        <PanelHeader title="1 · Topic" hint="Pick one we already cover, or describe your own" />
+        <PanelHeader title="1 · Topic" hint="Pick one we already cover, or describe your own, then confirm" />
         <div className="space-y-4 p-4">
           <form
             onSubmit={(e) => {
@@ -156,10 +168,10 @@ export function NewRunPage() {
             />
             <button
               type="submit"
-              disabled={topic.trim().length < 2}
+              disabled={!canSubmitTopic}
               className="rounded-md bg-[var(--focus)] px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40"
             >
-              Use this topic
+              {isCommitted ? 'Topic set' : 'Use this topic'}
             </button>
           </form>
 
@@ -174,9 +186,10 @@ export function NewRunPage() {
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => submitTopic(t.id)}
+                    onClick={() => setTopic(t.id)}
+                    aria-pressed={topic.trim() === t.id}
                     className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                      submittedTopic === t.id
+                      topic.trim() === t.id
                         ? 'border-[var(--focus)] bg-raised text-ink'
                         : 'border-line bg-raised text-ink-2 hover:border-[var(--focus)] hover:text-ink'
                     }`}
@@ -194,7 +207,7 @@ export function NewRunPage() {
       {submittedTopic && (
         <Panel>
           <PanelHeader
-            title="What the model will cover"
+            title={`What the model will cover for \u201c${committedLabel}\u201d`}
             hint={
               preview.data?.source === 'dataset'
                 ? 'Areas we already have channels for'
