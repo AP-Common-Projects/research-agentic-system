@@ -31,6 +31,17 @@ from src.state import NodeLog
 from src.tools.budget import lineage_share
 
 
+#: When this process began. The deadline is per-invocation rather than read
+#: from state on purpose: a resumed run should get its own full window, not
+#: inherit an original start that would trip the ceiling immediately.
+_PROCESS_STARTED_AT = time.monotonic()
+
+
+def run_elapsed_seconds() -> float:
+    """Wall-clock seconds since this process started. Seam for tests."""
+    return time.monotonic() - _PROCESS_STARTED_AT
+
+
 def check_saturation(state: dict) -> dict:
     start = time.monotonic()
     cfg = get_config().harness
@@ -38,6 +49,18 @@ def check_saturation(state: dict) -> dict:
     window = cfg.saturation_consecutive_window
 
     # --- run-level circuit breakers ---------------------------------------
+    # Time first: every ceiling below bounds work, and a run can sit well
+    # inside all of them while running for hours. The console names each
+    # depth by duration, so duration has to be a real ceiling and not a
+    # projection -- see run_deadline_seconds in config.py.
+    if cfg.run_deadline_seconds > 0:
+        elapsed = run_elapsed_seconds()
+        if elapsed >= cfg.run_deadline_seconds:
+            return _budget_exhausted(
+                state, start, "run_deadline_seconds",
+                spent=int(elapsed), ceiling=cfg.run_deadline_seconds,
+            )
+
     budget_spent = state.get("budget_spent_usd", 0.0)
     if cfg.budget_limit_usd > 0 and budget_spent >= cfg.budget_limit_usd:
         return _budget_exhausted(

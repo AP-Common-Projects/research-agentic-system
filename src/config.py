@@ -267,6 +267,22 @@ class HarnessConfig(BaseSettings):
     brightdata_record_budget: int = 1500
     youtube_quota_budget_per_run: int = 3000
 
+    # Wall-clock ceiling for one run, 0 == uncapped (the default, and what a
+    # bare CLI invocation gets). Every other governor here bounds WORK, and
+    # none of them bounds time: the console sells depth as a duration ("a
+    # 30-minute run"), and on the first real launch a 30-minute tier was
+    # tracking 3-5 hours. Records bought 285 channels, and classification
+    # alone runs ~21 minutes per 50 channels, so that tier's own record
+    # budget mandated ~2 hours of classification before discovery was even
+    # counted. A duration label is only honest if something enforces it.
+    #
+    # Checked in check_saturation alongside the other run-level ceilings, so
+    # hitting it exits the same way an exhausted budget does -- compact,
+    # finalize, export what the run reached -- rather than aborting. That
+    # also sets the granularity: the deadline is noticed between branch
+    # cycles, not inside a node, so a long node in flight can overshoot it.
+    run_deadline_seconds: int = 0
+
     # $1.50 per 1,000 records, Bright Data pay-as-you-go list rate.
     brightdata_cost_per_record_usd: float = 0.0015
 

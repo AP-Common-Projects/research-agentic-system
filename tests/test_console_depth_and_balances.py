@@ -273,6 +273,91 @@ class TestLaunchGate:
             launch_run(["finance"], depth="not-a-tier")
 
 
+class TestRunDeadline:
+    """The ceiling that makes a tier's name true.
+
+    Every other governor bounds work, and none of them bounds the clock. On
+    the first real console launch a "30m" Glimpse was tracking 3-5 hours:
+    its 600-record budget bought 285 channels, and classification alone runs
+    ~21 minutes per 50 channels, so the tier's own record budget mandated
+    ~2 hours of classification before discovery was counted. The label was a
+    projection of mine, enforced by nothing.
+    """
+
+    def test_every_tier_deadline_matches_its_own_label(self):
+        for tier in depth_mod.TIERS:
+            assert tier.governors["RUN_DEADLINE_SECONDS"] == int(tier.hours * 3600), tier.id
+
+    def test_the_shortest_tier_really_is_half_an_hour(self):
+        assert depth_mod.get_tier("glimpse").governors["RUN_DEADLINE_SECONDS"] == 1800
+
+    def test_deadline_is_derived_not_hand_written(self):
+        """A tier constructed with a contradictory deadline must be corrected
+        rather than trusted -- hand-written values are how a label and its
+        ceiling drift apart."""
+        tier = depth_mod.DepthTier(
+            id="t", label="T", hours=2, tagline="", description="",
+            est_channels="", est_videos="",
+            est_brightdata_usd=0.0, est_openrouter_usd=0.0,
+            governors={"RUN_DEADLINE_SECONDS": 99},
+        )
+        assert tier.governors["RUN_DEADLINE_SECONDS"] == 7200
+
+    def test_saturation_stops_the_run_once_the_deadline_passes(self, monkeypatch):
+        from src.config import HarnessConfig
+        from src.tools import saturation as sat
+
+        monkeypatch.setattr(sat, "run_elapsed_seconds", lambda: 1801.0)
+        monkeypatch.setattr(
+            sat, "get_config",
+            lambda: type("C", (), {"harness": HarnessConfig(run_deadline_seconds=1800)})(),
+        )
+        out = sat.check_saturation({
+            "tree": {"root": {"status": "active"}},
+            "active_node_id": "root",
+            "budget_spent_usd": 0.0,
+        })
+        assert out["next_action"] == "budget_exhausted"
+        assert out["tree"]["root"]["saturation_reason"] == "governor:run_deadline_seconds"
+
+    def test_a_run_inside_its_deadline_is_not_stopped_by_it(self, monkeypatch):
+        """The deadline must not be the reason a run ends early -- every
+        other ceiling still has to be what decides."""
+        from src.config import HarnessConfig
+        from src.tools import saturation as sat
+
+        monkeypatch.setattr(sat, "run_elapsed_seconds", lambda: 60.0)
+        monkeypatch.setattr(
+            sat, "get_config",
+            lambda: type("C", (), {"harness": HarnessConfig(run_deadline_seconds=1800)})(),
+        )
+        out = sat.check_saturation({
+            "tree": {"root": {"status": "active"}},
+            "active_node_id": "root",
+            "budget_spent_usd": 0.0,
+        })
+        reason = (out.get("tree", {}).get("root") or {}).get("saturation_reason", "")
+        assert reason != "governor:run_deadline_seconds"
+
+    def test_zero_means_uncapped_so_a_bare_cli_run_is_unaffected(self, monkeypatch):
+        from src.config import HarnessConfig
+        from src.tools import saturation as sat
+
+        assert HarnessConfig().run_deadline_seconds == 0
+        monkeypatch.setattr(sat, "run_elapsed_seconds", lambda: 10_000_000.0)
+        monkeypatch.setattr(
+            sat, "get_config",
+            lambda: type("C", (), {"harness": HarnessConfig(run_deadline_seconds=0)})(),
+        )
+        out = sat.check_saturation({
+            "tree": {"root": {"status": "active"}},
+            "active_node_id": "root",
+            "budget_spent_usd": 0.0,
+        })
+        reason = (out.get("tree", {}).get("root") or {}).get("saturation_reason", "")
+        assert reason != "governor:run_deadline_seconds"
+
+
 class TestGovernorsReachTheRun:
     def test_a_tier_actually_changes_the_child_process_config(self):
         """The end-to-end link the whole depth feature rests on.
@@ -304,6 +389,7 @@ class TestGovernorsReachTheRun:
             "'budget_limit_usd': h.budget_limit_usd,"
             "'max_rounds_per_branch': h.max_rounds_per_branch,"
             "'max_branches': h.max_branches,"
+            "'run_deadline_seconds': h.run_deadline_seconds,"
             "'brightdata_record_budget': h.brightdata_record_budget}))"
         )
         proc = subprocess.run(
@@ -317,6 +403,11 @@ class TestGovernorsReachTheRun:
         assert resolved["max_rounds_per_branch"] == tier.governors["MAX_ROUNDS_PER_BRANCH"]
         assert resolved["max_branches"] == tier.governors["MAX_BRANCHES"]
         assert resolved["brightdata_record_budget"] == tier.governors["BRIGHTDATA_RECORD_BUDGET"]
+        # The clock ceiling has to survive the env round-trip like the rest:
+        # a tier whose deadline never reached the child would run as long as
+        # its work budget allowed, which is the bug this governor exists for.
+        assert resolved["run_deadline_seconds"] == tier.governors["RUN_DEADLINE_SECONDS"]
+        assert resolved["run_deadline_seconds"] == int(tier.hours * 3600)
 
 
 class TestTopicSuggestions:

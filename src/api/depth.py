@@ -47,6 +47,14 @@ class DepthTier:
     # Governor overrides handed to the run as env, mirroring PROFILES keys.
     governors: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Derived from `hours`, never written by hand: this is the ceiling
+        # that makes the tier's own name true, and a tier whose deadline
+        # disagreed with its label would be exactly the bug this fixes.
+        # Every other governor here bounds work; this one bounds the clock,
+        # and without it "30m" was a projection that ran 3-5 hours.
+        self.governors["RUN_DEADLINE_SECONDS"] = int(self.hours * 3600)
+
     @property
     def est_total_usd(self) -> float:
         return round(self.est_brightdata_usd + self.est_openrouter_usd, 2)
