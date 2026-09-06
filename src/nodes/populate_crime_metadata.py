@@ -16,6 +16,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -134,25 +135,12 @@ def populate_crime_metadata(state: dict) -> dict:
 
     # Find Crime videos from channels meeting the floor, not yet classified
 
-    # Optional restriction to a set of channels, defaulting to the node's
-    # normal global behaviour. Two uses: skip channels the deliverable's
-    # trim will discard anyway, and split the work across parallel workers
-    # on disjoint slices -- the eligibility query is ORDER BY outlier_score
-    # LIMIT 50, so unscoped workers would all fetch the same rows and pay
-    # for the same LLM calls several times over.
-    scope = state.get("scope_channel_ids")
-    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
-    # no channels" and must select nothing. Treating it as falsy silently
-    # widened the query to every channel in the table, so four parallel
-    # workers each re-ran the entire global backlog instead of their own
-    # slice -- four hours of redundant LLM calls that also re-classified
-    # channels deliberately excluded from the run.
-    if scope is not None:
-        scope_sql = "AND v.channel_id = ANY(%s) "
-        scope_params: tuple = (list(scope),)
-    else:
-        scope_sql = ""
-        scope_params = ()
+    # Scoped via src.tools.run_scope, not the ad-hoc scope_channel_ids key
+    # this replaced -- that key is never set by a real graph run, only
+    # discovered_channel_ids is, so a crime run's own videos competed with
+    # every other crime run's leftover backlog for the same ORDER BY
+    # outlier_score LIMIT 50 window, with no guarantee of winning it.
+    scope_sql, scope_params = scope_clause(state, "v.channel_id")
 
     try:
         cur = conn.cursor()

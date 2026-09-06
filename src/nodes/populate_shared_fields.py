@@ -17,6 +17,7 @@ import re
 import time
 from typing import Any
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -57,6 +58,27 @@ Respond with ONLY a JSON object:
   "creator_authority_evidence": "...",
   "search_browse_estimate": "..."
 }"""
+
+
+def _mark_creator_authority_checked(conn, channel_id: str) -> None:
+    """Record that creator_authority was attempted for this channel.
+
+    Set unconditionally on a completed local attempt (the LLM answered,
+    whether or not persisting its answer went smoothly), because
+    'unknown' is simultaneously this column's default, a genuine model
+    answer, and the eligibility sentinel -- so row state alone cannot
+    say whether a channel has ever been looked at.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE channels SET creator_authority_checked_at = NOW() "
+            "WHERE channel_id = %s",
+            (channel_id,),
+        )
+        conn.commit()
+    finally:
+        cur.close()
 
 
 def populate_shared_fields(state: dict) -> dict:
@@ -140,24 +162,25 @@ def populate_shared_fields(state: dict) -> dict:
         conn.rollback()
 
     # -- LLM: creator_authority + search_browse (floor-qualifying only) ---
-    # See populate_taxonomy_dimensions: optional, default-global scoping so a
-    # backfill can skip channels no deliverable contains.
-    scope = state.get("scope_channel_ids")
-    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
-    # no channels" and must select nothing. Treating it as falsy silently
-    # widened the query to every channel in the table, so four parallel
-    # workers each re-ran the entire global backlog instead of their own
-    # slice -- four hours of redundant LLM calls that also re-classified
-    # channels deliberately excluded from the run.
-    scope_sql = "AND channel_id = ANY(%s) " if scope is not None else ""
-    scope_params: tuple = (list(scope),) if scope is not None else ()
+    # Scoped via src.tools.run_scope, not the ad-hoc scope_channel_ids key
+    # this replaced -- that key is never set by a real graph run, only
+    # discovered_channel_ids is, so this node was UNSCOPED in every real
+    # run: it processed the entire database's backlog on a LIMIT 50 with
+    # no ordering favoring the current run, so a new run's own channels
+    # competed with every other run's leftovers for the same fifty slots.
+    scope_sql, scope_params = scope_clause(state)
 
     classified = 0
     try:
         cur = conn.cursor()
         cur.execute(
+            # creator_authority = 'unknown' is BOTH this column's schema
+            # default AND a genuine LLM answer for a channel with too
+            # little information to judge -- so it cannot tell "never
+            # attempted" apart from "attempted, and that was the honest
+            # answer". A dedicated marker can.
             "SELECT channel_id, title, description, subscriber_count, engagement_score, is_likely_news, "
-            "evergreen_score FROM channels WHERE creator_authority = 'unknown' "
+            "evergreen_score FROM channels WHERE creator_authority_checked_at IS NULL "
             "AND (meets_subscriber_floor = TRUE OR subscriber_count >= 10000) "
             + scope_sql + "LIMIT 50",
             scope_params,
@@ -190,13 +213,29 @@ def populate_shared_fields(state: dict) -> dict:
                     "is_likely_news": bool(news),
                 })
 
-                result = complete_tier("mid", prompt, SYSTEM_PROMPT)
-                content = result.get("content", "")
-                cleaned = content.strip()
-                m = re.search(r"\{[\s\S]*\}", cleaned)
-                if m:
-                    parsed = json.loads(m.group(0))
-                else:
+                # A network fault or a malformed response here is
+                # transient -- not a property of the channel -- so it must
+                # NOT mark the channel checked; a later pass should retry.
+                # This is its own try/except, split from the one below, so
+                # a persist failure (which IS a property of the channel's
+                # own data and would fail identically on every retry) can
+                # be marked without also marking a plain network blip.
+                try:
+                    result = complete_tier("mid", prompt, SYSTEM_PROMPT)
+                    content = result.get("content", "")
+                    cleaned = content.strip()
+                    m = re.search(r"\{[\s\S]*\}", cleaned)
+                    if m:
+                        parsed = json.loads(m.group(0))
+                    else:
+                        continue
+                except Exception as exc:
+                    errors.append(ErrorRecord(
+                        node_name="populate_shared_fields",
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        recoverable=True,
+                    ).model_dump())
                     continue
 
                 ch_fields = {
@@ -222,6 +261,7 @@ def populate_shared_fields(state: dict) -> dict:
                     conn.rollback()
 
                 classified += 1
+                _mark_creator_authority_checked(conn, ch_id)
             except Exception as exc:
                 errors.append(ErrorRecord(
                     node_name="populate_shared_fields",
@@ -229,6 +269,15 @@ def populate_shared_fields(state: dict) -> dict:
                     message=str(exc),
                     recoverable=True,
                 ).model_dump())
+                # Marked anyway: everything in this try, from building
+                # ch_fields to persist_channel_v3, depends only on the
+                # channel's own row -- it fails the same way on every
+                # future attempt too, and leaving it unmarked recreates
+                # the loop the marker exists to prevent.
+                try:
+                    _mark_creator_authority_checked(conn, ch_id)
+                except Exception:
+                    pass
     except Exception:
         conn.rollback()
 

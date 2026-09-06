@@ -557,6 +557,16 @@ MIGRATIONS: list[str] = [
     # the explicit "attempted" marker eligibility should have used from
     # the start.
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS success_failure_factors_checked_at TIMESTAMPTZ""",
+    # populate_shared_fields has the same collision in a sharper form:
+    # creator_authority's column DEFAULT is the literal string 'unknown',
+    # eligibility is `creator_authority = 'unknown'`, AND the LLM's schema
+    # allows "unknown" as a genuine answer for a channel with too little
+    # information to judge -- so the untouched default, a real negative
+    # result, and a channel whose persist call silently failed are all the
+    # exact same value. Observed live on the same automotive backfill: a
+    # small, slowly-shrinking set of channels re-classified every pass
+    # because their honest answer kept coming back "unknown".
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS creator_authority_checked_at TIMESTAMPTZ""",
 ]
 
 

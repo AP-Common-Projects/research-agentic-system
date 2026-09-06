@@ -90,6 +90,9 @@ class TestEveryEnrichmentNodeIsScoped:
         ("src.nodes.extract_metadata_signals", "extract_metadata_signals"),
         ("src.nodes.extract_success_failure_factors", "extract_success_failure_factors"),
         ("src.nodes.assign_cohorts", "assign_cohorts"),
+        ("src.nodes.populate_taxonomy_dimensions", "populate_taxonomy_dimensions"),
+        ("src.nodes.populate_shared_fields", "populate_shared_fields"),
+        ("src.nodes.populate_crime_metadata", "populate_crime_metadata"),
     ]
 
     @pytest.mark.parametrize("module_name,func_name", NODES)
@@ -112,6 +115,37 @@ class TestEveryEnrichmentNodeIsScoped:
         module = importlib.import_module(module_name)
         src = inspect.getsource(getattr(module, func_name))
         assert "scope_sql" in src and "scope_params" in src, func_name
+
+    def test_no_node_still_reads_the_dead_scope_channel_ids_key_directly(self):
+        """A real graph run never sets scope_channel_ids -- only
+        discovered_channel_ids. Four nodes had their own ad-hoc
+        `state.get("scope_channel_ids")` handling that predated run_scope.py
+        and was never wired to anything a real run populates, so each one
+        was silently unscoped in every real run regardless of what launched
+        it: populate_taxonomy_dimensions, populate_shared_fields,
+        describe_video_titles, populate_crime_metadata. Asserted against
+        every node file at once so a fifth one written the same way is
+        caught here rather than found live on a future run."""
+        import glob
+
+        offenders = []
+        for path in glob.glob("src/nodes/*.py"):
+            src = open(path).read()
+            if 'state.get("scope_channel_ids")' in src:
+                offenders.append(path)
+        assert offenders == []
+
+    def test_describe_video_titles_and_crime_metadata_are_also_scoped(self):
+        """Not in NODES above because their scope plumbing does not run
+        through scope_clause()'s (sql, params) shape -- describe_video_titles
+        takes a channel_scope() list directly, and populate_crime_metadata
+        uses scope_clause with a joined-table column qualifier."""
+        import inspect as _inspect
+
+        from src.nodes import describe_video_titles, populate_crime_metadata
+
+        assert "channel_scope(state)" in _inspect.getsource(describe_video_titles.describe_video_titles)
+        assert "scope_clause(state" in _inspect.getsource(populate_crime_metadata.populate_crime_metadata)
 
 
 class TestCohortsWorkForEveryCategory:

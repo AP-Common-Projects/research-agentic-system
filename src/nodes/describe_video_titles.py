@@ -20,6 +20,7 @@ import json
 import re
 import time
 
+from src.tools.run_scope import channel_scope
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
@@ -67,7 +68,13 @@ def _fetch_batch(conn, scope: list[str] | None = None) -> list[tuple[str, str]]:
 
 def describe_video_titles(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
-    scope = state.get("scope_channel_ids")
+    # channel_scope(), not the raw scope_channel_ids key: that key is never
+    # set by a real graph run (only discovered_channel_ids is), so this
+    # fell back to "absent -> unscoped" in every real run -- every run
+    # described video titles across the entire database's backlog, not
+    # its own videos, competing with other runs' leftovers for the same
+    # _BATCH_SIZE window.
+    scope = channel_scope(state)
     start = time.monotonic()
     errors: list[dict] = []
 

@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -93,19 +94,15 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
     # pass scope_channel_ids to avoid paying for channels no workbook will
     # ever show. Unscoped, one backfill had 3,415 channels queued at ~2.8/min
     # -- 20 hours and roughly $8 -- to populate ~780 that mattered.
-    scope = state.get("scope_channel_ids")
-    # `is not None`, not truthiness: an EMPTY scope means "this worker owns
-    # no channels" and must select nothing. Treating it as falsy silently
-    # widened the query to every channel in the table, so four parallel
-    # workers each re-ran the entire global backlog instead of their own
-    # slice -- four hours of redundant LLM calls that also re-classified
-    # channels deliberately excluded from the run.
-    if scope is not None:
-        scope_sql = "AND c.channel_id = ANY(%s) "
-        scope_params: tuple = (list(scope),)
-    else:
-        scope_sql = ""
-        scope_params = ()
+    # Scoped to this run's own channels via src.tools.run_scope, not the
+    # ad-hoc scope_channel_ids handling this replaced. That key is never
+    # actually set by a real graph run -- only discovered_channel_ids is --
+    # so this node was UNSCOPED in every real run, always, regardless of
+    # what launched it: it processed the entire database's backlog on a
+    # LIMIT 50 with no ordering favoring the current run, meaning a new
+    # run's own channels competed with every other run's leftover backlog
+    # for the same fifty slots and could lose every time.
+    scope_sql, scope_params = scope_clause(state, "c.channel_id")
 
     # Find floor-qualifying channels without taxonomy dimensions yet
     try:

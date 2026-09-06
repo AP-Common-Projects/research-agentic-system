@@ -497,6 +497,10 @@ class TestV3ColumnAllowlistsCoverWhatCallersWrite:
             # both the success path and an except block, and has to
             # succeed even when the surrounding persist call is what failed.
             "success_failure_factors_checked_at",
+            # _mark_creator_authority_checked in populate_shared_fields.py --
+            # same reasoning: a plain UPDATE that has to succeed even when
+            # the persist call around it is what failed.
+            "creator_authority_checked_at",
         }
         assert not (missing - written_elsewhere), (
             "channels columns nothing can write via persist_channel_v3: "
