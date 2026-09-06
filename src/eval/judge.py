@@ -49,11 +49,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import statistics
 from pathlib import Path
 from typing import Any
 
+from src.llm.json_parse import JSONResponseError, loads_forgiving
 from src.llm.cascade import complete_tier, get_model_for_tier
 
 JUDGE_TIER = "cross_judge"
@@ -156,8 +156,10 @@ def _judge_one(finding: dict[str, Any]) -> dict[str, Any]:
 
     result = complete_tier(JUDGE_TIER, prompt, SYSTEM_PROMPT)
     content = result.get("content", "")
-    match = re.search(r"\{[\s\S]*\}", content.strip())
-    parsed = json.loads(match.group(0)) if match else {}
+    try:
+        parsed = loads_forgiving(content, expect="object")
+    except JSONResponseError:
+        parsed = {}
 
     supported = bool(parsed.get("supported", False))
     overreach = bool(parsed.get("overreach", False))

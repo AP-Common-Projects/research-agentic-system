@@ -7,10 +7,10 @@ Produces the initial taxonomy tree with root + first-pass branches.
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, TreeNode, ErrorRecord
@@ -83,11 +83,7 @@ def _enforce_branch_cap(tree: dict[str, dict], max_branches: int) -> dict[str, d
 
 
 def _parse_tree_json(raw: str, niche_name: str) -> dict[str, dict]:
-    cleaned = raw.strip()
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if match:
-        cleaned = match.group(0)
-    parsed = json.loads(cleaned)
+    parsed = loads_forgiving(raw, expect="object")
     nodes_list = parsed.get("nodes", [])
     if not nodes_list:
         raise ValueError("No nodes in LLM response")

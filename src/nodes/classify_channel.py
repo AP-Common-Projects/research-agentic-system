@@ -26,10 +26,10 @@ was already classified.
 from __future__ import annotations
 
 import json
-import re
 import time
 from difflib import SequenceMatcher
 
+from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
@@ -282,11 +282,7 @@ def classify_channel(state: dict) -> dict:
             try:
                 result = complete_tier("mid", prompt, SYSTEM_PROMPT)
                 content = result.get("content", "")
-                cleaned = content.strip()
-                match = re.search(r"\{[\s\S]*\}", cleaned)
-                if match:
-                    cleaned = match.group(0)
-                parsed = json.loads(cleaned)
+                parsed = loads_forgiving(content, expect="object")
             except Exception as exc:
                 errors.append(ErrorRecord(
                     node_name="classify_channel",

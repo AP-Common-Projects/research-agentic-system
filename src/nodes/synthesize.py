@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 import json
-import re
 import statistics
 import time
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.nodes.store import get_store
@@ -274,11 +274,7 @@ async def synthesize(state: dict) -> dict:
             latency_ms = (time.monotonic() - start) * 1000
             content = result.get("content", "")
 
-            cleaned = content.strip()
-            match = re.search(r"\{[\s\S]*\}", cleaned)
-            if match:
-                cleaned = match.group(0)
-            parsed = json.loads(cleaned)
+            parsed = loads_forgiving(content, expect="object")
 
             summary = str(parsed.get("summary", ""))
             raw_findings = parsed.get("findings", [])

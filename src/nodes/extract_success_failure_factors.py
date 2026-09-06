@@ -30,10 +30,10 @@ from __future__ import annotations
 
 import bisect
 import json
-import re
 import time
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
@@ -301,11 +301,7 @@ def extract_success_failure_factors(state: dict) -> dict:
                         estimate_cost("mid", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
                     )
                     content = result.get("content", "")
-                    cleaned = content.strip()
-                    match = re.search(r"\{[\s\S]*\}", cleaned)
-                    if match:
-                        cleaned = match.group(0)
-                    parsed = json.loads(cleaned)
+                    parsed = loads_forgiving(content, expect="object")
                 except Exception as exc:
                     # NOT marked checked: this is the LLM call itself
                     # failing (network, malformed response, rate limit),

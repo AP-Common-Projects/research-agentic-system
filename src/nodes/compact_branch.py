@@ -11,10 +11,10 @@ Numbers in the prompt come from the structured store, never invented.
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.config import get_config
 from src.llm.cascade import complete_tier, estimate_cost
 from src.nodes.store import get_store
@@ -167,11 +167,7 @@ def _build_prompt(
 
 
 def _parse_compaction_json(raw: str) -> dict[str, Any]:
-    cleaned = raw.strip()
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if match:
-        cleaned = match.group(0)
-    return json.loads(cleaned)
+    return loads_forgiving(raw, expect="object")
 
 
 async def compact_branch(state: dict) -> dict:

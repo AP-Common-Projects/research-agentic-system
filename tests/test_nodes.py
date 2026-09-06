@@ -175,7 +175,11 @@ class TestBuildTaxonomy:
 
         assert mock_complete.call_count == 2
         assert len(result.get("errors", [])) > 0
-        assert result["errors"][0]["error_type"] in ("JSONDecodeError", "ValueError")
+        # JSONResponseError since the parse moved to loads_forgiving; it is a
+        # ValueError subclass, so what the node catches did not change.
+        assert result["errors"][0]["error_type"] in (
+            "JSONDecodeError", "ValueError", "JSONResponseError",
+        )
         assert result["tree"] == {}
         assert result["active_node_id"] is None
 

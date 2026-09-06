@@ -11,11 +11,11 @@ Idempotent: skips channels where crime_case_metadata.classified_at is set.
 from __future__ import annotations
 
 import json
-import re
 import time
 from difflib import SequenceMatcher
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
@@ -258,9 +258,11 @@ def populate_crime_metadata(state: dict) -> dict:
         ]
         try:
             result = complete_tier("mid", json.dumps(payload, indent=2), SYSTEM_PROMPT)
-            content = (result.get("content") or "").strip()
-            m = re.search(r"\[[\s\S]*\]", content)
-            parsed = json.loads(m.group(0)) if m else None
+            content = result.get("content") or ""
+            try:
+                parsed = loads_forgiving(content, expect="array")
+            except Exception:
+                parsed = None
             if parsed is None or (isinstance(parsed, list) and len(parsed) != len(rows)):
                 logger.warning(
                     "crime_metadata_batch_unusable",

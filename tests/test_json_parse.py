@@ -1,0 +1,197 @@
+"""Reading JSON that a model wrote slightly wrong.
+
+Two errors ended the Cinema run's log, and each one cost real work: a
+channel the run had already paid to classify was dropped, and a batch of
+video descriptions was thrown away. Neither payload was ambiguous -- one
+had a trailing comma, the other left the quotes in around a film title.
+
+The two failing shapes are pinned here verbatim, together with the thing
+that matters more than either: that a payload which cannot be read without
+guessing still raises. A parser that invents an object to avoid an error
+puts fabricated research in a client's workbook.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.llm.json_parse import JSONResponseError, loads_forgiving
+
+
+class TestTheTwoFailuresFromTheCinemaRun:
+    """Both of these raised JSONDecodeError in production on 2026-09-05."""
+
+    def test_trailing_comma_before_the_closing_brace(self):
+        """"Classifying channels: Expecting property name enclosed in double
+        quotes: line 4 column 2" -- classify_channel lost one channel of 16."""
+        payload = (
+            '{\n'
+            '  "face_status": "face",\n'
+            '  "dominant_format": "vlog",\n'
+            '}'
+        )
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(payload)
+
+        assert loads_forgiving(payload, expect="object") == {
+            "face_status": "face",
+            "dominant_format": "vlog",
+        }
+
+    def test_unescaped_quotes_around_a_title_inside_a_string(self):
+        """"Describing videos: Expecting ',' delimiter: line 31 column 123"
+        -- a description quoting a film, with the quotes left unescaped."""
+        payload = '["A review of "Star Wars" and its sequels", "Another one"]'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(payload)
+
+        assert loads_forgiving(payload, expect="array") == [
+            'A review of "Star Wars" and its sequels',
+            "Another one",
+        ]
+
+    def test_the_repaired_description_keeps_the_title_it_quoted(self):
+        """The repair is punctuation-only. If it dropped the inner quotes the
+        parse would succeed and the description would be subtly wrong, which
+        is worse than the error it replaced."""
+        out = loads_forgiving(
+            '["A review of "Star Wars" and its sequels"]', expect="array"
+        )
+        assert "Star Wars" in out[0]
+        assert out[0].count('"') == 2
+
+
+class TestValidJsonIsLeftAlone:
+    def test_a_clean_object_is_returned_untouched(self):
+        payload = '{"a": 1, "b": [1, 2], "c": {"d": "e"}}'
+        assert loads_forgiving(payload) == json.loads(payload)
+
+    def test_a_legitimately_escaped_quote_survives_the_round_trip(self):
+        """The escaping repair must never fire on a payload that was already
+        correct -- doubling the backslashes would corrupt good data."""
+        payload = json.dumps({"note": 'he said "hello" twice'})
+        assert loads_forgiving(payload) == {"note": 'he said "hello" twice'}
+
+    def test_a_comma_inside_a_string_is_not_a_trailing_comma(self):
+        payload = '{"note": "one, two, three"}'
+        assert loads_forgiving(payload) == {"note": "one, two, three"}
+
+
+class TestTheWrappingModelsAddAnyway:
+    def test_markdown_fences(self):
+        assert loads_forgiving('```json\n{"a": 1}\n```') == {"a": 1}
+
+    def test_fences_without_a_language(self):
+        assert loads_forgiving('```\n{"a": 1}\n```') == {"a": 1}
+
+    def test_prose_either_side(self):
+        content = 'Here is the classification you asked for:\n{"a": 1}\nHope that helps!'
+        assert loads_forgiving(content, expect="object") == {"a": 1}
+
+    def test_expect_array_ignores_a_brace_in_the_prose(self):
+        content = 'The set {a, b} maps to:\n[1, 2, 3]'
+        assert loads_forgiving(content, expect="array") == [1, 2, 3]
+
+    def test_smart_quotes(self):
+        """A model asked to write descriptions sometimes styles its own JSON."""
+        assert loads_forgiving('{“a”: “b”}') == {"a": "b"}
+
+
+class TestRepairsCompose:
+    def test_a_nested_trailing_comma(self):
+        payload = '{"a": {"b": 1,}, "c": [1, 2,],}'
+        assert loads_forgiving(payload) == {"a": {"b": 1}, "c": [1, 2]}
+
+    def test_an_inner_quote_and_a_trailing_comma_together(self):
+        payload = '{\n  "note": "a review of "Heat"",\n}'
+        assert loads_forgiving(payload, expect="object") == {
+            "note": 'a review of "Heat"'
+        }
+
+
+class TestItRaisesRatherThanGuesses:
+    """The point of the whole module. Callers already handle "skip this
+    item"; what they cannot handle is a plausible object that is fiction."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "",
+            "   \n  ",
+            "not json at all",
+            "I could not complete that request.",
+            '{"a": ',
+            "{",
+        ],
+    )
+    def test_unreadable_input_raises(self, payload):
+        with pytest.raises(JSONResponseError):
+            loads_forgiving(payload)
+
+    def test_the_error_carries_the_payload_for_the_log(self):
+        with pytest.raises(JSONResponseError) as exc:
+            loads_forgiving('{"a": ')
+        assert exc.value.payload
+
+    def test_it_is_a_valueerror_so_existing_handlers_still_catch_it(self):
+        """Several nodes catch (json.JSONDecodeError, ValueError, KeyError)
+        around their parse. Subclassing ValueError means migrating a call
+        site does not silently widen what escapes it."""
+        assert issubclass(JSONResponseError, ValueError)
+
+
+class TestEveryLlmReplyGoesThroughIt:
+    def test_no_function_that_calls_a_model_also_parses_its_reply_by_hand(self):
+        """The pattern this module replaces, left anywhere, is one more node
+        that drops a channel the next time a model adds a comma.
+
+        Scoped to the function, not the file: reading our own JSONL off disk
+        with a strict json.loads is right, and judge.py does both.
+
+        This will not catch a function that hands the raw reply to a helper
+        to parse; the check below covers that shape instead.
+        """
+        import ast
+        import pathlib
+
+        def _calls(node: ast.AST) -> set[str]:
+            names = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    names.add(ast.unparse(sub.func))
+            return names
+
+        offenders = []
+        for path in pathlib.Path("src").rglob("*.py"):
+            if path.name == "json_parse.py":
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                called = _calls(fn)
+                if "complete_tier" in called and "json.loads" in called:
+                    offenders.append(f"{path}::{fn.name}")
+
+        assert offenders == [], f"still parsing model replies by hand: {offenders}"
+
+    def test_no_source_file_scans_for_a_bracket_with_a_regex(self):
+        """``re.search(r"\\{[\\s\\S]*\\}", reply)`` is the tell for the old
+        approach wherever it lives, helper or not. Extraction belongs in one
+        place now, and that place handles the repair too."""
+        import pathlib
+
+        offenders = []
+        for path in pathlib.Path("src").rglob("*.py"):
+            if path.name == "json_parse.py":
+                continue
+            code = "\n".join(
+                line for line in path.read_text(encoding="utf-8").splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            if r"[\s\S]*" in code:
+                offenders.append(str(path))
+
+        assert offenders == [], f"hand-rolled JSON extraction remains in: {offenders}"

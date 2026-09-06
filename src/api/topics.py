@@ -24,10 +24,10 @@ someone is typing.
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.db.connection import get_connection, put_connection
 
 _MIN_CHANNELS_FOR_CATALOG = 20
@@ -263,13 +263,10 @@ def _proposed_subniches(topic: str) -> list[dict[str, Any]]:
     from src.llm.cascade import complete_tier
 
     result = complete_tier("cheap", f"Topic: {topic}", SUGGEST_PROMPT)
-    content = (result.get("content") or "").strip()
-    match = re.search(r"\[[\s\S]*\]", content)
-    if not match:
-        return []
+    content = result.get("content") or ""
     try:
-        parsed = json.loads(match.group(0))
-    except json.JSONDecodeError:
+        parsed = loads_forgiving(content, expect="array")
+    except Exception:
         return []
     if not isinstance(parsed, list):
         return []

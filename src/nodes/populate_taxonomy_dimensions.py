@@ -9,10 +9,10 @@ Gated by meets_subscriber_floor. Writes via persist_channel_v3.
 from __future__ import annotations
 
 import json
-import re
 import time
 from typing import Any
 
+from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
@@ -164,11 +164,7 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
 
             result = complete_tier("mid", prompt, SYSTEM_PROMPT)
             content = result.get("content", "")
-            cleaned = content.strip()
-            m = re.search(r"\{[\s\S]*\}", cleaned)
-            if not m:
-                continue
-            parsed = json.loads(m.group(0))
+            parsed = loads_forgiving(content, expect="object")
 
             fields = {
                 "primary_topic": str(parsed.get("primary_topic", "")),

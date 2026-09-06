@@ -17,9 +17,9 @@ LLM calls to videos small (titles are short; dozens fit in one prompt).
 from __future__ import annotations
 
 import json
-import re
 import time
 
+from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import channel_scope
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -120,11 +120,7 @@ def describe_video_titles(state: dict) -> dict:
                 estimate_cost("cheap", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
             )
             content = result.get("content", "")
-            cleaned = content.strip()
-            match = re.search(r"\[[\s\S]*\]", cleaned)
-            if match:
-                cleaned = match.group(0)
-            descriptions = json.loads(cleaned)
+            descriptions = loads_forgiving(content, expect="array")
             if not isinstance(descriptions, list):
                 raise ValueError("response was not a JSON array")
         except Exception as exc:
