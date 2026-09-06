@@ -244,6 +244,7 @@ def score_signals(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     errors: list[dict] = []
     scored = 0
+    missing_bucket: list[str] = []
 
     if not channel_ids:
         return {"next_action": "continue"}
@@ -389,6 +390,50 @@ def score_signals(state: dict) -> dict:
                             recoverable=True,
                         ).model_dump()
                     )
+
+            # Size bucket for channels with no videos.
+            #
+            # Everything above is keyed on `by_channel`, which only contains
+            # channels that have videos -- a channel with none never enters
+            # the loop. That is right for evergreen_score, engagement_score
+            # and is_likely_news, which are computed FROM videos and are
+            # honestly unknown without them. It is wrong for
+            # channel_size_bucket, which is a function of subscriber_count
+            # alone and is known the moment the channel is hydrated.
+            #
+            # Measured on the automotive run: 54 of 76 channels carried a
+            # size bucket. The 22 without were the ones hydration was cut
+            # off before reaching, so they had no video rows -- and the
+            # bucket went missing with them despite their subscriber counts
+            # being on file the whole time.
+            missing_bucket = [c for c in channel_ids if c not in by_channel]
+            for ch_id in missing_bucket:
+                try:
+                    cur_b = conn.cursor()
+                    try:
+                        cur_b.execute(
+                            "SELECT subscriber_count FROM channels WHERE channel_id = %s",
+                            (ch_id,),
+                        )
+                        row = cur_b.fetchone()
+                    finally:
+                        cur_b.close()
+                    if not row or row[0] is None:
+                        continue
+                    persist_channel_v3(
+                        conn, ch_id, state.get("run_id", ""),
+                        {"channel_size_bucket": channel_size_bucket(int(row[0]))},
+                    )
+                except Exception as exc:
+                    conn.rollback()
+                    errors.append(
+                        ErrorRecord(
+                            node_name="score_signals",
+                            error_type=type(exc).__name__,
+                            message=f"size bucket failed for {ch_id}: {exc}",
+                            recoverable=True,
+                        ).model_dump()
+                    )
         finally:
             put_connection(conn)
     except Exception as exc:
@@ -415,6 +460,10 @@ def score_signals(state: dict) -> dict:
                     # where zero signals were computed or stored.
                     "channels_scored": scored,
                     "channels_attempted": len(channel_ids),
+                    # Channels with no videos: they get a size bucket and
+                    # nothing else, which is the honest answer rather than a
+                    # silent absence.
+                    "size_bucket_only": len(missing_bucket),
                     "scoring_errors": len(errors),
                 },
                 cost_usd=0.0,

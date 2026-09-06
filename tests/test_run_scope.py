@@ -151,6 +151,50 @@ class TestCohortsWorkForEveryCategory:
         assert 'f"{vertical}_lifecycle"' in src
 
 
+class TestSizeBucketDoesNotRequireVideos:
+    """score_signals is keyed on channels that HAVE videos, because
+    evergreen_score, engagement_score and is_likely_news are computed from
+    them and are honestly unknown without them.
+
+    channel_size_bucket is not: it is a function of subscriber_count alone,
+    known the moment a channel is hydrated. Computing it inside the video
+    loop meant 54 of the automotive run's 76 channels carried a bucket --
+    the 22 without were the ones hydration never reached, so they had no
+    video rows, and the bucket went missing with them despite their
+    subscriber counts being on file the whole time.
+    """
+
+    def test_channels_without_videos_still_get_a_bucket(self):
+        import inspect
+
+        from src.tools.signal_scoring import score_signals
+
+        src = inspect.getsource(score_signals)
+        assert "missing_bucket" in src, (
+            "channels absent from by_channel need a size bucket path of "
+            "their own; the video loop will never reach them"
+        )
+        assert "channel_size_bucket(int(row[0]))" in src
+
+    def test_it_is_reported_rather_than_silent(self):
+        import inspect
+
+        from src.tools.signal_scoring import score_signals
+
+        assert "size_bucket_only" in inspect.getsource(score_signals)
+
+    def test_the_bucket_is_a_pure_function_of_subscribers(self):
+        """If this ever needed more than a subscriber count, the fix above
+        would be unsound."""
+        import inspect
+
+        from src.tools.signal_scoring import channel_size_bucket
+
+        params = inspect.signature(channel_size_bucket).parameters
+        assert list(params) == ["subscriber_count"]
+        assert channel_size_bucket(500) != channel_size_bucket(5_000_000)
+
+
 class TestHydrationEnforcesTheChannelCap:
     """Discovery admission checks the cap BEFORE a node runs, so the first
     discovery node can overshoot it in one call -- keyword_search returned
