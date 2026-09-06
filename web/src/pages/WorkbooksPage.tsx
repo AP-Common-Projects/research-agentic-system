@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Workbook } from '../lib/api';
 import {
@@ -6,7 +7,8 @@ import {
   EmptyState,
   ErrorState,
   Skeleton,
-  ConfirmButton,
+  ConfirmDialog,
+  DangerButton,
 } from '../components/primitives';
 
 function fileSize(bytes: number): string {
@@ -25,12 +27,10 @@ const PINNED_WORKBOOKS = new Set(['finance', 'crime']);
 
 function WorkbookCard({
   workbook,
-  onDelete,
-  deleting,
+  onAskDelete,
 }: {
   workbook: Workbook;
-  onDelete: (id: string) => void;
-  deleting: boolean;
+  onAskDelete: (workbook: Workbook) => void;
 }) {
   const deletable = !PINNED_WORKBOOKS.has(workbook.id);
   if (!workbook.available) {
@@ -65,15 +65,12 @@ function WorkbookCard({
                 runs behind them have had manual backfills since. The API
                 refuses them too, so this is not the only guard. */}
             {deletable && (
-              <ConfirmButton
-                onConfirm={() => onDelete(workbook.id)}
-                confirmLabel="Delete workbook?"
-                pending={deleting}
-                pendingLabel="Deleting…"
+              <DangerButton
+                onClick={() => onAskDelete(workbook)}
                 title="Removes the exported files. The run's data stays in the database, so it can be exported again."
               >
                 Delete
-              </ConfirmButton>
+              </DangerButton>
             )}
             <a
               href={`${import.meta.env.DEV ? 'http://localhost:8000' : ''}${workbook.download_url}`}
@@ -125,9 +122,13 @@ function WorkbookCard({
 
 export function WorkbooksPage() {
   const queryClient = useQueryClient();
+  const [pendingDelete, setPendingDelete] = useState<Workbook | null>(null);
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteWorkbook(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workbooks'] }),
+    onSuccess: () => {
+      setPendingDelete(null);
+      queryClient.invalidateQueries({ queryKey: ['workbooks'] });
+    },
   });
 
   const workbooks = useQuery({ queryKey: ['workbooks'], queryFn: api.workbooks });
@@ -167,10 +168,31 @@ export function WorkbooksPage() {
         <WorkbookCard
           key={workbook.id}
           workbook={workbook}
-          onDelete={(id) => remove.mutate(id)}
-          deleting={remove.isPending && remove.variables === workbook.id}
+          onAskDelete={setPendingDelete}
         />
       ))}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this workbook?"
+        body={
+          <>
+            <p>
+              <span className="font-medium text-ink">{pendingDelete?.title}</span>{' '}
+              and the files exported alongside it — the CSVs, the discovery
+              graph and the manifest — will be removed from disk.
+            </p>
+            <p className="mt-2">
+              The run&rsquo;s data stays in the database, so this workbook can
+              be exported again from the same run.
+            </p>
+          </>
+        }
+        confirmLabel="Delete workbook"
+        pending={remove.isPending}
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete.id)}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

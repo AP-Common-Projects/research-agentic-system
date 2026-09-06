@@ -20,7 +20,8 @@ import {
   ErrorState,
   Skeleton,
   Tooltip,
-  ConfirmButton,
+  ConfirmDialog,
+  DangerButton,
 } from '../components/primitives';
 
 /* --------------------------------------------------------------------------
@@ -331,9 +332,13 @@ function RunDetail({ run }: { run: Run }) {
   }, [isLive]);
 
   const queryClient = useQueryClient();
+  const [askStop, setAskStop] = useState(false);
   const stop = useMutation({
     mutationFn: () => api.stopRun(run.run_id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['runs'] }),
+    onSuccess: () => {
+      setAskStop(false);
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    },
   });
 
   return (
@@ -347,15 +352,12 @@ function RunDetail({ run }: { run: Run }) {
           </span>
         </div>
         {isLive && (
-          <ConfirmButton
-            onConfirm={() => stop.mutate()}
-            confirmLabel="Stop this run?"
-            pending={stop.isPending}
-            pendingLabel="Stopping…"
+          <DangerButton
+            onClick={() => setAskStop(true)}
             title="Ends the run. Everything already collected is kept."
           >
             Stop run
-          </ConfirmButton>
+          </DangerButton>
         )}
       </div>
 
@@ -424,6 +426,31 @@ function RunDetail({ run }: { run: Run }) {
         />
         <ActivityStream isLive={isLive} entries={entries} connection={connection} />
       </Panel>
+
+      <ConfirmDialog
+        open={askStop}
+        title="Stop this run?"
+        body={
+          <>
+            <p>
+              <span className="font-medium text-ink">
+                {run.niches.join(', ') || run.run_id}
+              </span>{' '}
+              will stop where it is. Everything it has already collected —
+              channels, videos and any analysis finished so far — is kept.
+            </p>
+            <p className="mt-2">
+              It will not produce a workbook, since the export is the last
+              step. You can export one later from the run&rsquo;s data.
+            </p>
+          </>
+        }
+        confirmLabel="Stop run"
+        pending={stop.isPending}
+        pendingLabel="Stopping…"
+        onConfirm={() => stop.mutate()}
+        onCancel={() => setAskStop(false)}
+      />
     </div>
   );
 }
@@ -441,9 +468,11 @@ export function LiveRunsPage() {
   const [selected, setSelected] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
+  const [pendingDelete, setPendingDelete] = useState<Run | null>(null);
   const remove = useMutation({
     mutationFn: (runId: string) => api.deleteRun(runId),
     onSuccess: (_data, runId) => {
+      setPendingDelete(null);
       // Drop the selection if it was the row just removed, or the detail
       // pane keeps rendering a run that no longer exists.
       setSelected((current) => (current === runId ? null : current));
@@ -533,15 +562,12 @@ export function LiveRunsPage() {
                         would also select the row it is about to remove. */}
                     {run.status !== 'running' && (
                       <div className="px-4 pb-3">
-                        <ConfirmButton
-                          onConfirm={() => remove.mutate(run.run_id)}
-                          confirmLabel="Delete for good?"
-                          pending={remove.isPending && remove.variables === run.run_id}
-                          pendingLabel="Deleting…"
+                        <DangerButton
+                          onClick={() => setPendingDelete(run)}
                           title="Removes this run from the console. The channels it found stay in the database."
                         >
                           Delete
-                        </ConfirmButton>
+                        </DangerButton>
                       </div>
                     )}
                   </li>
@@ -557,6 +583,31 @@ export function LiveRunsPage() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this run?"
+        body={
+          <>
+            <p>
+              <span className="font-medium text-ink">
+                {pendingDelete?.niches.join(', ') || pendingDelete?.run_id}
+              </span>{' '}
+              will be removed from the console, along with its activity log
+              and spend ledger.
+            </p>
+            <p className="mt-2">
+              The channels and videos it discovered stay in the database —
+              other workbooks cite them — so this removes the record of the
+              run, not the research it did.
+            </p>
+          </>
+        }
+        confirmLabel="Delete run"
+        pending={remove.isPending}
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete.run_id)}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

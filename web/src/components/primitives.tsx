@@ -138,65 +138,119 @@ export function Tooltip({
 /* --------------------------------------------------------------------------
  * Destructive action
  *
- * Two clicks, in place: the first arms the button and the second commits.
- * No modal, because a modal for "delete this run" is heavier than the
- * decision deserves -- but not one click either, since the target sits in a
- * list next to the thing the reader actually wanted.
+ * A real dialog, not a two-click button. An armed button says "Really?" in
+ * the same place the reader just clicked and disappears on a timer -- it
+ * asks the question quietly, next to a dozen other controls, and a reader
+ * skimming can commit to a delete without ever registering that they were
+ * asked. A dialog takes the centre of the screen, names the specific thing
+ * being deleted, and cannot be dismissed by accident.
  *
- * The armed state disarms itself after a few seconds. A button left reading
- * "Really delete?" across a page the reader has moved on from is a trap for
- * whoever clicks next.
+ * Rendered inline rather than through a portal: the app has no stacking
+ * context deeper than the shell, and a fixed overlay at z-50 clears
+ * everything on these pages.
  * ----------------------------------------------------------------------- */
 
-export function ConfirmButton({
-  onConfirm,
-  children,
-  confirmLabel = 'Really?',
-  pending = false,
-  pendingLabel = 'Working…',
-  className = '',
+export function ConfirmDialog({
+  open,
   title,
+  body,
+  confirmLabel = 'Delete',
+  pending = false,
+  pendingLabel = 'Deleting…',
+  onConfirm,
+  onCancel,
 }: {
-  onConfirm: () => void;
-  children: ReactNode;
+  open: boolean;
+  title: string;
+  body: ReactNode;
   confirmLabel?: string;
   pending?: boolean;
   pendingLabel?: string;
-  className?: string;
-  title?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
 }) {
-  const [armed, setArmed] = useState(false);
-
+  // Escape closes it. A modal that traps a reader who changed their mind is
+  // worse than the accidental click it was meant to prevent.
   useEffect(() => {
-    if (!armed) return;
-    const id = window.setTimeout(() => setArmed(false), 4000);
-    return () => window.clearTimeout(id);
-  }, [armed]);
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !pending) onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, pending, onCancel]);
 
-  const base =
-    'rounded-md border px-2 py-1 text-xs transition-colors disabled:opacity-50';
-  const style = armed
-    ? 'border-[var(--status-critical)] text-[var(--status-critical)] hover:bg-sunken'
-    : 'border-line text-ink-3 hover:border-[var(--status-critical)] hover:text-[var(--status-critical)]';
+  if (!open) return null;
 
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <button
+        type="button"
+        aria-label="Cancel"
+        onClick={() => !pending && onCancel()}
+        className="absolute inset-0 cursor-default bg-black/50"
+      />
+      <div
+        className="relative w-full max-w-md rounded-lg border border-line bg-surface p-5"
+        style={{ boxShadow: 'var(--shadow-pop)' }}
+      >
+        <h2 className="font-display text-base font-semibold tracking-tight text-ink">
+          {title}
+        </h2>
+        <div className="mt-2 text-sm leading-snug text-ink-2">{body}</div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="rounded-md border border-line px-3 py-1.5 text-sm text-ink-2 transition-colors hover:bg-sunken hover:text-ink disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            autoFocus
+            className="rounded-md px-3 py-1.5 text-sm font-medium text-white transition-opacity disabled:opacity-50"
+            style={{ background: 'var(--status-critical)' }}
+          >
+            {pending ? pendingLabel : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The button that opens the dialog. Styled as destructive but harmless. */
+export function DangerButton({
+  onClick,
+  children,
+  title,
+  className = '',
+}: {
+  onClick: () => void;
+  children: ReactNode;
+  title?: string;
+  className?: string;
+}) {
   return (
     <button
       type="button"
       title={title}
-      disabled={pending}
       onClick={(e) => {
         e.stopPropagation();
-        if (pending) return;
-        if (!armed) {
-          setArmed(true);
-          return;
-        }
-        setArmed(false);
-        onConfirm();
+        onClick();
       }}
-      className={`${base} ${style} ${className}`}
+      className={`rounded-md border border-line px-2 py-1 text-xs text-ink-3 transition-colors hover:border-[var(--status-critical)] hover:text-[var(--status-critical)] ${className}`}
     >
-      {pending ? pendingLabel : armed ? confirmLabel : children}
+      {children}
     </button>
   );
 }
