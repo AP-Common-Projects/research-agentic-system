@@ -229,6 +229,53 @@ class TestSizeBucketDoesNotRequireVideos:
         assert channel_size_bucket(500) != channel_size_bucket(5_000_000)
 
 
+class TestPrimaryTopicWorksForAnyVertical:
+    """primary_topic's prompt hardcoded two closed lists -- "For Finance:
+    ..." and "For Crime: ..." -- with no branch for anything else, and told
+    the model to "select exactly one value from the allowed sets above".
+    For any other vertical there was no allowed set, so the model correctly
+    followed instructions and answered the one legal catch-all: "Other".
+
+    Measured live: finance 0.6% Other, crime 3.3% (genuine edge cases,
+    since those verticals HAD real lists) versus automotive at 89% (62 of
+    69 in the raw table), and the same shape reproduced across every other
+    catalog category once discovered -- 209 entertainment channels, 57
+    lifestyle, 29 gaming, and so on, over 500 in total.
+    """
+
+    def test_the_prompt_is_no_longer_a_closed_finance_crime_list(self):
+        from src.nodes.populate_taxonomy_dimensions import SYSTEM_PROMPT
+
+        assert "For Finance:" not in SYSTEM_PROMPT
+        assert "For Crime:" not in SYSTEM_PROMPT
+        assert "select exactly one value from the allowed sets above" not in SYSTEM_PROMPT.lower()
+
+    def test_the_prompt_still_shows_calibration_examples(self):
+        """The old lists were doing double duty: closing off the field AND
+        showing the model the desired granularity/style. Removing the
+        closure must not also remove the calibration."""
+        from src.nodes.populate_taxonomy_dimensions import SYSTEM_PROMPT
+
+        for example in ("Retirement", "Cold Case", "Car Reviews"):
+            assert example in SYSTEM_PROMPT
+
+    def test_other_is_framed_as_rare_not_as_the_default_for_new_verticals(self):
+        from src.nodes.populate_taxonomy_dimensions import SYSTEM_PROMPT
+
+        assert "no category was provided for this vertical" in " ".join(SYSTEM_PROMPT.split())
+
+    def test_the_channels_own_vertical_reaches_the_prompt(self):
+        """The fix only works if the model is actually told which vertical
+        it is looking at -- the prompt talks ABOUT verticals but the
+        per-channel call has to supply this one's."""
+        import inspect
+
+        from src.nodes.populate_taxonomy_dimensions import populate_taxonomy_dimensions
+
+        src = inspect.getsource(populate_taxonomy_dimensions)
+        assert '"vertical": category' in src
+
+
 class TestHydrationEnforcesTheChannelCap:
     """Discovery admission checks the cap BEFORE a node runs, so the first
     discovery node can overshoot it in one call -- keyword_search returned

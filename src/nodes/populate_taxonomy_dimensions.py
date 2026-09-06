@@ -25,14 +25,29 @@ Input: channel title, description, existing niche classification, recent video t
 
 Output: 5 independent fields, each one value from its allowed set:
 
-1. primary_topic: the main subject the channel covers.
-   For Finance: "Retirement", "Investing", "Personal Finance", "Economics", "Real Estate",
-   "Crypto", "Tax", "Insurance", "Banking", "Business Finance", "Trading", "Other"
-   For Crime: "Bodycam", "Police Investigation", "Interrogation", "Cold Case",
-   "Digital Evidence", "Court Trial", "Forensic Science", "Criminal Psychology",
-   "True Crime Storytelling", "Scam & Fraud", "Missing Persons",
-   "Organized Crime", "Paranormal & Unexplained", "Other"
-   Use "Other" only when the channel genuinely fits none of these.
+1. primary_topic: the main subject the channel covers, as a SPECIFIC
+   category within its own vertical (given to you below as "vertical") --
+   not the vertical's name itself, a narrower category inside it. Title
+   Case, 2-4 words, the kind of label a person in that space would
+   recognise as its own content category.
+
+   Calibration examples, showing the SPECIFICITY expected -- not a closed
+   list, and not swappable across verticals:
+     Finance:    "Retirement", "Investing", "Personal Finance", "Real Estate",
+                 "Crypto", "Tax", "Business Finance", "Trading"
+     Crime:      "Bodycam", "Cold Case", "Court Trial", "Forensic Science",
+                 "True Crime Storytelling", "Missing Persons"
+     Automotive: "Car Reviews", "DIY Repair", "Classic Cars", "Motorsport"
+
+   For a vertical not shown above, invent an equally specific, real label
+   for what this channel actually covers -- do not borrow a label from a
+   different vertical's list, and do not answer with the vertical's own
+   name.
+
+   "Other" means "no specific category applies to this channel", not "no
+   category was provided for this vertical" -- in a real vertical this
+   should be rare. If you can name anything more specific than "Other",
+   name it.
 
 2. secondary_topic: the specific angle within the primary topic.
    Examples: "Retirement Planning", "Dividend Strategy", "Options Trading",
