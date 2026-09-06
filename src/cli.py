@@ -77,6 +77,21 @@ async def _run(
     if final.get("run_mode") != "snapshot_refresh":
         try:
             from src.export import export_run, export_excel
+            from src.tools.export_completeness import gate_before_export
+
+            # The completeness gate, before anything is written. Every empty
+            # sheet and blank column this project has shipped came from a
+            # node that did not run, or ran against the wrong channels, with
+            # nothing between it and the client noticing. This audits the
+            # run's own rows against a declared spec, re-runs whatever node
+            # fills what is short, and audits again -- so the export is
+            # checked rather than assumed.
+            #
+            # It never blocks the export. A workbook that is 90% populated
+            # is still worth handing over WITH its gaps named; refusing to
+            # write one would leave the client with nothing at all.
+            gate = gate_before_export(export_run_id)
+            print("\n" + gate.render())
 
             path = export_run(export_run_id, thread_id)
             print(f"\nExported to {path}")
