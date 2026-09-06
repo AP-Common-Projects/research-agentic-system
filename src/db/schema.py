@@ -545,6 +545,18 @@ MIGRATIONS: list[str] = [
         CHECK (sample_reason IS NULL
                OR sample_reason IN ('latest','top_lifetime','shorts_sample'))""",
     """ALTER TABLE channels ADD COLUMN IF NOT EXISTS is_comparison_pool BOOLEAN NOT NULL DEFAULT FALSE""",
+    # extract_success_failure_factors's eligibility was "no row in
+    # channel_success_factors yet" -- which cannot distinguish "never
+    # attempted" from "attempted, and the model genuinely found zero
+    # factors", since a zero-factor result inserts no row either way. A
+    # channel in the second case stayed eligible forever, and the node's
+    # own internal while-loop re-selected and re-billed it every pass --
+    # observed live: one automotive channel with no identifiable success
+    # factors put the node into an unbroken loop for the rest of its
+    # 1000-channel safety cap before it was killed by hand. This column is
+    # the explicit "attempted" marker eligibility should have used from
+    # the start.
+    """ALTER TABLE channels ADD COLUMN IF NOT EXISTS success_failure_factors_checked_at TIMESTAMPTZ""",
 ]
 
 

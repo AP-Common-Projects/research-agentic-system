@@ -107,6 +107,29 @@ def _fallback_grade(percentiles: list[float], is_failure: bool) -> str:
     return "weak"
 
 
+def _mark_checked(conn, channel_id: str) -> None:
+    """Record that this channel's success/failure factors were attempted.
+
+    Set unconditionally on a completed attempt, whether or not it produced
+    any factor rows -- a real zero-result and "never looked at" both leave
+    channel_success_factors/channel_failure_factors empty, so a marker
+    outside those tables is the only way to tell them apart. Without it,
+    a channel the model genuinely finds nothing for stays eligible on every
+    future pass, and the node's own internal loop re-selects and re-bills
+    it indefinitely.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE channels SET success_failure_factors_checked_at = NOW() "
+            "WHERE channel_id = %s",
+            (channel_id,),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+
+
 def extract_success_failure_factors(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     start = time.monotonic()
@@ -175,10 +198,17 @@ def extract_success_failure_factors(state: dict) -> dict:
     def _fetch_eligible_batch() -> list[str]:
         cur = conn.cursor()
         try:
+            # Keyed on success_failure_factors_checked_at, not on whether a
+            # factor row exists. A channel the model genuinely found zero
+            # success factors for has no row in channel_success_factors
+            # either way, so "no row" cannot mean "not attempted" -- that
+            # conflation put a channel with a real zero result back in every
+            # batch forever. The marker is set once, after the attempt,
+            # regardless of what it found.
             cur.execute(
                 "SELECT c.channel_id FROM channels c "
                 "WHERE c.meets_subscriber_floor = TRUE AND c.classifier_model IS NOT NULL "
-                "AND NOT EXISTS (SELECT 1 FROM channel_success_factors s WHERE s.channel_id = c.channel_id) "
+                "AND c.success_failure_factors_checked_at IS NULL "
                 + scope_sql +
                 "ORDER BY c.channel_id LIMIT 50",
                 scope_params,
@@ -277,6 +307,13 @@ def extract_success_failure_factors(state: dict) -> dict:
                         cleaned = match.group(0)
                     parsed = json.loads(cleaned)
                 except Exception as exc:
+                    # NOT marked checked: this is the LLM call itself
+                    # failing (network, malformed response, rate limit),
+                    # which is transient by nature and worth a later pass
+                    # retrying. Contrast with the outer except below, where
+                    # something about the channel's OWN data broke a local
+                    # step -- that fails the same way every time and marking
+                    # it is what stops the loop.
                     errors.append(ErrorRecord(
                         node_name="extract_success_failure_factors",
                         error_type=type(exc).__name__,
@@ -363,6 +400,7 @@ def extract_success_failure_factors(state: dict) -> dict:
                             continue
 
                 extracted += 1
+                _mark_checked(conn, ch_id)
 
             except Exception as exc:
                 # A failed statement anywhere above leaves the connection's
@@ -375,6 +413,17 @@ def extract_success_failure_factors(state: dict) -> dict:
                     message=str(exc),
                     recoverable=True,
                 ).model_dump())
+                # Marked anyway. A channel whose signals are simply
+                # malformed (a NULL where a float is expected, say) fails
+                # the same way on every future attempt too -- leaving it
+                # eligible would recreate exactly the loop this marker
+                # exists to prevent, just via a different failure mode. The
+                # `continue` below never reaches the mark above, so it is
+                # repeated here explicitly.
+                try:
+                    _mark_checked(conn, ch_id)
+                except Exception:
+                    pass
                 continue
 
         if total_eligible_seen >= max_channels:

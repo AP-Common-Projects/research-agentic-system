@@ -492,6 +492,11 @@ class TestV3ColumnAllowlistsCoverWhatCallersWrite:
         written_elsewhere = {
             "updated_at", "first_discovered_run_id", "last_enriched_run_id",
             "primary_niche_group_id", "is_us_market",
+            # _mark_checked in extract_success_failure_factors.py: a plain
+            # UPDATE, not persist_channel_v3, because it fires from inside
+            # both the success path and an except block, and has to
+            # succeed even when the surrounding persist call is what failed.
+            "success_failure_factors_checked_at",
         }
         assert not (missing - written_elsewhere), (
             "channels columns nothing can write via persist_channel_v3: "
