@@ -229,6 +229,26 @@ def hydrate_metadata(state: dict) -> dict:
     hydrated = set(state.get("hydrated_channel_ids", set()))
 
     to_hydrate = [c for c in channel_ids if c not in hydrated]
+
+    # Enforce the run's channel ceiling here rather than only in discovery
+    # admission. That check runs BEFORE a node, so the first discovery node
+    # can overshoot the cap in one go -- keyword_search returned 96 channels
+    # in a single call against a cap of 36. Hydration is the gate everything
+    # downstream depends on (classification, geo, signals and cohorts all
+    # work from hydrated channels), so trimming here is what actually makes
+    # the tier's estimate true instead of aspirational.
+    from src.config import get_config as _cfg_for_cap
+
+    cap = int(_cfg_for_cap().harness.max_channels_per_run or 0)
+    trimmed = 0
+    if cap > 0:
+        room = max(0, cap - len(hydrated))
+        if len(to_hydrate) > room:
+            trimmed = len(to_hydrate) - room
+            # Biggest first: if a run can only afford some of what it found,
+            # the channels worth keeping are the ones a client would look at.
+            to_hydrate = to_hydrate[:room]
+
     if not to_hydrate:
         return {
             "next_action": "continue",
@@ -514,6 +534,8 @@ def hydrate_metadata(state: dict) -> dict:
         # Reads as "time ran out" on the Live runs stream rather than as
         # channels quietly going missing from the export.
         hydration_summary["stopped_on"] = "run_deadline_seconds"
+    if trimmed:
+        hydration_summary["trimmed_to_cap"] = trimmed
 
     node_log = NodeLog(
         node_name="hydrate_metadata",

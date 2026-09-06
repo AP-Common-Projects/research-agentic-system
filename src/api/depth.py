@@ -40,6 +40,11 @@ _SECONDS_PER_CHANNEL = 25.0
 _ENRICHMENT_WINDOW_SHARE = 0.5
 #: Below this a tier is not worth running at all.
 _MIN_CHANNELS_PER_RUN = 20
+#: Videos per channel, bracketing two complete measurements: the automotive
+#: run at 21 (5,916 across 277) and the delivered finance workbook at 59
+#: (20,550 across 350).
+_VIDEOS_PER_CHANNEL_LOW = 21
+_VIDEOS_PER_CHANNEL_HIGH = 59
 
 
 @dataclass
@@ -49,9 +54,6 @@ class DepthTier:
     hours: float
     tagline: str
     description: str
-    # What the client gets, from comparable historical runs.
-    est_channels: str
-    est_videos: str
     # Split so a single low provider locks the tier for the right reason.
     est_brightdata_usd: float
     est_openrouter_usd: float
@@ -66,6 +68,45 @@ class DepthTier:
         # and without it "30m" was a projection that ran 3-5 hours.
         self.governors["RUN_DEADLINE_SECONDS"] = int(self.hours * 3600)
         self.governors["MAX_CHANNELS_PER_RUN"] = self.max_channels
+
+    @property
+    def est_channels(self) -> str:
+        """Channels a run of this length actually returns.
+
+        The cap IS the estimate now. It is enforced -- discovery admission
+        stops at it and hydration trims to it -- so a run fills to the cap
+        wherever the topic has that many channels above the floor, and
+        stops there. The hand-written ranges this replaced answered to
+        nothing: Glimpse advertised "15-25" and the measured run discovered
+        273, four times what it could describe.
+
+        Phrased as a ceiling, not a range, because that is what it is.
+        Discovery saturation binds long before the cap on any real topic --
+        the two verticals measured end to end hold 350 (finance) and 240
+        (crime) channels above the 50k floor, so a 72-hour run's 5,184 is a
+        limit it will never approach on a topic that size. Promising a
+        range would be inventing the lower end; a ceiling states what the
+        run is permitted to do and lets the topic decide the rest.
+        """
+        return f"up to {self.max_channels:,}"
+
+    @property
+    def est_videos(self) -> str:
+        """Videos those channels bring with them.
+
+        Two complete measurements bracket this: the automotive run
+        hydrated 5,916 videos across 277 channels (21/channel) and the
+        delivered finance workbook holds 20,550 across 350 (59/channel).
+        The spread is real -- it is how much back catalogue a vertical's
+        channels carry -- so it is reported as a range rather than
+        averaged into a single number that would be wrong for both. Like
+        est_channels this is a ceiling: it follows the channel cap, which
+        saturation reaches first on any real topic.
+        """
+        # The high rate, since this is a ceiling like est_channels. The low
+        # rate is what a vertical of short-catalogue channels returns and is
+        # kept in the constant for anyone sizing a run by hand.
+        return f"up to {int(self.max_channels * _VIDEOS_PER_CHANNEL_HIGH):,}"
 
     @property
     def max_channels(self) -> int:
@@ -120,8 +161,6 @@ TIERS: list[DepthTier] = [
             "and classified. Enough to see the shape of a topic and the "
             "biggest channels in it before committing to a longer run."
         ),
-        est_channels="15-25",
-        est_videos="600-1,000",
         est_brightdata_usd=0.90,
         est_openrouter_usd=0.30,
         governors={
@@ -147,8 +186,6 @@ TIERS: list[DepthTier] = [
             "the obvious sub-niches are. A scouting pass rather than a finished "
             "deliverable."
         ),
-        est_channels="40-60",
-        est_videos="1,500-2,500",
         est_brightdata_usd=2.25,
         est_openrouter_usd=0.75,
         governors={
@@ -173,8 +210,6 @@ TIERS: list[DepthTier] = [
             "comparisons meaningful. The usual starting point for a topic "
             "nobody has mapped yet."
         ),
-        est_channels="120-180",
-        est_videos="5,000-8,000",
         est_brightdata_usd=7.50,
         est_openrouter_usd=2.50,
         governors={
@@ -199,8 +234,6 @@ TIERS: list[DepthTier] = [
             "band to support the stratified analysis the workbooks are built "
             "for -- including underperformers, not just winners."
         ),
-        est_channels="220-300",
-        est_videos="9,000-14,000",
         est_brightdata_usd=13.50,
         est_openrouter_usd=4.50,
         governors={
@@ -225,8 +258,6 @@ TIERS: list[DepthTier] = [
             "head-term discovery plus the long tail, full enrichment, and "
             "enough channels to hit a stratified size distribution."
         ),
-        est_channels="350-450",
-        est_videos="15,000-22,000",
         est_brightdata_usd=24.00,
         est_openrouter_usd=8.00,
         governors={
@@ -251,8 +282,6 @@ TIERS: list[DepthTier] = [
             "channels and into adjacent sub-niches. Use when the goal is to "
             "be able to say the vertical has been mapped, not sampled."
         ),
-        est_channels="550-700",
-        est_videos="24,000-34,000",
         est_brightdata_usd=42.00,
         est_openrouter_usd=13.00,
         governors={
@@ -277,8 +306,6 @@ TIERS: list[DepthTier] = [
             "limit is reached. The most complete picture we can build for a "
             "topic, and the most expensive."
         ),
-        est_channels="750-900",
-        est_videos="35,000-48,000",
         est_brightdata_usd=60.00,
         est_openrouter_usd=18.00,
         governors={
@@ -324,8 +351,15 @@ def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tier in TIERS:
         row = asdict(tier)
+        # asdict() sees dataclass FIELDS only, so every derived value has to
+        # be added by hand. est_channels and est_videos became properties
+        # (they follow max_channels now) and silently vanished from the API
+        # payload until this line -- the depth cards rendered blank.
         row["est_total_usd"] = tier.est_total_usd
         row["duration_label"] = tier.duration_label
+        row["est_channels"] = tier.est_channels
+        row["est_videos"] = tier.est_videos
+        row["max_channels"] = tier.max_channels
 
         blockers: list[str] = []
         warnings: list[str] = []

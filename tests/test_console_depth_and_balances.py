@@ -36,6 +36,19 @@ class TestTierShape:
         labels = [t.duration_label for t in depth_mod.TIERS]
         assert labels == ["30m", "1h", "6h", "12h", "24h", "48h", "72h"]
 
+    def test_availability_rows_carry_every_derived_field(self):
+        """asdict() serialises dataclass FIELDS only. est_channels and
+        est_videos became properties and vanished from the payload until
+        they were added by hand -- the depth cards rendered blank."""
+        rows = depth_mod.tiers_with_availability(
+            _balances(openrouter=500.0, brightdata=500.0)
+        )
+        row = next(r for r in rows if r["id"] == "glimpse")
+        for key in ("est_channels", "est_videos", "est_total_usd",
+                    "duration_label", "max_channels"):
+            assert key in row, f"{key} is missing from the API payload"
+            assert row[key] not in (None, ""), key
+
     def test_availability_rows_carry_the_duration_label(self):
         rows = depth_mod.tiers_with_availability(
             _balances(openrouter=500.0, brightdata=500.0)
@@ -297,7 +310,6 @@ class TestRunDeadline:
         ceiling drift apart."""
         tier = depth_mod.DepthTier(
             id="t", label="T", hours=2, tagline="", description="",
-            est_channels="", est_videos="",
             est_brightdata_usd=0.0, est_openrouter_usd=0.0,
             governors={"RUN_DEADLINE_SECONDS": 99},
         )

@@ -76,11 +76,40 @@ class TestUnderperformanceIsRelativeAndTimeAware:
 
 
 class TestEligibilityTerminates:
-    def test_query_excludes_channels_outside_the_two_verticals(self):
+    """Nothing eligible in SQL may be skipped in Python.
+
+    A skipped-but-eligible row refills the LIMIT 200 window every round and
+    the backfill stalls -- observed at 48 assignments with 300 candidates
+    still outstanding. This used to be held by listing the two verticals in
+    SQL, which also meant a run on any other topic assigned no cohorts at
+    all. The invariant is the point; the vertical list was one way to get
+    it, and the wrong one.
+    """
+
+    def test_the_only_python_skip_is_excluded_in_sql(self):
         src = inspect.getsource(mod.assign_cohorts)
-        assert "parent_category IN ('crime', 'finance')" in src, (
+        # The loop's sole `continue` is for a channel with no vertical...
+        assert "if not vertical:" in src
+        # ...and SQL excludes exactly that.
+        assert "parent_category IS NOT NULL" in src, (
             "channels skipped in Python but left eligible in SQL refill the "
             "LIMIT window every round and stall the backfill"
+        )
+
+    def test_no_vertical_is_hardcoded_into_eligibility(self):
+        """A client can research any topic; cohorts must not be reserved
+        for the two verticals that happened to ship first."""
+        src = inspect.getsource(mod.assign_cohorts)
+        assert "parent_category IN (" not in src
+
+    def test_an_unlisted_vertical_still_gets_a_cohort(self):
+        """The signals are vertical-agnostic, so the generic branch exists
+        rather than falling through to `continue`."""
+        src = inspect.getsource(mod.assign_cohorts)
+        assert "generic_group" in src
+        assert 'f"{vertical}_lifecycle"' in src, (
+            "a third vertical needs its own exclusive group, or its cohorts "
+            "are made mutually exclusive against crime's"
         )
 
     def test_already_assigned_is_checked_against_the_right_vertical(self):

@@ -30,6 +30,7 @@ import re
 import time
 from difflib import SequenceMatcher
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -170,19 +171,22 @@ def classify_channel(state: dict) -> dict:
     # eligibility query is an unordered LIMIT 50, so unscoped parallel
     # workers would fetch overlapping rows and buy the same classification
     # several times; disjoint slices are what make parallelism safe.
-    scope = state.get("scope_channel_ids")
     # `is not None`, not truthiness: an EMPTY scope means "this worker owns
     # no channels" and must select nothing. Treating it as falsy silently
     # widened the query to every channel in the table, so four parallel
     # workers each re-ran the entire global backlog instead of their own
     # slice -- four hours of redundant LLM calls that also re-classified
     # channels deliberately excluded from the run.
-    if scope is not None:
-        scope_sql = "AND channel_id = ANY(%s) "
-        scope_params: tuple = (list(scope),)
-    else:
-        scope_sql = ""
-        scope_params = ()
+    #
+    # The default is now the run's OWN channels rather than the whole
+    # table. Unscoped, this LIMIT 50 picked whichever fifty unclassified
+    # floor-passing channels the table happened to hold -- other runs'
+    # channels -- so a run could spend its entire classification budget
+    # and leave every one of its own unclassified. That is what shipped an
+    # automotive workbook with primary_niche_id 0/76, its Niches, Success
+    # Factors and Failure Factors sheets empty, and all 76 channels filed
+    # under "Unclassified" on the discovery graph.
+    scope_sql, scope_params = scope_clause(state)
 
     try:
         cur = conn.cursor()

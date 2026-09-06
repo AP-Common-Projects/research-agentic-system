@@ -16,6 +16,7 @@ import re
 import time
 from typing import Any
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
@@ -149,10 +150,16 @@ def resolve_geo_language(state: dict) -> dict:
         # the country-inference step below is still gated on its own
         # condition (no country_code), so a self-reported country is never
         # overwritten.
+        # Scoped to this run's own channels. Unscoped, this selected every
+        # channel in the table still missing a geo field -- 2,720 of them
+        # on the automotive run, of which it resolved 399 before the run
+        # ended, none of them necessarily belonging to that run.
+        scope_sql, scope_params = scope_clause(state)
         cur.execute(
             "SELECT channel_id, title, description, country_code, country_source, primary_language_code "
-            "FROM channels WHERE country_source = 'unknown' "
-            "   OR region IS NULL OR primary_language_code IS NULL"
+            "FROM channels WHERE (country_source = 'unknown' "
+            "   OR region IS NULL OR primary_language_code IS NULL) " + scope_sql,
+            scope_params,
         )
         unresolved = cur.fetchall()
         cur.close()

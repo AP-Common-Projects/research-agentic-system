@@ -12,6 +12,7 @@ import re
 import time
 from collections import Counter
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
@@ -251,9 +252,12 @@ def extract_metadata_signals(state: dict) -> dict:
 
     try:
         cur = conn.cursor()
+        # Scoped to this run's own channels -- see src/tools/run_scope.py.
+        scope_sql, scope_params = scope_clause(state)
         cur.execute(
             "SELECT channel_id, title, description FROM channels "
-            "WHERE has_affiliate_signal IS NULL"
+            "WHERE has_affiliate_signal IS NULL " + scope_sql,
+            scope_params,
         )
         channels = cur.fetchall()
         cur.close()

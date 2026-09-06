@@ -34,6 +34,7 @@ import re
 import time
 from typing import Any
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -144,6 +145,10 @@ def extract_success_failure_factors(state: dict) -> dict:
     # number that may not even be reachable for real channels.
     try:
         cur = conn.cursor()
+        # The cohort distribution is deliberately NOT scoped: a percentile
+        # is only meaningful against a population, and this run's own
+        # handful of channels is not one. Comparing a channel to itself
+        # would rank every one of them at the 50th percentile.
         cur.execute(
             "SELECT engagement_score, evergreen_score, upload_consistency_score, "
             "uploads_per_week_avg FROM channels WHERE meets_subscriber_floor = TRUE"
@@ -160,6 +165,13 @@ def extract_success_failure_factors(state: dict) -> dict:
         put_connection(conn)
         return {"node_logs": _log({"reason": "cohort distribution query failed", "extracted": 0})}
 
+    # WHICH channels get factors, though, is this run's business only.
+    # Unscoped, a run wrote factors for whatever fifty classified channels
+    # in the table happened to lack them -- other runs' channels, tagged
+    # with this run's id -- while its own shipped the Success Factors and
+    # Failure Factors sheets empty.
+    scope_sql, scope_params = scope_clause(state, "c.channel_id")
+
     def _fetch_eligible_batch() -> list[str]:
         cur = conn.cursor()
         try:
@@ -167,7 +179,9 @@ def extract_success_failure_factors(state: dict) -> dict:
                 "SELECT c.channel_id FROM channels c "
                 "WHERE c.meets_subscriber_floor = TRUE AND c.classifier_model IS NOT NULL "
                 "AND NOT EXISTS (SELECT 1 FROM channel_success_factors s WHERE s.channel_id = c.channel_id) "
-                "ORDER BY c.channel_id LIMIT 50"
+                + scope_sql +
+                "ORDER BY c.channel_id LIMIT 50",
+                scope_params,
             )
             return [r[0] for r in cur.fetchall()]
         finally:

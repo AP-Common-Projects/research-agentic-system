@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 
+from src.tools.run_scope import scope_clause
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
 
@@ -42,11 +43,18 @@ def resolve_first_video_date(state: dict) -> dict:
     except Exception:
         return {"node_logs": _log({"reason": "store unreachable", "resolved": 0})}
 
+    # Scoped to this run's own channels. Unscoped, the LIMIT 50 was spent
+    # on whatever floor-passing channel in the whole table happened to be
+    # missing a date -- measured on the automotive run: fifty finance and
+    # crime channels resolved, none of its own 76, and the column shipped
+    # 0% populated while the node still billed four minutes of API calls.
+    scope_sql, scope_params = scope_clause(state)
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT channel_id FROM channels WHERE meets_subscriber_floor = TRUE "
-            "AND first_video_published_at IS NULL LIMIT 50"
+            "AND first_video_published_at IS NULL " + scope_sql + "LIMIT 50",
+            scope_params,
         )
         eligible = [r[0] for r in cur.fetchall()]
         cur.close()

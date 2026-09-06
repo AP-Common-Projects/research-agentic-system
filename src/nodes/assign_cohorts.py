@@ -15,6 +15,7 @@ import json
 import time
 from datetime import datetime, timezone
 
+from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
@@ -93,6 +94,8 @@ def assign_cohorts(state: dict) -> dict:
 
     # Determine each channel's primary niche (vertical) via channel_niches → niche_taxonomy
     assigned = 0
+    # Scoped to this run's own channels -- see src/tools/run_scope.py.
+    scope_sql, scope_params = scope_clause(state, "c.channel_id")
     try:
         cur = conn.cursor()
         cur.execute(
@@ -116,12 +119,21 @@ def assign_cohorts(state: dict) -> dict:
             "AND NOT EXISTS (SELECT 1 FROM channel_cohorts cc "
             "WHERE cc.channel_id = c.channel_id "
             "AND cc.vertical = nt.parent_category) "
-            # Channels outside the two verticals were skipped in Python but
-            # stayed eligible in SQL, so they refilled the LIMIT 200 window
-            # every round and the driver stalled after 48 assignments with
-            # 300 candidates still unprocessed. Exclude them in the query.
-            "AND nt.parent_category IN ('crime', 'finance') "
-            "LIMIT 200"
+            # The invariant here is that nothing eligible in SQL may be
+            # skipped in Python: a skipped row refills the LIMIT 200 window
+            # every round and the backfill stalls (observed: 48 assignments
+            # with 300 candidates left). This used to hold it by listing
+            # `IN ('crime', 'finance')` -- which also meant an automotive
+            # run assigned zero cohorts, and so would any other topic.
+            #
+            # Now every classified vertical is processed, so the only rows
+            # the loop still skips are those with no classification at all,
+            # and THOSE are what SQL excludes. Same invariant, without
+            # hardcoding which topics the client is allowed to research.
+            "AND nt.parent_category IS NOT NULL "
+            + scope_sql +
+            "LIMIT 200",
+            scope_params,
         )
         channels = cur.fetchall()
         cur.close()
@@ -130,7 +142,7 @@ def assign_cohorts(state: dict) -> dict:
 
         for (ch_id, subs, ch_creation, v_start, eng, eg, vertical,
              size_bucket, last_upload, video_n, first_upload) in channels:
-            if not vertical or vertical not in ("crime", "finance"):
+            if not vertical:
                 continue
 
             subs = int(subs or 0)
@@ -198,6 +210,7 @@ def assign_cohorts(state: dict) -> dict:
                 and (abandoned or stagnant or below_peers)
             )
 
+            generic_group = f"{vertical}_lifecycle"
             if is_under and not is_new:
                 # Checked before the per-vertical branches: underperformer
                 # used to live inside the crime branch only, so Finance could
@@ -230,16 +243,41 @@ def assign_cohorts(state: dict) -> dict:
                     ("new_winner" if is_winner else "market_benchmark")
                 )
             else:
-                continue
+                # Every other vertical. Each signal above -- is_new,
+                # is_winner, is_under, has_track_record, below_peers -- is
+                # computed from subscriber counts, engagement and upload
+                # history, none of which is crime- or finance-specific, so
+                # there was never a reason for a third vertical to fall
+                # through to `continue` and receive no cohort at all. An
+                # automotive run assigned zero, and so would gaming, music
+                # or any other topic the client picks.
+                #
+                # Reuses the existing cohort codes rather than minting new
+                # ones: channel_cohorts.cohort_code has a foreign key into
+                # cohort_definitions keyed on the code alone, so these are
+                # already valid for any vertical.
+                cohort_code = (
+                    "new_entrant_breakout" if (is_new and is_winner)
+                    else "market_benchmark"
+                )
+                # Its own exclusive group, so the lifecycle cohorts stay
+                # mutually exclusive WITHIN this vertical without the code
+                # lookup handing back crime's group.
+                generic_group = f"{vertical}_lifecycle"
 
             if cohort_code:
+                exclusive_group = (
+                    generic_group
+                    if vertical not in ("crime", "finance")
+                    else cohort_defs.get(cohort_code, {}).get("exclusive_group")
+                )
                 cur4 = conn.cursor()
                 try:
                     _insert_cohort(conn, ch_id, vertical, cohort_code,
                                      {"subscriber_count": subs, "engagement": eng,
                                       "is_new": is_new, "is_winner": is_winner},
                                      run_id,
-                                     cohort_defs.get(cohort_code, {}).get("exclusive_group"),
+                                     exclusive_group,
                                      cur4, assigned)
                     assigned += 1
                 finally:
