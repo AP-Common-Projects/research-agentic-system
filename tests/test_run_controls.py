@@ -44,8 +44,8 @@ class TestThresholdCatalog:
         display a number the run was never going to use."""
         from src.api.depth import get_tier
 
-        rows = {r["id"]: r for r in th.catalog("glimpse")}
-        assert rows["max_channels_per_run"]["default"] == get_tier("glimpse").max_channels
+        rows = {r["id"]: r for r in th.catalog("sample")}
+        assert rows["max_channels_per_run"]["default"] == get_tier("sample").max_channels
 
     def test_without_a_depth_it_falls_back_to_config(self):
         rows = {r["id"]: r for r in th.catalog(None)}
@@ -103,7 +103,7 @@ class TestThresholdsReachTheRun:
         with patch("src.api.runs.subprocess.Popen", side_effect=_popen), \
              patch("src.api.runs._append_registry"):
             runs_mod.launch_run(
-                ["finance"], depth="glimpse",
+                ["finance"], depth="standard",
                 thresholds={"max_channels_per_run": 200, "subscriber_floor": 20000},
             )
 
@@ -111,7 +111,7 @@ class TestThresholdsReachTheRun:
         assert env["MAX_CHANNELS_PER_RUN"] == "200", "the override must beat the tier"
         assert env["SUBSCRIBER_FLOOR"] == "20000"
         # Untouched governors still come from the tier.
-        assert env["RUN_DEADLINE_SECONDS"] == "1800"
+        assert env["RUN_DEADLINE_SECONDS"] == "14400"
 
     def test_an_invalid_threshold_stops_the_launch(self, tmp_path, monkeypatch):
         monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)

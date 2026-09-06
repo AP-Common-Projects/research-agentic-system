@@ -31,20 +31,56 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-#: Measured across real runs: classify_channel takes ~21 minutes per batch
-#: of 50 channels, one LLM call each.
-_SECONDS_PER_CHANNEL = 25.0
-#: Share of a run's window left for enrichment once discovery and hydration
-#: have had their turn. From the automotive run: ~15 minutes of discovery
-#: plus hydration inside a 30-minute window.
-_ENRICHMENT_WINDOW_SHARE = 0.5
-#: Below this a tier is not worth running at all.
-_MIN_CHANNELS_PER_RUN = 20
-#: Videos per channel, bracketing two complete measurements: the automotive
-#: run at 21 (5,916 across 277) and the delivered finance workbook at 59
-#: (20,550 across 350).
-_VIDEOS_PER_CHANNEL_LOW = 21
-_VIDEOS_PER_CHANNEL_HIGH = 59
+#: Seconds of work per floor-passing channel DELIVERED, summed across every
+#: per-channel stage, measured on run-c6c45a3e91b2 (86 floor-passing out of
+#: 273 discovered, 4,614 videos):
+#:
+#:     discovery fan-out                10.0s
+#:     hydrate_metadata                 15.1s
+#:     classify_channel                 16.1s
+#:     resolve_first_video_date          9.0s
+#:     extract_success_failure_factors  11.6s
+#:     populate_taxonomy_dimensions     14.2s
+#:     populate_shared_fields           10.0s
+#:     describe_video_titles            26.8s  (54 videos/channel, 30/batch)
+#:                                     -------
+#:                                     112.9s
+#:
+#: The previous model used 25s, counting classify_channel alone. That is
+#: the whole reason a "30-minute" tier ran for hours: five of the eight
+#: stages were not in the arithmetic at all. Every figure above is from one
+#: real run and should be re-measured as more land -- but a number taken
+#: from a clock beats one taken from an assumption.
+_SECONDS_PER_CHANNEL = 113.0
+
+#: Work that happens once regardless of channel count: taxonomy build (19s
+#: measured), the latency floor of a single Bright Data snapshot cycle
+#: (a run of one channel still waits for one), branch compaction (30s),
+#: export and the completeness gate.
+#:
+#: Deliberately NOT the whole discovery phase -- that is already inside
+#: _SECONDS_PER_CHANNEL at 10s per floor-passing channel, and counting it
+#: twice shortened every tier.
+_FIXED_OVERHEAD_SECONDS = 600.0
+
+#: Channel counts are set to this fraction of what the window theoretically
+#: allows. A tier that fits only if every stage hits its average is a tier
+#: that overruns whenever one does not.
+_SAFETY_MARGIN = 0.82
+
+#: Measured LLM spend per channel: 4 channel-level calls plus ~1.8 video
+#: description batches, at $0.0044/call across 1,328 observed calls.
+_USD_PER_CHANNEL = 0.0255
+#: build_taxonomy, compact_branch and the niche work, once per run.
+_USD_FIXED = 0.35
+#: Quoted cost carries this multiple. Under-quoting strands a run
+#: mid-flight; over-quoting only makes a tier lock earlier than it must.
+_COST_MARGIN = 1.5
+
+#: Videos per channel, from the two complete measurements available: the
+#: automotive run at 54 (4,614/86) and the delivered finance workbook at 59
+#: (20,550/350).
+_VIDEOS_PER_CHANNEL = 54
 
 
 @dataclass
@@ -70,67 +106,31 @@ class DepthTier:
         self.governors["MAX_CHANNELS_PER_RUN"] = self.max_channels
 
     @property
+    def max_channels(self) -> int:
+        """How many channels this tier can actually finish, end to end.
+
+        Every per-channel stage is in this number, not just the one that
+        was easiest to time. Enforced as MAX_CHANNELS_PER_RUN, so discovery
+        stops here rather than finding several times what the window can
+        describe -- which is what produced a workbook of mostly-empty
+        columns and a run four times its stated length.
+        """
+        usable = self.hours * 3600 - _FIXED_OVERHEAD_SECONDS
+        return max(10, int(usable * _SAFETY_MARGIN / _SECONDS_PER_CHANNEL))
+
+    @property
     def est_channels(self) -> str:
-        """Channels a run of this length actually returns.
+        """Channels in the finished workbook.
 
-        The cap IS the estimate now. It is enforced -- discovery admission
-        stops at it and hydration trims to it -- so a run fills to the cap
-        wherever the topic has that many channels above the floor, and
-        stops there. The hand-written ranges this replaced answered to
-        nothing: Glimpse advertised "15-25" and the measured run discovered
-        273, four times what it could describe.
-
-        Phrased as a ceiling, not a range, because that is what it is.
-        Discovery saturation binds long before the cap on any real topic --
-        the two verticals measured end to end hold 350 (finance) and 240
-        (crime) channels above the 50k floor, so a 72-hour run's 5,184 is a
-        limit it will never approach on a topic that size. Promising a
-        range would be inventing the lower end; a ceiling states what the
-        run is permitted to do and lets the topic decide the rest.
+        The cap IS the estimate, phrased as a ceiling: discovery saturation
+        binds first on a thin topic, and a run that finds fewer stops
+        early rather than padding.
         """
         return f"up to {self.max_channels:,}"
 
     @property
     def est_videos(self) -> str:
-        """Videos those channels bring with them.
-
-        Two complete measurements bracket this: the automotive run
-        hydrated 5,916 videos across 277 channels (21/channel) and the
-        delivered finance workbook holds 20,550 across 350 (59/channel).
-        The spread is real -- it is how much back catalogue a vertical's
-        channels carry -- so it is reported as a range rather than
-        averaged into a single number that would be wrong for both. Like
-        est_channels this is a ceiling: it follows the channel cap, which
-        saturation reaches first on any real topic.
-        """
-        # The high rate, since this is a ceiling like est_channels. The low
-        # rate is what a vertical of short-catalogue channels returns and is
-        # kept in the constant for anyone sizing a run by hand.
-        return f"up to {int(self.max_channels * _VIDEOS_PER_CHANNEL_HIGH):,}"
-
-    @property
-    def max_channels(self) -> int:
-        """How many channels this tier can actually finish enriching.
-
-        Derived, not chosen. Discovery volume and enrichment capacity used
-        to be unrelated numbers, and the gap between them is what produced
-        a workbook whose classification columns were 95% empty: Glimpse's
-        record budget found 273 channels, and one cycle of classification
-        can describe 50. The run had been asked to find four times what it
-        could ever describe.
-
-        The model is deliberately crude and its inputs are measured:
-        classification runs at ~25s per channel (21 minutes per batch of
-        50, across several real runs), and roughly half a run's window goes
-        on discovery and hydration before enrichment starts. Both come from
-        a small number of observations and should be re-measured -- but a
-        cap derived from real timings beats an estimate that answers to
-        nothing, which is what the channel counts here used to be.
-        """
-        return max(
-            _MIN_CHANNELS_PER_RUN,
-            int(self.hours * 3600 * _ENRICHMENT_WINDOW_SHARE / _SECONDS_PER_CHANNEL),
-        )
+        return f"up to {self.max_channels * _VIDEOS_PER_CHANNEL:,}"
 
     @property
     def est_total_usd(self) -> float:
@@ -150,19 +150,32 @@ class DepthTier:
 
 
 # Ordered shallowest to deepest; the UI renders them in this order.
+#
+# Three, not seven. The old ladder was seven guesses at the same unknown:
+# every tier shared one per-channel model, so when that model turned out to
+# be four times optimistic, all seven were wrong together and the client had
+# six ways to pick the wrong one. Three tiers, each sized from measured
+# throughput and each enforced by a deadline and a channel cap, answer the
+# only question a client actually has -- a look, a proper study, or
+# everything -- and can each be checked against a real run.
+#
+# run-c6c45a3e91b2 (automotive: 273 discovered, 86 floor-passing, 4,614
+# videos, ~3h of real pipeline work once its bugs are removed) is a
+# Standard. It is the reference the three are scaled around.
 TIERS: list[DepthTier] = [
     DepthTier(
-        id="glimpse",
-        label="Glimpse",
-        hours=0.5,
-        tagline="A quick read on whether a topic has anything in it",
+        id="sample",
+        label="Sample",
+        hours=1,
+        tagline="A first look at whether a topic is worth studying",
         description=(
-            "A single discovery pass on the strongest head keyword, hydrated "
-            "and classified. Enough to see the shape of a topic and the "
-            "biggest channels in it before committing to a longer run."
+            "One discovery pass on the strongest keywords, fully enriched. "
+            "Enough to see the shape of a topic, its biggest channels and "
+            "its obvious sub-niches before committing to a longer run. "
+            "Small on purpose: every channel it returns is complete."
         ),
-        est_brightdata_usd=0.90,
-        est_openrouter_usd=0.30,
+        est_brightdata_usd=0.60,
+        est_openrouter_usd=1.50,
         governors={
             "MAX_ROUNDS_PER_BRANCH": 1,
             "MAX_TREE_DEPTH": 1,
@@ -170,48 +183,24 @@ TIERS: list[DepthTier] = [
             "KEYWORD_QUERIES_PER_ROUND": 4,
             "KEYWORD_RESULTS_PER_QUERY": 25,
             "GRAPH_WALK_FRONTIER_PER_ROUND": 5,
-            "BRIGHTDATA_RECORD_BUDGET": 600,
-            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 1200,
-            "BUDGET_LIMIT_USD": 1.2,
-        },
-    ),
-    DepthTier(
-        id="scout",
-        label="Scout",
-        hours=1,
-        tagline="A first look at whether the topic is worth pursuing",
-        description=(
-            "One shallow discovery sweep on the strongest keywords. Enough to "
-            "see whether a topic has channels above the floor at all, and what "
-            "the obvious sub-niches are. A scouting pass rather than a finished "
-            "deliverable."
-        ),
-        est_brightdata_usd=2.25,
-        est_openrouter_usd=0.75,
-        governors={
-            "MAX_ROUNDS_PER_BRANCH": 3,
-            "MAX_TREE_DEPTH": 1,
-            "MAX_BRANCHES": 2,
-            "KEYWORD_QUERIES_PER_ROUND": 6,
-            "KEYWORD_RESULTS_PER_QUERY": 25,
-            "GRAPH_WALK_FRONTIER_PER_ROUND": 10,
-            "BRIGHTDATA_RECORD_BUDGET": 1500,
-            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 3000,
+            "BRIGHTDATA_RECORD_BUDGET": 400,
+            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 1500,
             "BUDGET_LIMIT_USD": 3.0,
         },
     ),
     DepthTier(
-        id="survey",
-        label="Survey",
-        hours=6,
-        tagline="Enough breadth to compare sub-niches against each other",
+        id="standard",
+        label="Standard",
+        hours=4,
+        tagline="Enough coverage to compare sub-niches against each other",
         description=(
-            "Covers the main sub-niches with enough channels in each to make "
-            "comparisons meaningful. The usual starting point for a topic "
-            "nobody has mapped yet."
+            "Covers a topic's main sub-niches with enough channels in each "
+            "for the comparisons the workbook is built for -- size bands, "
+            "cohorts, success and failure factors. The default, and the "
+            "depth the reference automotive run was measured at."
         ),
-        est_brightdata_usd=7.50,
-        est_openrouter_usd=2.50,
+        est_brightdata_usd=2.25,
+        est_openrouter_usd=4.50,
         governors={
             "MAX_ROUNDS_PER_BRANCH": 4,
             "MAX_TREE_DEPTH": 2,
@@ -219,105 +208,34 @@ TIERS: list[DepthTier] = [
             "KEYWORD_QUERIES_PER_ROUND": 12,
             "KEYWORD_RESULTS_PER_QUERY": 50,
             "GRAPH_WALK_FRONTIER_PER_ROUND": 20,
-            "BRIGHTDATA_RECORD_BUDGET": 5000,
+            "BRIGHTDATA_RECORD_BUDGET": 1500,
             "YOUTUBE_QUOTA_BUDGET_PER_RUN": 8000,
-            "BUDGET_LIMIT_USD": 10.0,
+            "BUDGET_LIMIT_USD": 9.0,
         },
     ),
     DepthTier(
-        id="deep_dive",
-        label="Deep Dive",
-        hours=12,
-        tagline="Full sub-niche coverage with size and cohort structure",
+        id="deep",
+        label="Deep",
+        hours=10,
+        tagline="The long tail, not just the obvious channels",
         description=(
-            "Adds the long tail of sub-niches and enough channels per size "
-            "band to support the stratified analysis the workbooks are built "
-            "for -- including underperformers, not just winners."
+            "Pushes past the point where head keywords stop returning "
+            "anything new, into adjacent sub-niches and the smaller "
+            "channels underneath the well-known ones. For a vertical you "
+            "intend to say you have mapped rather than sampled."
         ),
-        est_brightdata_usd=13.50,
-        est_openrouter_usd=4.50,
-        governors={
-            "MAX_ROUNDS_PER_BRANCH": 6,
-            "MAX_TREE_DEPTH": 3,
-            "MAX_BRANCHES": 6,
-            "KEYWORD_QUERIES_PER_ROUND": 18,
-            "KEYWORD_RESULTS_PER_QUERY": 100,
-            "GRAPH_WALK_FRONTIER_PER_ROUND": 30,
-            "BRIGHTDATA_RECORD_BUDGET": 9000,
-            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 15000,
-            "BUDGET_LIMIT_USD": 18.0,
-        },
-    ),
-    DepthTier(
-        id="expedition",
-        label="Expedition",
-        hours=24,
-        tagline="Client-deliverable depth for a single vertical",
-        description=(
-            "The depth the Finance and Crime workbooks were built at. Broad "
-            "head-term discovery plus the long tail, full enrichment, and "
-            "enough channels to hit a stratified size distribution."
-        ),
-        est_brightdata_usd=24.00,
-        est_openrouter_usd=8.00,
+        est_brightdata_usd=6.00,
+        est_openrouter_usd=10.50,
         governors={
             "MAX_ROUNDS_PER_BRANCH": 8,
             "MAX_TREE_DEPTH": 4,
             "MAX_BRANCHES": 8,
             "KEYWORD_QUERIES_PER_ROUND": 24,
-            "KEYWORD_RESULTS_PER_QUERY": 150,
+            "KEYWORD_RESULTS_PER_QUERY": 100,
             "GRAPH_WALK_FRONTIER_PER_ROUND": 50,
-            "BRIGHTDATA_RECORD_BUDGET": 16000,
+            "BRIGHTDATA_RECORD_BUDGET": 4000,
             "YOUTUBE_QUOTA_BUDGET_PER_RUN": 25000,
-            "BUDGET_LIMIT_USD": 32.0,
-        },
-    ),
-    DepthTier(
-        id="atlas",
-        label="Atlas",
-        hours=48,
-        tagline="Exhaustive within the vertical, including adjacent niches",
-        description=(
-            "Pushes past the point where head keywords stop returning new "
-            "channels and into adjacent sub-niches. Use when the goal is to "
-            "be able to say the vertical has been mapped, not sampled."
-        ),
-        est_brightdata_usd=42.00,
-        est_openrouter_usd=13.00,
-        governors={
-            "MAX_ROUNDS_PER_BRANCH": 12,
-            "MAX_TREE_DEPTH": 5,
-            "MAX_BRANCHES": 12,
-            "KEYWORD_QUERIES_PER_ROUND": 36,
-            "KEYWORD_RESULTS_PER_QUERY": 200,
-            "GRAPH_WALK_FRONTIER_PER_ROUND": 80,
-            "BRIGHTDATA_RECORD_BUDGET": 28000,
-            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 40000,
-            "BUDGET_LIMIT_USD": 55.0,
-        },
-    ),
-    DepthTier(
-        id="census",
-        label="Census",
-        hours=72,
-        tagline="Everything the vertical has, to saturation",
-        description=(
-            "Keeps going until discovery genuinely runs dry rather than until a "
-            "limit is reached. The most complete picture we can build for a "
-            "topic, and the most expensive."
-        ),
-        est_brightdata_usd=60.00,
-        est_openrouter_usd=18.00,
-        governors={
-            "MAX_ROUNDS_PER_BRANCH": 0,   # 0 == uncapped, as in the `full` profile
-            "MAX_TREE_DEPTH": 0,
-            "MAX_BRANCHES": 0,
-            "KEYWORD_QUERIES_PER_ROUND": 0,
-            "KEYWORD_RESULTS_PER_QUERY": 250,
-            "GRAPH_WALK_FRONTIER_PER_ROUND": 0,
-            "BRIGHTDATA_RECORD_BUDGET": 40000,
-            "YOUTUBE_QUOTA_BUDGET_PER_RUN": 0,
-            "BUDGET_LIMIT_USD": 78.0,
+            "BUDGET_LIMIT_USD": 22.0,
         },
     ),
 ]

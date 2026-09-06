@@ -28,13 +28,17 @@ def _balances(openrouter=None, brightdata=None):
 
 
 class TestTierShape:
-    def test_tiers_cover_the_durations_the_client_asked_for(self):
-        assert [t.hours for t in depth_mod.TIERS] == [0.5, 1, 6, 12, 24, 48, 72]
+    def test_there_are_three_tiers_spanning_a_look_to_a_full_map(self):
+        """Seven tiers were seven guesses at one unknown -- they shared a
+        per-channel model, so when it proved four times optimistic they were
+        all wrong together. Three, each sized from measured throughput."""
+        assert [t.id for t in depth_mod.TIERS] == ["sample", "standard", "deep"]
+        assert [t.hours for t in depth_mod.TIERS] == [1, 4, 10]
 
     def test_duration_label_never_renders_a_fraction_of_an_hour(self):
         """The UI prints this string verbatim, so "0.5h" must not reach it."""
         labels = [t.duration_label for t in depth_mod.TIERS]
-        assert labels == ["30m", "1h", "6h", "12h", "24h", "48h", "72h"]
+        assert labels == ["1h", "4h", "10h"]
 
     def test_availability_rows_carry_every_derived_field(self):
         """asdict() serialises dataclass FIELDS only. est_channels and
@@ -43,7 +47,7 @@ class TestTierShape:
         rows = depth_mod.tiers_with_availability(
             _balances(openrouter=500.0, brightdata=500.0)
         )
-        row = next(r for r in rows if r["id"] == "glimpse")
+        row = next(r for r in rows if r["id"] == "sample")
         for key in ("est_channels", "est_videos", "est_total_usd",
                     "duration_label", "max_channels"):
             assert key in row, f"{key} is missing from the API payload"
@@ -53,16 +57,16 @@ class TestTierShape:
         rows = depth_mod.tiers_with_availability(
             _balances(openrouter=500.0, brightdata=500.0)
         )
-        assert next(r for r in rows if r["id"] == "glimpse")["duration_label"] == "30m"
+        assert next(r for r in rows if r["id"] == "sample")["duration_label"] == "1h"
 
     def test_shortest_tier_is_the_cheapest_and_is_affordable_on_pocket_change(self):
-        glimpse = depth_mod.TIERS[0]
-        assert glimpse.est_total_usd == min(t.est_total_usd for t in depth_mod.TIERS)
+        sample = depth_mod.TIERS[0]
+        assert sample.est_total_usd == min(t.est_total_usd for t in depth_mod.TIERS)
         rows = depth_mod.tiers_with_availability(
-            _balances(openrouter=glimpse.est_openrouter_usd,
-                      brightdata=glimpse.est_brightdata_usd)
+            _balances(openrouter=sample.est_openrouter_usd,
+                      brightdata=sample.est_brightdata_usd)
         )
-        assert not next(r for r in rows if r["id"] == "glimpse")["locked"]
+        assert not next(r for r in rows if r["id"] == "sample")["locked"]
 
     def test_brightdata_estimate_matches_the_record_budget_it_buys(self):
         """$0.0015/record is the measured rate; an estimate that disagrees with
@@ -95,9 +99,9 @@ class TestTierShape:
 class TestAffordability:
     def test_a_tier_locks_when_a_provider_cannot_fund_it(self):
         rows = depth_mod.tiers_with_availability(_balances(openrouter=1.0, brightdata=500.0))
-        census = next(r for r in rows if r["id"] == "census")
-        assert census["locked"]
-        assert any("OpenRouter" in b for b in census["blockers"])
+        deep = next(r for r in rows if r["id"] == "deep")
+        assert deep["locked"]
+        assert any("OpenRouter" in b for b in deep["blockers"])
 
     def test_a_tier_unlocks_when_both_providers_can_fund_it(self):
         rows = depth_mod.tiers_with_availability(_balances(openrouter=500.0, brightdata=500.0))
@@ -107,9 +111,9 @@ class TestAffordability:
         """Discovery and model spend are topped up separately; a full
         OpenRouter balance must not paper over an empty Bright Data one."""
         rows = depth_mod.tiers_with_availability(_balances(openrouter=500.0, brightdata=1.0))
-        census = next(r for r in rows if r["id"] == "census")
-        assert census["locked"]
-        assert any("Bright Data" in b for b in census["blockers"])
+        deep = next(r for r in rows if r["id"] == "deep")
+        assert deep["locked"]
+        assert any("Bright Data" in b for b in deep["blockers"])
 
     def test_unknown_balance_warns_but_does_not_lock(self):
         """Bright Data without billing permission reports nothing. Refusing to
@@ -122,12 +126,12 @@ class TestAffordability:
     def test_a_tier_survives_a_thin_but_exactly_sufficient_wallet(self):
         # Bound by id, not position -- a new shallowest tier must not silently
         # re-point this at something cheaper.
-        scout = depth_mod.get_tier("scout")
+        standard = depth_mod.get_tier("standard")
         rows = depth_mod.tiers_with_availability(
-            _balances(openrouter=scout.est_openrouter_usd,
-                      brightdata=scout.est_brightdata_usd)
+            _balances(openrouter=standard.est_openrouter_usd,
+                      brightdata=standard.est_brightdata_usd)
         )
-        assert not next(r for r in rows if r["id"] == "scout")["locked"]
+        assert not next(r for r in rows if r["id"] == "standard")["locked"]
 
 
 class TestBalanceHonesty:
@@ -301,8 +305,8 @@ class TestRunDeadline:
         for tier in depth_mod.TIERS:
             assert tier.governors["RUN_DEADLINE_SECONDS"] == int(tier.hours * 3600), tier.id
 
-    def test_the_shortest_tier_really_is_half_an_hour(self):
-        assert depth_mod.get_tier("glimpse").governors["RUN_DEADLINE_SECONDS"] == 1800
+    def test_the_shortest_tier_really_is_one_hour(self):
+        assert depth_mod.get_tier("sample").governors["RUN_DEADLINE_SECONDS"] == 3600
 
     def test_deadline_is_derived_not_hand_written(self):
         """A tier constructed with a contradictory deadline must be corrected
@@ -385,7 +389,7 @@ class TestGovernorsReachTheRun:
         import subprocess
         import sys
 
-        tier = depth_mod.get_tier("scout")
+        tier = depth_mod.get_tier("standard")
         assert tier is not None
 
         env = os.environ.copy()

@@ -201,16 +201,24 @@ class TestLaunchRun:
         """A client-set floor has to reach the run; dropping it silently
         would start a run against defaults the client did not choose."""
         fake = {"run_id": "run-x", "thread_id": "t-x", "niches": ["finance"], "pid": 42}
-        with patch.object(runs_mod, "launch_run", return_value=fake) as mock_launch:
+        # Balances mocked: naming a depth makes the endpoint re-check
+        # affordability against the LIVE wallet, so without this the test
+        # passes or fails on how much credit the account happens to hold.
+        funded = {"providers": [
+            {"provider": "openrouter", "available_usd": 500.0, "source": "live"},
+            {"provider": "brightdata", "available_usd": 500.0, "source": "live"},
+        ]}
+        with patch.object(runs_mod, "launch_run", return_value=fake) as mock_launch, \
+             patch("src.api.balances.all_balances", return_value=funded):
             resp = client.post("/api/runs", json={
                 "niches": ["finance"],
-                "depth": "glimpse",
+                "depth": "standard",
                 "thresholds": {"subscriber_floor": 20000},
             })
 
         assert resp.status_code == 201
         mock_launch.assert_called_once_with(
-            ["finance"], depth="glimpse", thresholds={"subscriber_floor": 20000}
+            ["finance"], depth="standard", thresholds={"subscriber_floor": 20000}
         )
 
     def test_an_out_of_range_threshold_is_refused(self, client):

@@ -266,13 +266,14 @@ class TestChannelCapMatchesEnrichmentCapacity:
         caps = [t.governors["MAX_CHANNELS_PER_RUN"] for t in TIERS]
         assert caps == sorted(caps), caps
 
-    def test_glimpse_cannot_be_asked_for_more_than_it_can_describe(self):
-        """The exact failure: one cycle of classification handles 50, so a
-        30-minute tier must not be sized to discover several times that."""
+    def test_the_shortest_tier_is_not_asked_for_more_than_it_can_finish(self):
+        """The original failure: a tier sized to DISCOVER several times what
+        it could ever describe. The cap now comes from the measured
+        end-to-end cost of a channel, so it is what the window can finish."""
         from src.api.depth import get_tier
 
-        glimpse = get_tier("glimpse")
-        assert glimpse.governors["MAX_CHANNELS_PER_RUN"] <= 50
+        sample = get_tier("sample")
+        assert sample.governors["MAX_CHANNELS_PER_RUN"] <= 50
 
     def test_discovery_stops_once_the_cap_is_reached(self):
         from src.graph import _guarded
