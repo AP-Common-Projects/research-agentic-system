@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -114,7 +115,11 @@ def is_process_running(pid: int | None) -> bool:
     return True
 
 
-def launch_run(niches: list[str], depth: str | None = None) -> dict[str, Any]:
+def launch_run(
+    niches: list[str],
+    depth: str | None = None,
+    thresholds: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Start a detached harness run and register it. Returns the registry entry.
 
     Budget remains a circuit breaker rather than a per-run dial (master plan
@@ -141,6 +146,15 @@ def launch_run(niches: list[str], depth: str | None = None) -> dict[str, Any]:
             raise ValueError(f"Unknown depth tier: {depth!r}")
         for key, value in tier.governors.items():
             env[key] = str(value)
+
+    # Applied AFTER the tier so an explicit choice wins over the tier's
+    # default -- raising the channel cap past what the depth can finish is
+    # a decision the client is allowed to make, having been told what it
+    # costs. Validation happens here rather than at the edge so a run
+    # started any other way gets the same bounds.
+    from src.api.thresholds import validate as _validate_thresholds
+
+    env.update(_validate_thresholds(thresholds))
 
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     thread_id = f"thread-{uuid.uuid4().hex[:12]}"
@@ -178,9 +192,84 @@ def launch_run(niches: list[str], depth: str | None = None) -> dict[str, Any]:
         "depth": tier.id if tier else None,
         "depth_label": tier.label if tier else None,
         "depth_hours": tier.hours if tier else None,
+        # Recorded so a finished run can say what it was actually run with,
+        # rather than the reader having to assume the defaults.
+        "thresholds": dict(thresholds) if thresholds else None,
     }
     _append_registry(entry)
     return entry
+
+
+def stop_run(run_id: str) -> dict[str, Any]:
+    """Ask a running run to stop, and report what happened.
+
+    SIGTERM, not SIGKILL: the harness writes its NodeLog and checkpoint as
+    it goes, so a terminated run keeps everything it had finished. What it
+    loses is the export, since finalize_dataset never runs -- the workbook
+    for a stopped run has to be produced afterwards from the run id.
+
+    Idempotent by design. Stopping an already-finished run is not an error,
+    because the console cannot know the process died between rendering the
+    button and the click landing.
+    """
+    entry = next((e for e in load_registry() if e.get("run_id") == run_id), None)
+    if entry is None:
+        raise LookupError(f"Unknown run: {run_id}")
+
+    pid = entry.get("pid")
+    if not pid or not is_process_running(pid):
+        return {"run_id": run_id, "stopped": False, "reason": "not running"}
+
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except (OSError, ProcessLookupError) as exc:
+        return {"run_id": run_id, "stopped": False, "reason": str(exc)}
+
+    return {"run_id": run_id, "stopped": True, "pid": pid}
+
+
+def delete_run(run_id: str) -> dict[str, Any]:
+    """Remove a run from the console: its registry entry and its artefacts.
+
+    Refuses while the run is alive. Deleting the log of a process still
+    writing to it leaves the console showing a run whose file reappears a
+    second later, which reads as the delete having failed.
+
+    The Postgres rows the run produced are deliberately NOT touched. They
+    are shared with every other run's data -- channels this one discovered
+    are cited by workbooks, and its category_tags carry lineage -- so a
+    console-level delete removes the console's view of the run, not the
+    research it did.
+    """
+    entries = load_registry()
+    entry = next((e for e in entries if e.get("run_id") == run_id), None)
+
+    if entry is not None and is_process_running(entry.get("pid")):
+        raise ValueError("This run is still going. Stop it before deleting.")
+
+    removed: list[str] = []
+    d = log_dir()
+    for path in (
+        d / f"{run_id}.jsonl",
+        d / f"{run_id}.stdout.log",
+        d / "spend" / f"{run_id}.jsonl",
+    ):
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(path.name)
+        except OSError:
+            continue
+
+    if entry is not None:
+        kept = [e for e in entries if e.get("run_id") != run_id]
+        path = registry_path()
+        path.write_text(
+            "".join(json.dumps(e, default=str) + "\n" for e in kept),
+            encoding="utf-8",
+        )
+
+    return {"run_id": run_id, "deleted": True, "removed": removed}
 
 
 # ---------------------------------------------------------------------------

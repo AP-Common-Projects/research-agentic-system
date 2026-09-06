@@ -77,12 +77,128 @@ function DepthCard({
   );
 }
 
+/* --------------------------------------------------------------------------
+ * Thresholds
+ *
+ * The depth tier decides how long a run goes and how many channels it can
+ * finish. These decide what counts as worth including at all -- and they
+ * used to live in .env, which made "only channels above 50k subscribers" a
+ * property of the deployment rather than of the question being asked.
+ *
+ * Collapsed by default. Every one of them has a defensible default, and a
+ * client who has not thought about the subscriber floor should not have to
+ * decide about it before they can start a run.
+ * ----------------------------------------------------------------------- */
+
+function ThresholdsPanel({
+  depth,
+  value,
+  onChange,
+}: {
+  depth: string;
+  value: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const thresholds = useQuery({
+    queryKey: ['thresholds', depth],
+    queryFn: () => api.thresholds(depth),
+  });
+
+  const changed = Object.keys(value).length;
+
+  return (
+    <Panel>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left"
+      >
+        <div>
+          <h2 className="font-display text-sm font-semibold tracking-tight text-ink">
+            3 · Thresholds
+          </h2>
+          <p className="mt-0.5 text-xs text-ink-3">
+            {changed > 0
+              ? `${changed} changed from the default`
+              : 'Optional — sensible defaults are already set'}
+          </p>
+        </div>
+        <span aria-hidden className="text-xs text-ink-3">
+          {open ? 'Hide' : 'Adjust'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="space-y-4 border-t border-line p-4">
+          {thresholds.isLoading && <Skeleton rows={3} />}
+          {thresholds.isError && (
+            <p className="text-sm text-ink-2">
+              Couldn&rsquo;t load the thresholds — the run will use its
+              defaults, which is what it would have done anyway.
+            </p>
+          )}
+          {thresholds.data?.map((t) => {
+            const current = value[t.id] ?? t.default ?? t.minimum;
+            const isChanged = t.id in value;
+            return (
+              <div key={t.id}>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <label htmlFor={`th-${t.id}`} className="text-sm text-ink">
+                    {t.label}
+                  </label>
+                  <span className="font-mono text-xs tabular-nums text-ink-2">
+                    {t.kind === 'int'
+                      ? Number(current).toLocaleString()
+                      : Number(current)}
+                    {t.unit ? ` ${t.unit}` : ''}
+                    {isChanged && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = { ...value };
+                          delete next[t.id];
+                          onChange(next);
+                        }}
+                        className="ml-2 text-[10px] text-[var(--focus)] hover:underline"
+                      >
+                        reset
+                      </button>
+                    )}
+                  </span>
+                </div>
+                <input
+                  id={`th-${t.id}`}
+                  type="range"
+                  min={t.minimum}
+                  max={t.maximum}
+                  step={t.step}
+                  value={current}
+                  onChange={(e) =>
+                    onChange({ ...value, [t.id]: Number(e.target.value) })
+                  }
+                  className="mt-2 w-full accent-[var(--focus)]"
+                />
+                <p className="mt-1 text-xs leading-snug text-ink-3">{t.help}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export function NewRunPage() {
   const queryClient = useQueryClient();
 
   const [topic, setTopic] = useState('');
   const [submittedTopic, setSubmittedTopic] = useState('');
   const [depth, setDepth] = useState<string | null>(null);
+  // Only ids the reader actually changed. Sending the untouched defaults
+  // back would pin them, so a later change to a default would not reach a
+  // run the client thought they had left alone.
+  const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const [launched, setLaunched] = useState<string | null>(null);
 
   const topics = useQuery({ queryKey: ['topics'], queryFn: api.topics });
@@ -106,7 +222,8 @@ export function NewRunPage() {
   });
 
   const launch = useMutation({
-    mutationFn: () => api.launchRun([submittedTopic], depth ?? undefined),
+    mutationFn: () =>
+      api.launchRun([submittedTopic], depth ?? undefined, thresholds),
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ['runs'] });
       setLaunched(run.run_id);
@@ -303,6 +420,9 @@ export function NewRunPage() {
           </div>
         </Panel>
       )}
+
+      {/* ---- 3. Thresholds (optional) ---- */}
+      {chosenTier && <ThresholdsPanel depth={chosenTier.id} value={thresholds} onChange={setThresholds} />}
 
       {/* ---- Launch ---- */}
       {chosenTier && (

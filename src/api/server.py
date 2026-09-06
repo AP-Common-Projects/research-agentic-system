@@ -34,7 +34,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    # DELETE for the run/workbook removal routes; without it the Vite dev
+    # server's preflight is refused and the button silently does nothing.
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -43,6 +45,8 @@ class LaunchRequest(BaseModel):
     niches: list[str] = Field(..., min_length=1)
     # Optional so an existing caller keeps working on the .env profile.
     depth: str | None = Field(default=None)
+    # Per-run threshold overrides, validated against src/api/thresholds.py.
+    thresholds: dict[str, Any] | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +100,37 @@ def api_launch_run(req: LaunchRequest) -> dict[str, Any]:
             )
 
     try:
-        return runs_mod.launch_run(niches, depth=req.depth)
+        return runs_mod.launch_run(niches, depth=req.depth, thresholds=req.thresholds)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not launch run: {exc}") from exc
+
+
+@app.post("/api/runs/{run_id}/stop")
+def api_stop_run(run_id: str) -> dict[str, Any]:
+    """SIGTERM a running run. Everything it finished is kept."""
+    try:
+        return runs_mod.stop_run(run_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/runs/{run_id}")
+def api_delete_run(run_id: str) -> dict[str, Any]:
+    """Remove a run from the console. Its Postgres rows are left alone."""
+    try:
+        return runs_mod.delete_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/thresholds")
+def api_thresholds(depth: str | None = Query(None)) -> list[dict[str, Any]]:
+    """The thresholds a client may set, with the values this run would use."""
+    from src.api import thresholds as thresholds_mod
+
+    return thresholds_mod.catalog(depth)
 
 
 @app.get("/api/runs/{run_id}")
@@ -414,6 +444,18 @@ def api_workbooks() -> list[dict[str, Any]]:
     from src.api import workbooks as wb_mod
 
     return wb_mod.list_workbooks()
+
+
+@app.delete("/api/workbooks/{workbook_id}")
+def api_delete_workbook(workbook_id: str) -> dict[str, Any]:
+    from src.api import workbooks as workbooks_mod
+
+    try:
+        return workbooks_mod.delete_workbook(workbook_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/workbooks/{workbook_id}/spend")

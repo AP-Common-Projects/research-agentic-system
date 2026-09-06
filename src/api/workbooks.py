@@ -176,6 +176,52 @@ def list_workbooks() -> list[dict[str, Any]]:
     return [_entry(spec) for spec in _all_specs()]
 
 
+def delete_workbook(workbook_id: str) -> dict[str, Any]:
+    """Remove an exported workbook and the artefacts beside it.
+
+    The two curated deliverables are refused. They are the shipped client
+    work, they live outside the per-run export layout, and there is no
+    button in this console worth losing them to -- a re-export cannot
+    reproduce them, because the runs that built them have been through
+    manual backfills since.
+
+    Everything else is a run export, which CAN be reproduced from its run
+    id, so deleting it costs a re-export rather than the data itself.
+    """
+    pinned = {spec["id"] for spec in CATALOG}
+    if workbook_id in pinned:
+        raise ValueError(
+            "The Finance and Crime workbooks are the delivered deliverables "
+            "and cannot be deleted here."
+        )
+
+    path = resolve_path(workbook_id)
+    if path is None:
+        raise LookupError(f"Unknown workbook: {workbook_id}")
+
+    # The whole export directory, not just the .xlsx: a run's export also
+    # holds channels.csv, the discovery graph and the manifest, and leaving
+    # those behind means the directory still shows up as an export with a
+    # missing workbook.
+    directory = path.parent
+    removed: list[str] = []
+    try:
+        if directory.is_dir() and directory.name == workbook_id:
+            for child in sorted(directory.iterdir()):
+                if child.is_file():
+                    child.unlink()
+                    removed.append(child.name)
+            directory.rmdir()
+        else:
+            path.unlink()
+            removed.append(path.name)
+    except OSError as exc:
+        raise ValueError(f"Could not delete: {exc}") from exc
+
+    _meta_cache.pop(workbook_id, None)
+    return {"workbook_id": workbook_id, "deleted": True, "removed": removed}
+
+
 def resolve_path(workbook_id: str) -> Path | None:
     for spec in _all_specs():
         if spec["id"] == workbook_id:

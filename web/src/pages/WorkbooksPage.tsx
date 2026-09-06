@@ -1,6 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Workbook } from '../lib/api';
-import { Panel, Eyebrow, EmptyState, ErrorState, Skeleton } from '../components/primitives';
+import {
+  Panel,
+  Eyebrow,
+  EmptyState,
+  ErrorState,
+  Skeleton,
+  ConfirmButton,
+} from '../components/primitives';
 
 function fileSize(bytes: number): string {
   return bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.round(bytes / 1e3)} KB`;
@@ -13,7 +20,19 @@ function when(epochSeconds: number): string {
   });
 }
 
-function WorkbookCard({ workbook }: { workbook: Workbook }) {
+//: The curated deliverables, which this page never offers to delete.
+const PINNED_WORKBOOKS = new Set(['finance', 'crime']);
+
+function WorkbookCard({
+  workbook,
+  onDelete,
+  deleting,
+}: {
+  workbook: Workbook;
+  onDelete: (id: string) => void;
+  deleting: boolean;
+}) {
+  const deletable = !PINNED_WORKBOOKS.has(workbook.id);
   if (!workbook.available) {
     return (
       <Panel>
@@ -39,12 +58,30 @@ function WorkbookCard({ workbook }: { workbook: Workbook }) {
             <p className="mt-0.5 text-sm text-ink-2">{workbook.description}</p>
             <p className="mt-1 font-mono text-xs text-ink-3">{workbook.filename}</p>
           </div>
-          <a
-            href={`${import.meta.env.DEV ? 'http://localhost:8000' : ''}${workbook.download_url}`}
-            className="shrink-0 rounded-md bg-[var(--focus)] px-4 py-2 text-sm font-medium text-white"
-          >
-            Download
-          </a>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* The two delivered workbooks have no delete: they are the
+                shipped client work, they sit outside the per-run export
+                layout, and a re-export would not reproduce them because the
+                runs behind them have had manual backfills since. The API
+                refuses them too, so this is not the only guard. */}
+            {deletable && (
+              <ConfirmButton
+                onConfirm={() => onDelete(workbook.id)}
+                confirmLabel="Delete workbook?"
+                pending={deleting}
+                pendingLabel="Deleting…"
+                title="Removes the exported files. The run's data stays in the database, so it can be exported again."
+              >
+                Delete
+              </ConfirmButton>
+            )}
+            <a
+              href={`${import.meta.env.DEV ? 'http://localhost:8000' : ''}${workbook.download_url}`}
+              className="rounded-md bg-[var(--focus)] px-4 py-2 text-sm font-medium text-white"
+            >
+              Download
+            </a>
+          </div>
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -87,6 +124,12 @@ function WorkbookCard({ workbook }: { workbook: Workbook }) {
 }
 
 export function WorkbooksPage() {
+  const queryClient = useQueryClient();
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteWorkbook(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workbooks'] }),
+  });
+
   const workbooks = useQuery({ queryKey: ['workbooks'], queryFn: api.workbooks });
 
   return (
@@ -101,6 +144,13 @@ export function WorkbooksPage() {
         </p>
       </header>
 
+      {remove.isError && (
+        <ErrorState
+          title="Could not delete that workbook"
+          detail={(remove.error as Error).message}
+        />
+      )}
+
       {workbooks.isLoading && <Skeleton rows={4} />}
       {workbooks.isError && (
         <ErrorState
@@ -114,7 +164,12 @@ export function WorkbooksPage() {
         </EmptyState>
       )}
       {workbooks.data?.map((workbook) => (
-        <WorkbookCard key={workbook.id} workbook={workbook} />
+        <WorkbookCard
+          key={workbook.id}
+          workbook={workbook}
+          onDelete={(id) => remove.mutate(id)}
+          deleting={remove.isPending && remove.variables === workbook.id}
+        />
       ))}
     </div>
   );

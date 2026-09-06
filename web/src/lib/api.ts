@@ -40,6 +40,19 @@ export interface DepthTier {
   warnings: string[];
 }
 
+export interface Threshold {
+  id: string;
+  env: string;
+  label: string;
+  help: string;
+  kind: 'int' | 'float';
+  minimum: number;
+  maximum: number;
+  step: number;
+  unit: string;
+  default: number | null;
+}
+
 export interface Topic {
   id: string;
   label: string;
@@ -186,6 +199,11 @@ export interface Run {
   niches: string[];
   pid: number | null;
   started_at: string;
+  // Present on console-launched runs; absent on ones started from the CLI.
+  depth?: string | null;
+  depth_label?: string | null;
+  depth_hours?: number | null;
+  thresholds?: Record<string, number> | null;
   status: RunStatus;
   last_node: string | null;
   last_activity_at: string | null;
@@ -355,6 +373,21 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const parsed = await res.json();
+      if (typeof parsed?.detail === 'string') detail = parsed.detail;
+    } catch {
+      /* non-JSON error body — keep the status message */
+    }
+    throw new ApiError(detail, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -411,6 +444,20 @@ export const api = {
 
   depths: () => get<DepthTier[]>('/api/depths'),
 
+  thresholds: (depth?: string) =>
+    get<Threshold[]>(`/api/thresholds${depth ? `?depth=${encodeURIComponent(depth)}` : ''}`),
+
+  stopRun: (runId: string) =>
+    post<{ run_id: string; stopped: boolean; reason?: string }>(
+      `/api/runs/${encodeURIComponent(runId)}/stop`, {},
+    ),
+
+  deleteRun: (runId: string) =>
+    del<{ run_id: string; deleted: boolean }>(`/api/runs/${encodeURIComponent(runId)}`),
+
+  deleteWorkbook: (id: string) =>
+    del<{ workbook_id: string; deleted: boolean }>(`/api/workbooks/${encodeURIComponent(id)}`),
+
   topics: () => get<Topic[]>('/api/topics'),
 
   suggestSubNiches: (q: string) =>
@@ -422,11 +469,18 @@ export const api = {
 
   workbookTree: (id: string) => get<WorkbookTree>(`/api/workbooks/${id}/tree`),
 
-  launchRun: async (niches: string[], depth?: string): Promise<Run> => {
+  launchRun: async (
+    niches: string[],
+    depth?: string,
+    thresholds?: Record<string, number>,
+  ): Promise<Run> => {
+    const body: Record<string, unknown> = { niches };
+    if (depth) body.depth = depth;
+    if (thresholds && Object.keys(thresholds).length > 0) body.thresholds = thresholds;
     const res = await fetch(`${BASE}/api/runs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(depth ? { niches, depth } : { niches }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       let detail = `Could not start the run (${res.status})`;

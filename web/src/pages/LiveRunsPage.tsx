@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api, type Run } from '../lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type NodeLogEntry, type Run } from '../lib/api';
+import {
+  computeProgress,
+  phaseOf,
+  PHASE_DETAIL,
+  PHASE_LABEL,
+  PHASE_ORDER,
+  type Phase,
+} from '../lib/progress';
 import { useRunEvents } from '../hooks/useRunEvents';
 import {
   Panel,
@@ -12,6 +20,7 @@ import {
   ErrorState,
   Skeleton,
   Tooltip,
+  ConfirmButton,
 } from '../components/primitives';
 
 /* --------------------------------------------------------------------------
@@ -19,28 +28,37 @@ import {
  * the monitor: nothing else says what the harness is doing *right now*.
  * ----------------------------------------------------------------------- */
 
-/** What each node is, in the client's terms rather than the graph's. */
-const NODE_META: Record<string, { label: string; phase: Phase }> = {
-  scan_niches: { label: 'Reading the topic', phase: 'plan' },
-  expand_niche_adjacency: { label: 'Looking for adjacent areas', phase: 'plan' },
-  build_taxonomy: { label: 'Mapping sub-niches', phase: 'plan' },
-  select_next_node: { label: 'Choosing the next branch', phase: 'plan' },
-  underperformer_discovery: { label: 'Sweeping smaller channels', phase: 'discover' },
-  graph_walk: { label: 'Following channel references', phase: 'discover' },
-  keyword_search: { label: 'Searching keywords', phase: 'discover' },
-  breakout_scanner: { label: 'Scanning for breakouts', phase: 'discover' },
-  new_channel_discovery: { label: 'Finding new channels', phase: 'discover' },
-  hydrate_metadata: { label: 'Pulling channel details', phase: 'enrich' },
-  resolve_geo_language: { label: 'Resolving region and language', phase: 'enrich' },
-  extract_metadata_signals: { label: 'Reading metadata signals', phase: 'enrich' },
-  check_saturation: { label: 'Checking for saturation', phase: 'assess' },
-  cluster_branch: { label: 'Clustering the branch', phase: 'assess' },
-  compact_branch: { label: 'Summarising the branch', phase: 'assess' },
-  finalize_dataset: { label: 'Finalising the dataset', phase: 'finish' },
-  synthesize: { label: 'Writing the report', phase: 'finish' },
+/** What each node is called, in the client's terms rather than the
+ *  graph's. The PHASE each belongs to lives in lib/progress.ts, which the
+ *  progress bar reads too -- one node/phase map, not two that can drift. */
+const NODE_LABEL: Record<string, string> = {
+  scan_niches: 'Reading the topic',
+  expand_niche_adjacency: 'Looking for adjacent areas',
+  build_taxonomy: 'Mapping sub-niches',
+  select_next_node: 'Choosing the next branch',
+  underperformer_discovery: 'Sweeping smaller channels',
+  graph_walk: 'Following channel references',
+  keyword_search: 'Searching keywords',
+  breakout_scanner: 'Scanning for breakouts',
+  new_channel_discovery: 'Finding new channels',
+  hydrate_metadata: 'Pulling channel details',
+  resolve_geo_language: 'Resolving region and language',
+  extract_metadata_signals: 'Reading metadata signals',
+  score_signals: 'Scoring signals',
+  classify_channel: 'Classifying channels',
+  resolve_first_video_date: 'Dating first uploads',
+  check_saturation: 'Checking for saturation',
+  cluster_branch: 'Clustering the branch',
+  compact_branch: 'Summarising the branch',
+  extract_success_failure_factors: 'Extracting success factors',
+  describe_video_titles: 'Describing videos',
+  populate_taxonomy_dimensions: 'Filling taxonomy dimensions',
+  populate_crime_metadata: 'Filling case details',
+  populate_shared_fields: 'Filling shared fields',
+  assign_cohorts: 'Assigning cohorts',
+  finalize_dataset: 'Finalising the dataset',
+  synthesize: 'Writing the report',
 };
-
-type Phase = 'plan' | 'discover' | 'enrich' | 'assess' | 'finish';
 
 const PHASE_COLOR: Record<Phase, string> = {
   plan: 'var(--track-seed)',
@@ -51,7 +69,10 @@ const PHASE_COLOR: Record<Phase, string> = {
 };
 
 function nodeMeta(name: string) {
-  return NODE_META[name] ?? { label: name.replace(/_/g, ' '), phase: 'plan' as Phase };
+  return {
+    label: NODE_LABEL[name] ?? name.replace(/_/g, ' '),
+    phase: phaseOf(name),
+  };
 }
 
 function usd(n: number | null | undefined): string {
@@ -96,10 +117,15 @@ function summarise(input: Record<string, unknown>): string {
 
 /* ---- the stream ------------------------------------------------------- */
 
-function ActivityStream({ run }: { run: Run }) {
-  const isLive = run.status === 'running';
-  const { entries, connection } = useRunEvents(run.run_id, isLive);
-
+function ActivityStream({
+  isLive,
+  entries,
+  connection,
+}: {
+  isLive: boolean;
+  entries: NodeLogEntry[];
+  connection: string;
+}) {
   // Newest first: on a run that has been going for an hour, what just
   // happened is the thing being monitored, and it should not require a
   // scroll to the bottom of two hundred rows to see it.
@@ -171,10 +197,117 @@ function ActivityStream({ run }: { run: Run }) {
   );
 }
 
+/* ---- progress ---------------------------------------------------------- */
+
+function ProgressPanel({
+  progress,
+  isLive,
+  status,
+}: {
+  progress: ReturnType<typeof computeProgress>;
+  isLive: boolean;
+  status: string;
+}) {
+  const stalled = status === 'stopped' && progress.percent < 100;
+
+  return (
+    <Panel>
+      <div className="p-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className="text-sm font-medium text-ink">
+            {progress.percent === 100
+              ? 'Finished'
+              : PHASE_LABEL[progress.phase]}
+          </span>
+          <span className="font-mono text-sm tabular-nums text-ink-2">
+            {progress.percent}%
+          </span>
+        </div>
+
+        <div
+          className="mt-2 h-2 overflow-hidden rounded-full bg-sunken"
+          role="progressbar"
+          aria-valuenow={progress.percent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="Run progress"
+        >
+          <div
+            className="h-full rounded-full transition-[width] duration-700 ease-out"
+            style={{
+              width: `${Math.max(progress.percent, 2)}%`,
+              background: stalled
+                ? 'var(--status-critical)'
+                : progress.percent === 100
+                  ? 'var(--status-good)'
+                  : 'var(--focus)',
+              // A live run's bar breathes, so a long phase does not read as
+              // a frozen page. Removed the moment it stops being live.
+              animation: isLive ? 'pulse 2.4s ease-in-out infinite' : undefined,
+            }}
+          />
+        </div>
+
+        <p className="mt-2 text-xs leading-snug text-ink-3">
+          {progress.percent === 100
+            ? 'Nothing left to do.'
+            : PHASE_DETAIL[progress.phase]}
+        </p>
+
+        {/* What happens after this. The client's own question -- "what is it
+            going to do next" -- which the raw node stream answers only if
+            you already know the graph. */}
+        <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1.5">
+          {PHASE_ORDER.map((p: Phase) => {
+            const isDone = progress.done.includes(p);
+            const isNow = progress.phase === p && progress.percent < 100;
+            return (
+              <li
+                key={p}
+                className={`flex items-center gap-1.5 text-xs ${
+                  isNow ? 'font-medium text-ink' : isDone ? 'text-ink-2' : 'text-ink-3'
+                }`}
+              >
+                <span
+                  aria-hidden
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{
+                    background: isDone
+                      ? 'var(--status-good)'
+                      : isNow
+                        ? 'var(--focus)'
+                        : 'var(--line)',
+                  }}
+                />
+                {PHASE_LABEL[p]}
+              </li>
+            );
+          })}
+        </ol>
+
+        {stalled && (
+          <p className="mt-3 rounded border border-line bg-sunken px-3 py-2 text-xs leading-snug text-ink-2">
+            This run stopped before finishing, so it did not reach the export.
+            Everything it had already collected is kept.
+          </p>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 /* ---- the selected run ------------------------------------------------- */
 
 function RunDetail({ run }: { run: Run }) {
   const isLive = run.status === 'running';
+  // Owned here rather than inside ActivityStream: the progress bar and the
+  // stream are two readings of the same log, and opening two SSE
+  // connections to say the same thing would be wasteful and could disagree.
+  const { entries, connection } = useRunEvents(run.run_id, isLive);
+  const progress = useMemo(
+    () => computeProgress(entries, run.status),
+    [entries, run.status],
+  );
 
   // The checkpoint carries the counts the log lines do not. Polled rather
   // than streamed: it is a Postgres read per call, and these numbers move on
@@ -197,8 +330,49 @@ function RunDetail({ run }: { run: Run }) {
     return () => window.clearInterval(id);
   }, [isLive]);
 
+  const queryClient = useQueryClient();
+  const stop = useMutation({
+    mutationFn: () => api.stopRun(run.run_id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['runs'] }),
+  });
+
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <StatusPill status={run.status} />
+          <span className="text-sm text-ink-2">
+            {run.niches.length > 0 ? run.niches.join(', ') : 'untitled'}
+            {run.depth_label ? ` · ${run.depth_label}` : ''}
+          </span>
+        </div>
+        {isLive && (
+          <ConfirmButton
+            onConfirm={() => stop.mutate()}
+            confirmLabel="Stop this run?"
+            pending={stop.isPending}
+            pendingLabel="Stopping…"
+            title="Ends the run. Everything already collected is kept."
+          >
+            Stop run
+          </ConfirmButton>
+        )}
+      </div>
+
+      {stop.isError && (
+        <p className="text-xs text-[var(--status-critical)]">
+          {(stop.error as Error).message}
+        </p>
+      )}
+      {stop.isSuccess && !isLive && (
+        <p className="text-xs text-ink-3">
+          Stopped. It kept everything it had finished; the workbook was not
+          exported, since that is the last step.
+        </p>
+      )}
+
+      <ProgressPanel progress={progress} isLive={isLive} status={run.status} />
+
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile
           label="Elapsed"
@@ -248,7 +422,7 @@ function RunDetail({ run }: { run: Run }) {
           title="Activity"
           hint={isLive ? 'Streaming live, newest first' : 'Newest first'}
         />
-        <ActivityStream run={run} />
+        <ActivityStream isLive={isLive} entries={entries} connection={connection} />
       </Panel>
     </div>
   );
@@ -265,6 +439,17 @@ export function LiveRunsPage() {
   });
 
   const [selected, setSelected] = useState<string | null>(null);
+
+  const queryClient = useQueryClient();
+  const remove = useMutation({
+    mutationFn: (runId: string) => api.deleteRun(runId),
+    onSuccess: (_data, runId) => {
+      // Drop the selection if it was the row just removed, or the detail
+      // pane keeps rendering a run that no longer exists.
+      setSelected((current) => (current === runId ? null : current));
+      queryClient.invalidateQueries({ queryKey: ['runs'] });
+    },
+  });
 
   const ordered = useMemo(() => {
     const all = runs.data ?? [];
@@ -297,6 +482,13 @@ export function LiveRunsPage() {
             : 'Nothing running right now. Finished runs stay here with everything they logged, so you can see how one got to its result.'}
         </p>
       </header>
+
+      {remove.isError && (
+        <ErrorState
+          title="Could not delete that run"
+          detail={(remove.error as Error).message}
+        />
+      )}
 
       {runs.isLoading && <Skeleton rows={4} />}
       {runs.isError && (
@@ -337,6 +529,21 @@ export function LiveRunsPage() {
                         </span>
                       </div>
                     </button>
+                    {/* Outside the select button: a delete nested inside it
+                        would also select the row it is about to remove. */}
+                    {run.status !== 'running' && (
+                      <div className="px-4 pb-3">
+                        <ConfirmButton
+                          onConfirm={() => remove.mutate(run.run_id)}
+                          confirmLabel="Delete for good?"
+                          pending={remove.isPending && remove.variables === run.run_id}
+                          pendingLabel="Deleting…"
+                          title="Removes this run from the console. The channels it found stay in the database."
+                        >
+                          Delete
+                        </ConfirmButton>
+                      </div>
+                    )}
                   </li>
                 );
               })}

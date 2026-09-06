@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DiscoveryMethod, Grade, RunStatus } from '../lib/api';
 
@@ -132,6 +132,72 @@ export function Tooltip({
         />
       </span>
     </span>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Destructive action
+ *
+ * Two clicks, in place: the first arms the button and the second commits.
+ * No modal, because a modal for "delete this run" is heavier than the
+ * decision deserves -- but not one click either, since the target sits in a
+ * list next to the thing the reader actually wanted.
+ *
+ * The armed state disarms itself after a few seconds. A button left reading
+ * "Really delete?" across a page the reader has moved on from is a trap for
+ * whoever clicks next.
+ * ----------------------------------------------------------------------- */
+
+export function ConfirmButton({
+  onConfirm,
+  children,
+  confirmLabel = 'Really?',
+  pending = false,
+  pendingLabel = 'Working…',
+  className = '',
+  title,
+}: {
+  onConfirm: () => void;
+  children: ReactNode;
+  confirmLabel?: string;
+  pending?: boolean;
+  pendingLabel?: string;
+  className?: string;
+  title?: string;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const id = window.setTimeout(() => setArmed(false), 4000);
+    return () => window.clearTimeout(id);
+  }, [armed]);
+
+  const base =
+    'rounded-md border px-2 py-1 text-xs transition-colors disabled:opacity-50';
+  const style = armed
+    ? 'border-[var(--status-critical)] text-[var(--status-critical)] hover:bg-sunken'
+    : 'border-line text-ink-3 hover:border-[var(--status-critical)] hover:text-[var(--status-critical)]';
+
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={pending}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (pending) return;
+        if (!armed) {
+          setArmed(true);
+          return;
+        }
+        setArmed(false);
+        onConfirm();
+      }}
+      className={`${base} ${style} ${className}`}
+    >
+      {pending ? pendingLabel : armed ? confirmLabel : children}
+    </button>
   );
 }
 

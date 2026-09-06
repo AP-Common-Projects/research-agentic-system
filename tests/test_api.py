@@ -190,9 +190,40 @@ class TestLaunchRun:
 
         assert resp.status_code == 201
         assert resp.json()["run_id"] == "run-x"
-        # depth is passed explicitly and defaults to None, so a request
-        # without one still runs on the .env profile exactly as before.
-        mock_launch.assert_called_once_with(["3d printing"], depth=None)
+        # depth and thresholds are passed explicitly and default to None, so
+        # a request carrying neither still runs on the .env profile exactly
+        # as before.
+        mock_launch.assert_called_once_with(
+            ["3d printing"], depth=None, thresholds=None
+        )
+
+    def test_thresholds_are_forwarded_to_the_launcher(self, client):
+        """A client-set floor has to reach the run; dropping it silently
+        would start a run against defaults the client did not choose."""
+        fake = {"run_id": "run-x", "thread_id": "t-x", "niches": ["finance"], "pid": 42}
+        with patch.object(runs_mod, "launch_run", return_value=fake) as mock_launch:
+            resp = client.post("/api/runs", json={
+                "niches": ["finance"],
+                "depth": "glimpse",
+                "thresholds": {"subscriber_floor": 20000},
+            })
+
+        assert resp.status_code == 201
+        mock_launch.assert_called_once_with(
+            ["finance"], depth="glimpse", thresholds={"subscriber_floor": 20000}
+        )
+
+    def test_an_out_of_range_threshold_is_refused(self, client):
+        with patch.object(
+            runs_mod, "launch_run",
+            side_effect=ValueError("Subscriber floor must be between 1,000 and 1,000,000."),
+        ):
+            resp = client.post("/api/runs", json={
+                "niches": ["finance"],
+                "thresholds": {"subscriber_floor": 1},
+            })
+        assert resp.status_code == 422
+        assert "Subscriber floor" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

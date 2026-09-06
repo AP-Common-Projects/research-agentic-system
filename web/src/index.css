@@ -90,6 +90,20 @@ button:disabled,
   cursor: not-allowed;
 }
 
+/* The live progress bar breathes so a long phase does not read as a frozen
+ * page. Opacity only -- animating width would fight the transition that
+ * actually moves the bar when progress changes. */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.72; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [role='progressbar'] > * {
+    animation: none !important;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
