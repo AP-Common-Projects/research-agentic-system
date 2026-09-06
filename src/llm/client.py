@@ -47,6 +47,17 @@ OPENROUTER_MODEL_SLUGS: dict[str, str] = {
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
 
+class EmptyCompletionError(RuntimeError):
+    """The provider answered, with nothing in it.
+
+    Seen once on the technology run, where it cost a whole batch of thirty
+    video descriptions: the node recorded "empty response" and moved on.
+    It is a hiccup rather than a refusal -- the same prompt succeeds on the
+    next attempt -- so it belongs with the other retryable conditions
+    instead of being charged to the caller.
+    """
+
+
 def _is_retryable(exception: BaseException) -> bool:
     from openai import (
         APIError,
@@ -55,6 +66,8 @@ def _is_retryable(exception: BaseException) -> bool:
         RateLimitError,
     )
 
+    if isinstance(exception, EmptyCompletionError):
+        return True
     if isinstance(exception, (RateLimitError, APITimeoutError, InternalServerError)):
         return True
     if isinstance(exception, APIError):
@@ -115,6 +128,14 @@ class LLMClient:
 
         choice = response.choices[0]
         content = choice.message.content or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason not in (None, "stop"):
+            # "length" means max_tokens cut the reply off; the JSON repair
+            # downstream can close the brackets but the lost items are gone.
+            logger.warning(
+                "llm_completion_incomplete",
+                model=model, finish_reason=finish_reason, chars=len(content),
+            )
         prompt_tokens = response.usage.prompt_tokens if response.usage else 0
         completion_tokens = response.usage.completion_tokens if response.usage else 0
         cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
@@ -128,6 +149,7 @@ class LLMClient:
             "cost_usd": cost,
             "model": model,
             "latency_ms": latency_ms,
+            "finish_reason": finish_reason,
         }
 
     @_create_retry_decorator()
@@ -148,7 +170,27 @@ class LLMClient:
         }
         if thinking and model.startswith("deepseek-v4-pro"):
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-        return client.chat.completions.create(**kwargs)
+        response = client.chat.completions.create(**kwargs)
+        self._raise_if_blank(response, model)
+        return response
+
+    @staticmethod
+    def _raise_if_blank(response: Any, model: str) -> None:
+        """Reject a completion with nothing in it.
+
+        Called inside the retried request rather than by the caller: every
+        prompt this client sends asks for content back, so a blank reply is
+        a failed call and earns the same backoff as a 503. A model that
+        answers "I cannot help with that" has answered, and is left alone.
+        """
+        choice = response.choices[0] if response.choices else None
+        content = getattr(getattr(choice, "message", None), "content", None) or ""
+        if content.strip():
+            return
+        raise EmptyCompletionError(
+            f"{model} returned no content "
+            f"(finish_reason={getattr(choice, 'finish_reason', None)})"
+        )
 
     @staticmethod
     def _calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:

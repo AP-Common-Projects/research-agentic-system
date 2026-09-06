@@ -5,8 +5,8 @@ regex out the first ``{...}`` or ``[...]``, and hand it to ``json.loads``.
 That works until the model emits something a person would read as fine and
 a strict parser will not accept -- and over enough calls it always does.
 
-Two real failures from one Cinema run, both of which cost a channel or a
-batch of video descriptions:
+Three real failures, from the Cinema and technology runs, each of which
+cost a channel or a batch of video descriptions:
 
     Expecting property name enclosed in double quotes: line 4 column 2
         -- a trailing comma before the closing brace
@@ -15,8 +15,14 @@ batch of video descriptions:
         -- an unescaped quote inside a string, e.g. a description
            containing "Star Wars" with the quotes left in
 
-Neither is ambiguous about what was meant. Both are mechanical to repair,
-and repairing them is strictly better than discarding a channel the run
+    Expecting ',' delimiter: line 31 column 63
+        -- the closing bracket simply missing. The technology run's
+           payload was captured and checked: all 30 descriptions were
+           complete and well-formed, and the reply ended after the last
+           one with no "]". Appending it recovered every one of them.
+
+None is ambiguous about what was meant. All are mechanical to repair, and
+repairing them is strictly better than discarding a channel the run
 already paid to classify.
 
 What this will NOT do is guess. Every repair below is information
@@ -32,7 +38,15 @@ import json
 import re
 from typing import Any, Literal
 
+import structlog
+
 __all__ = ["loads_forgiving", "JSONResponseError"]
+
+logger = structlog.get_logger(__name__)
+
+#: How much of a bad payload to put in the log. Enough to see the defect
+#: without pasting a whole batch of descriptions into every run's stdout.
+_LOG_EXCERPT = 600
 
 
 class JSONResponseError(ValueError):
@@ -45,8 +59,11 @@ class JSONResponseError(ValueError):
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
-#: Curly quotes a model reaches for when it is "being helpful".
-_SMART_QUOTES = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
+_DANGLING_COMMA = re.compile(r",\s*$")
+#: Curly DOUBLE quotes only. A curly apostrophe is never structural -- JSON
+#: has no single-quoted strings -- so translating one could only ever damage
+#: a description that legitimately wrote "Apple's" with a typographic quote.
+_SMART_QUOTES = str.maketrans({"“": '"', "”": '"'})
 
 
 def _strip_fences(text: str) -> str:
@@ -126,18 +143,87 @@ def _escape_inner_quotes(text: str) -> str:
     return "".join(out)
 
 
-#: Repairs, cheapest and safest first. Each takes the payload and returns a
-#: candidate; the caller re-parses after every step and stops at the first
-#: that works, so a payload needing only a trailing-comma fix is never put
-#: through quote-escaping.
-_REPAIRS: list[tuple[str, Any]] = [
-    ("trailing comma", lambda s: _TRAILING_COMMA.sub(r"\1", s)),
-    ("smart quotes", lambda s: s.translate(_SMART_QUOTES)),
-    ("smart quotes + trailing comma",
-     lambda s: _TRAILING_COMMA.sub(r"\1", s.translate(_SMART_QUOTES))),
-    ("unescaped inner quotes", _escape_inner_quotes),
-    ("unescaped inner quotes + trailing comma",
-     lambda s: _TRAILING_COMMA.sub(r"\1", _escape_inner_quotes(s))),
+def _close_unbalanced(text: str) -> str:
+    """Close brackets the model opened and never closed.
+
+    The technology run's failing batch was thirty complete descriptions and
+    no ``]``. Adding the bracket invents nothing -- it asserts the structure
+    the model was already halfway through writing, and the content it
+    recovers is exactly what the model sent.
+
+    Truncation mid-value is the harder case, and the answer there is to
+    drop the incomplete tail rather than close the string around a half
+    sentence. Cutting back to the last completed element loses one item;
+    inventing the end of it would put a severed description in a workbook
+    and look like a real one.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    #: Where the last complete element ended, and how deep we were there.
+    safe: tuple[int, int] | None = None
+    #: Whether the model wrote anything at all inside what it opened.
+    saw_value = False
+
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+                saw_value = True
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch in "[{":
+            stack.append("]" if ch == "[" else "}")
+        elif ch in "]}":
+            if stack:
+                stack.pop()
+            saw_value = True
+        elif ch == ",":
+            safe = (i, len(stack))
+        elif ch in "0123456789tfn":
+            saw_value = True
+
+    if not stack and not in_string:
+        return text
+
+    if not saw_value:
+        # A bare "{" is not a truncated object, it is an empty reply with a
+        # brace on it. Closing it would hand the caller {} -- which reads as
+        # "the model answered, with nothing" and gets persisted as blanks.
+        return text
+
+    if in_string:
+        if safe is None:
+            # Nothing completed before the truncation; there is nothing to
+            # salvage that would not be guesswork.
+            return text
+        cut, depth = safe
+        return text[:cut] + "".join(reversed(stack[:depth]))
+
+    return _DANGLING_COMMA.sub("", text) + "".join(reversed(stack))
+
+
+#: Each repair is a no-op on a payload that does not have its defect, so
+#: they are applied cumulatively and the result re-parsed after every step.
+#: Order matters in one direction only: an unescaped inner quote desynchronises
+#: the string tracking the other repairs rely on, so the pipeline is also
+#: tried with that step first. Whichever order parses, wins.
+_STRUCTURAL: list[tuple[str, Any]] = [
+    ("closed an unbalanced bracket", _close_unbalanced),
+    ("dropped a trailing comma", lambda s: _TRAILING_COMMA.sub(r"\1", s)),
+    ("straightened curly quotes", lambda s: s.translate(_SMART_QUOTES)),
+]
+_QUOTES: tuple[str, Any] = ("escaped a quote inside a string", _escape_inner_quotes)
+
+_PIPELINES: list[list[tuple[str, Any]]] = [
+    _STRUCTURAL + [_QUOTES],
+    [_QUOTES] + _STRUCTURAL,
 ]
 
 
@@ -158,19 +244,46 @@ def loads_forgiving(
 
     try:
         return json.loads(candidate)
-    except json.JSONDecodeError as first_error:
-        for _label, repair in _REPAIRS:
+    except json.JSONDecodeError as exc:
+        # Rebound: Python unbinds an `as` name when the block exits, and the
+        # decoder's own complaint is what every log line and message below
+        # reports.
+        first_error = exc
+
+    for pipeline in _PIPELINES:
+        fixed = candidate
+        applied: list[str] = []
+        for label, repair in pipeline:
             try:
-                fixed = repair(candidate)
-            except Exception:
+                stepped = repair(fixed)
+            except Exception:  # a repair must never be the thing that fails
                 continue
-            if fixed == candidate:
+            if stepped == fixed:
                 continue
+            fixed = stepped
+            applied.append(label)
             try:
-                return json.loads(fixed)
+                parsed = json.loads(fixed)
             except json.JSONDecodeError:
                 continue
+            logger.info(
+                "llm_json_repaired",
+                repairs=applied,
+                error=str(first_error),
+                excerpt=candidate[:_LOG_EXCERPT],
+            )
+            return parsed
 
-        raise JSONResponseError(
-            f"unreadable JSON ({first_error})", candidate
-        ) from first_error
+    # Logged rather than only raised: the message a node records names the
+    # decoder's complaint but not the text that caused it, which is how the
+    # technology run's six failures had to be reproduced to be diagnosed.
+    logger.warning(
+        "llm_json_unreadable",
+        error=str(first_error),
+        length=len(candidate),
+        excerpt=candidate[:_LOG_EXCERPT],
+        tail=candidate[-200:],
+    )
+    raise JSONResponseError(
+        f"unreadable JSON ({first_error})", candidate
+    ) from first_error

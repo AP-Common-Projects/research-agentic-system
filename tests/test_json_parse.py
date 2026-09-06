@@ -63,6 +63,80 @@ class TestTheTwoFailuresFromTheCinemaRun:
         assert out[0].count('"') == 2
 
 
+class TestTheFailureFromTheTechnologyRun:
+    """Six errors, five of them this shape. The payload was captured by
+    re-issuing the node's own prompt against the same titles: thirty
+    complete descriptions, and no closing bracket."""
+
+    #: The real reply's shape, abbreviated. The captured original ended
+    #: exactly like this -- after the last description, no "]".
+    UNCLOSED = (
+        '[\n'
+        '  "Creators share embarrassing stories involving Linus.",\n'
+        '  "Reviews the Apple iPhone Air.",\n'
+        '  "Compares the Kindle Oasis, Paperwhite, and Basic eReaders."'
+    )
+
+    def test_a_missing_closing_bracket_is_added(self):
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(self.UNCLOSED)
+
+        out = loads_forgiving(self.UNCLOSED, expect="array")
+        assert len(out) == 3
+        assert out[-1] == "Compares the Kindle Oasis, Paperwhite, and Basic eReaders."
+
+    def test_nothing_is_lost_when_only_the_bracket_was_missing(self):
+        """The whole argument for repairing rather than discarding: every
+        description the run paid for is still there."""
+        assert loads_forgiving(self.UNCLOSED, expect="array") == json.loads(
+            self.UNCLOSED + "]"
+        )
+
+    def test_a_missing_closing_brace_is_added(self):
+        assert loads_forgiving('{"face_status": "face"', expect="object") == {
+            "face_status": "face"
+        }
+
+    def test_nested_unclosed_structures(self):
+        assert loads_forgiving('{"a": {"b": [1, 2') == {"a": {"b": [1, 2]}}
+
+    def test_a_dangling_comma_before_the_missing_bracket(self):
+        assert loads_forgiving('["a", "b",', expect="array") == ["a", "b"]
+
+
+class TestTruncationMidValue:
+    """A reply cut off inside a string is the one case where closing the
+    structure would invent content. The incomplete item is dropped."""
+
+    def test_the_severed_element_is_dropped_not_completed(self):
+        out = loads_forgiving(
+            '["complete one", "complete two", "this one was cut off mid-sen',
+            expect="array",
+        )
+        assert out == ["complete one", "complete two"]
+
+    def test_a_severed_object_value_is_dropped(self):
+        assert loads_forgiving('{"a": 1, "b": "half a sen') == {"a": 1}
+
+    def test_nothing_complete_means_nothing_to_salvage(self):
+        """Rather than return [] and let a caller record thirty blanks."""
+        with pytest.raises(JSONResponseError):
+            loads_forgiving('["only a severed first ite', expect="array")
+
+    def test_describe_video_titles_maps_positionally_so_a_short_array_is_safe(self):
+        """The node zips descriptions onto video_ids. Dropping from the END
+        leaves every surviving pair correctly aligned; dropping from the
+        middle would silently mislabel every video after it, which is why
+        the repair only ever truncates the tail."""
+        video_ids = ["v1", "v2", "v3"]
+        descriptions = loads_forgiving(
+            '["about v1", "about v2", "about v3 but cut', expect="array"
+        )
+        assert list(zip(video_ids, descriptions)) == [
+            ("v1", "about v1"), ("v2", "about v2"),
+        ]
+
+
 class TestValidJsonIsLeftAlone:
     def test_a_clean_object_is_returned_untouched(self):
         payload = '{"a": 1, "b": [1, 2], "c": {"d": "e"}}'
@@ -97,6 +171,13 @@ class TestTheWrappingModelsAddAnyway:
     def test_smart_quotes(self):
         """A model asked to write descriptions sometimes styles its own JSON."""
         assert loads_forgiving('{“a”: “b”}') == {"a": "b"}
+
+    def test_a_typographic_apostrophe_inside_a_description_is_preserved(self):
+        """JSON has no single-quoted strings, so a curly apostrophe can only
+        ever be content. Rewriting it would quietly edit what the model wrote
+        about Apple's products on the way into the workbook."""
+        out = loads_forgiving('["Reviews Apple’s newest laptop",', expect="array")
+        assert out == ["Reviews Apple’s newest laptop"]
 
 
 class TestRepairsCompose:

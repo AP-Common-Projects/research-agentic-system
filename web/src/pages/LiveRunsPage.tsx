@@ -54,7 +54,10 @@ const NODE_LABEL: Record<string, string> = {
   extract_success_failure_factors: 'Extracting success factors',
   describe_video_titles: 'Describing videos',
   populate_taxonomy_dimensions: 'Filling taxonomy dimensions',
-  populate_crime_metadata: 'Filling case details',
+  // Runs on every topic but only ever fills rows whose niche is under the
+  // crime category, so on a technology run it appears, finds nothing, and
+  // passes. Naming the category keeps that from reading as a mistake.
+  populate_crime_metadata: 'Filling crime case fields',
   populate_shared_fields: 'Filling shared fields',
   assign_cohorts: 'Assigning cohorts',
   finalize_dataset: 'Finalising the dataset',

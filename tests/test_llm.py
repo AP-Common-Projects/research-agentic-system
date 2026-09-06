@@ -96,10 +96,13 @@ class TestLLMClientComplete:
             usage=CompletionUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
 
-        with patch.object(client._get_client().chat.completions, "create", return_value=fake):
-            result = client.complete(prompt="test", model="deepseek-v4-pro")
+        # Previously this returned "" and let the caller deal with it, which
+        # is how the technology run turned a blank reply into a lost batch of
+        # thirty descriptions. A content-less completion is now a failed call.
+        from src.llm.client import EmptyCompletionError
 
-        assert result["content"] == ""
+        with pytest.raises(EmptyCompletionError):
+            client._raise_if_blank(fake, "deepseek-v4-pro")
 
     @patch("src.llm.client.get_config")
     def test_handles_no_usage(self, mock_get_config):
@@ -665,3 +668,66 @@ class TestThinkingToggle:
         client.complete(prompt="test", model="deepseek-v4-pro", thinking=False)
 
         assert "extra_body" not in mock_create.call_args.kwargs
+
+class TestEmptyCompletionIsRetried:
+    """A provider that answers with nothing cost the technology run a whole
+    batch of thirty video descriptions: the node recorded "empty response"
+    and moved on. It is a hiccup, not a refusal, so it now gets the same
+    backoff as a 503 rather than being charged to the caller."""
+
+    @patch("src.llm.client.get_config")
+    def test_an_empty_reply_is_retried_and_the_retry_is_returned(self, mock_get_config):
+        from src.llm.client import EmptyCompletionError  # noqa: F401
+
+        mock_get_config.return_value = _mock_openrouter_config()
+        client = LLMClient()
+        mock_create = MagicMock(side_effect=[
+            _fake_completion(""),
+            _fake_completion('["a description"]'),
+        ])
+        client._get_client().chat.completions.create = mock_create
+
+        with patch("src.llm.client.wait_exponential_jitter", return_value=None):
+            result = client.complete(prompt="p", model="deepseek-v4-flash")
+
+        assert result["content"] == '["a description"]'
+        assert mock_create.call_count == 2, "the empty reply must not be returned"
+
+    @patch("src.llm.client.get_config")
+    def test_whitespace_only_counts_as_empty(self, mock_get_config):
+        """Asserted against the undecorated call so it costs no backoff."""
+        from src.llm.client import EmptyCompletionError
+
+        mock_get_config.return_value = _mock_openrouter_config()
+        client = LLMClient()
+        with pytest.raises(EmptyCompletionError):
+            client._raise_if_blank(_fake_completion("   \n  "), "deepseek-v4-flash")
+
+    def test_it_is_classified_retryable_alongside_the_transient_http_errors(self):
+        """Which is what puts it under the shared stop_after_attempt(5) --
+        retried, but never forever."""
+        from src.llm.client import EmptyCompletionError, _is_retryable
+
+        assert _is_retryable(EmptyCompletionError("blank"))
+
+    def test_a_real_refusal_is_not_treated_as_blank(self):
+        """A model that answers "I cannot help with that" has answered.
+        Retrying it five times would burn the budget to get the same reply."""
+        client_cls = LLMClient
+        assert client_cls._raise_if_blank(
+            _fake_completion("I cannot help with that."), "m"
+        ) is None
+
+    @patch("src.llm.client.get_config")
+    def test_finish_reason_is_reported_so_truncation_is_diagnosable(self, mock_get_config):
+        """Without it, a reply cut off by max_tokens and one the model just
+        ended early are indistinguishable in the log -- which is why the
+        technology run's payloads had to be reproduced to be read."""
+        mock_get_config.return_value = _mock_openrouter_config()
+        client = LLMClient()
+        fake = _fake_completion('["a"]')
+        fake.choices[0].finish_reason = "length"
+        client._get_client().chat.completions.create = MagicMock(return_value=fake)
+
+        result = client.complete(prompt="p", model="deepseek-v4-flash")
+        assert result["finish_reason"] == "length"
