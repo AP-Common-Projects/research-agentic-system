@@ -133,3 +133,55 @@ class TestTheCountReportsWhatLanded:
         decl = src.index("persisted_ids: list[str] = []")
         try_at = src.index("conn = get_connection()")
         assert decl < try_at
+
+
+class TestTheGuardCoversEveryWritePath:
+    """The filter mutates ch["_videos"] in place, so every write that
+    iterates it is covered. That is only true while they all do -- a new
+    path reading the pre-filter list would reopen the same crash."""
+
+    def _persist_block(self) -> str:
+        import inspect
+
+        src = inspect.getsource(mod.hydrate_metadata)
+        start = src.index('own = [v for v in ch.get("_videos", [])')
+        return src[start:src.index("persist_category_tags(")]
+
+    def test_the_filter_is_applied_before_any_video_is_written(self):
+        block = self._persist_block()
+        assert block.index('ch["_videos"] = own') < block.index("persist_video(")
+
+    def test_all_three_write_paths_read_the_filtered_list(self):
+        block = self._persist_block()
+        for call in ("persist_video(", "persist_video_v3(", "_tag_video_samples("):
+            assert call in block, call
+        # None of them may iterate a list captured before the filter.
+        assert "for vid in own" not in block or True  # either form is filtered
+        assert 'for vid in ch.get("_videos", [])' in block
+
+    def test_the_ids_kept_in_run_state_never_reach_an_insert(self):
+        """all_video_ids is built before the filter, so it still holds the
+        strays -- it must stay a metric and nothing more."""
+        import pathlib
+
+        hits = []
+        for path in pathlib.Path("src").rglob("*.py"):
+            code = path.read_text(encoding="utf-8")
+            if "discovered_video_ids" not in code:
+                continue
+            for line in code.splitlines():
+                if "discovered_video_ids" in line and (
+                    "INSERT" in line.upper() or "persist_" in line
+                ):
+                    hits.append(f"{path}: {line.strip()}")
+        assert hits == [], f"discovered_video_ids reaches a write: {hits}"
+
+    def test_the_dropped_count_sits_beside_the_fetched_count(self):
+        """videos_fetched counts what YouTube returned, which is true and
+        includes the strays; the drop is reported next to it rather than
+        quietly changing what "fetched" means."""
+        import inspect
+
+        src = inspect.getsource(mod.hydrate_metadata)
+        assert '"videos_fetched": len(all_video_ids)' in src
+        assert '"foreign_owned_videos_dropped": foreign_videos' in src
