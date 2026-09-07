@@ -144,10 +144,17 @@ class TestBrightDataAbandonsAtTheDeadline:
         from src.tools import bright_data as mod
 
         src = open(mod.__file__).read()
-        loop = src[src.index("while True:"):src.index("rows = await self._fetch")]
+        # _fetch moved INSIDE the loop -- a snapshot that answers "still
+        # building" now sends the caller back to waiting rather than being
+        # discarded -- so the loop ends at the assert that follows it.
+        loop = src[src.index("while True:"):src.index("assert rows is not None")]
         assert "run_deadline.research_passed()" in loop, (
             "a snapshot can poll for minutes; without this the run overshoots "
             "by however long the collector takes"
+        )
+        assert "self._fetch(client, snapshot_id)" in loop, (
+            "the fetch has to be inside the loop for a not-ready snapshot "
+            "to get another poll instead of being thrown away"
         )
 
     def test_a_trigger_is_not_fired_past_the_deadline(self):
