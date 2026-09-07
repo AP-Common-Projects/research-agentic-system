@@ -113,6 +113,38 @@ def _match_or_default(term: str, table: str, conn: Any) -> int | None:
     return match_or_create_controlled_term(term, table, conn, "term_name", 0.7)
 
 
+def _run_has_crime_channels(conn: Any, state: dict) -> bool:
+    """Whether this run's own channels include any under the crime category.
+
+    Deliberately asks about the run's channels rather than its videos: a
+    crime run whose case rows are all already filled is still a crime run,
+    and should still show the step having found nothing left to do. Only a
+    run with no crime channels at all skips.
+
+    A query failure answers True. Being wrong that way costs one no-op node;
+    being wrong the other way would silently drop case metadata from a real
+    crime run's workbook.
+    """
+    scope_sql, scope_params = scope_clause(state, "c.channel_id")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM channels c "
+                "JOIN channel_niches cn ON c.channel_id = cn.channel_id "
+                "AND cn.is_primary = TRUE "
+                "JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
+                "WHERE nt.parent_category = 'crime' "
+                + scope_sql
+                + "LIMIT 1",
+                scope_params,
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        conn.rollback()
+        logger.warning("crime_scope_check_failed", run_id=state.get("run_id", ""))
+        return True
+
+
 def populate_crime_metadata(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     run_id = state.get("run_id", "")
@@ -132,6 +164,20 @@ def populate_crime_metadata(state: dict) -> dict:
         conn = get_connection()
     except Exception:
         return {"node_logs": _log({"reason": "store unreachable", "populated": 0})}
+
+    # Every column this node writes is a crime case-file field, so on a
+    # technology or finance run it has nothing to do. It used to run anyway,
+    # find nothing, and report itself -- putting "Filling case details" in
+    # the activity of a run about laptops. Returning no NodeLog at all is
+    # what keeps the step out of the console: the activity list is built
+    # from the logs a run emits, so a node that does not log does not appear.
+    #
+    # The category cannot be known at launch: classify_channel decides each
+    # niche's parent_category during the run, so the only honest test is
+    # whether this run's own channels turned out to be crime ones.
+    if not _run_has_crime_channels(conn, state):
+        put_connection(conn)
+        return {}
 
     # Find Crime videos from channels meeting the floor, not yet classified
 

@@ -67,11 +67,30 @@ function DepthCard({
         </div>
       </dl>
 
+      {/* Every blocker, not just the first. A run spends at two providers,
+          and a depth can be short at both — showing only the leading one
+          let a top-up clear the message while the depth stayed locked. */}
       {locked && (
-        <p className="mt-3 rounded border border-line bg-sunken px-2 py-1.5 text-xs leading-snug text-ink-2">
-          <span className="font-medium text-ink">Not available yet.</span>{' '}
-          {tier.blockers[0]}
-        </p>
+        <div className="mt-3 space-y-1 rounded border border-line bg-sunken px-2 py-1.5 text-xs leading-snug text-ink-2">
+          <p>
+            <span className="font-medium text-ink">Not available yet.</span>{' '}
+            {tier.blockers[0]}
+          </p>
+          {tier.blockers.slice(1).map((b) => (
+            <p key={b}>{b}</p>
+          ))}
+        </div>
+      )}
+
+      {/* A balance we could not read does not lock a depth — the harness has
+          its own circuit breaker — but the client should know the estimate
+          went unchecked rather than assume it passed. */}
+      {!locked && tier.warnings.length > 0 && (
+        <div className="mt-3 space-y-1 rounded border border-dashed border-line px-2 py-1.5 text-xs leading-snug text-ink-3">
+          {tier.warnings.map((w) => (
+            <p key={w}>{w}</p>
+          ))}
+        </div>
       )}
     </button>
   );

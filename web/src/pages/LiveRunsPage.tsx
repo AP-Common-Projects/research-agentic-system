@@ -54,11 +54,10 @@ const NODE_LABEL: Record<string, string> = {
   extract_success_failure_factors: 'Extracting success factors',
   describe_video_titles: 'Describing videos',
   populate_taxonomy_dimensions: 'Filling taxonomy dimensions',
-  // Runs on every topic but only ever fills rows whose niche sits under the
-  // category it serves, so on a technology run it appears, finds nothing,
-  // and passes. Named for what it does rather than for the one category it
-  // currently has fields for, so it reads correctly whatever topic is run.
-  populate_crime_metadata: 'Filling category-specific fields',
+  // Only ever reached on a run that actually turned up crime-category
+  // channels -- the node returns without logging otherwise, so this label
+  // never surfaces on a technology or finance run (see populate_crime_metadata).
+  populate_crime_metadata: 'Filling case details',
   populate_shared_fields: 'Filling shared fields',
   assign_cohorts: 'Assigning cohorts',
   finalize_dataset: 'Finalising the dataset',
