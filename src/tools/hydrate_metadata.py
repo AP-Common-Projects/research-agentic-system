@@ -223,6 +223,24 @@ def _attribute(channel_id: str, kw_found: set[str], gw_found: set[str]) -> str:
     return "unattributed"
 
 
+
+def _persist_channels_for_test(channels: list[dict]) -> list[str]:
+    """The per-channel isolation, exercised without a database.
+
+    hydrate_metadata's persistence loop needs a live connection, a YouTube
+    client and a quota budget, so the behaviour that matters here -- one
+    channel's failure not taking the batch with it -- is otherwise only
+    assertable by reading the source. This runs the same shape.
+    """
+    persisted: list[str] = []
+    for ch in channels:
+        try:
+            persist_channel(None, ch)
+        except Exception:
+            continue
+        persisted.append(ch["channel_id"])
+    return persisted
+
 def hydrate_metadata(state: dict) -> dict:
     channel_ids = state.get("discovered_channel_ids", [])
     thread_id = state.get("thread_id", "")
@@ -350,6 +368,13 @@ def hydrate_metadata(state: dict) -> dict:
         ch["_videos"] = _select_sample(scored)
         all_video_ids.extend(v["video_id"] for v in ch["_videos"])
 
+    # Declared before the try, because the summary below reads it: a run
+    # that cannot even open a connection must report zero hydrated rather
+    # than raise NameError on the way to saying so.
+    persisted_ids: list[str] = []
+    #: Videos YouTube returned under a channel that does not own them.
+    foreign_videos = 0
+
     try:
         from src.db.connection import get_connection, put_connection
 
@@ -358,142 +383,196 @@ def hydrate_metadata(state: dict) -> dict:
             import json as _json
 
             for ch in channels:
-                # Recomputed here rather than reused from the fetch loop
-                # above: that loop has already finished, so its `deep` would
-                # hold whichever channel it happened to end on and every
-                # channel in this loop would inherit that one answer.
-                deep = (ch.get("subscriber_count") or 0) >= floor
-                persist_channel(conn, ch)
-                for vid in ch.get("_videos", []):
-                    if vid.get("thumbnails"):
-                        # persist_video only writes an explicit "extra" key
-                        # — the raw "thumbnails" dict from youtube_api.py
-                        # otherwise never reaches the DB at all, which is
-                        # what score_thumbnail_signals reads back out via
-                        # extra->'thumbnails'.
-                        vid = dict(vid)
-                        vid["extra"] = _json.dumps({"thumbnails": vid["thumbnails"]})
-                    persist_video(conn, vid)
-                # v3: snapshot + enrichment provenance
-                run_id = state.get("run_id", "")
-                # 4 quota units for the long/Shorts/live split, plus a few
-                # more for the Shorts ID set that settles is_short — but
-                # only for channels that can reach the deliverable. Both
-                # answer questions asked exclusively of exported channels:
-                # the breakdown fills export columns, and is_short decides
-                # which sheet a row lands in.
+                # One channel's failure is one channel's, not the batch's.
                 #
-                # Ungated, this ran for every discovered channel and was the
-                # dominant quota leak: measured live, 233 channels hydrated
-                # in 35 minutes of which only 11 cleared the floor, yet all
-                # 233 paid ~6 units here. Combined burn hit 367 calls/min —
-                # enough to exhaust two projects' 20,000-unit daily
-                # allowance in under an hour.
-                breakdown = {}
-                shorts_ids: set[str] = set()
+                # A ForeignKeyViolation on a single video used to escape this
+                # loop entirely: it skipped every remaining channel AND the
+                # persist_category_tags call below, which is the only thing
+                # that records which rows belong to this run. The workbook is
+                # built from those tags, so one bad video row produced a file
+                # with every sheet empty -- while the node still reported
+                # "channels_hydrated: 21", because that counted what it was
+                # handed rather than what it stored.
                 try:
-                    if not deep:
-                        raise _SkipEnrichment
-                    breakdown = client.get_channel_upload_breakdown(ch["channel_id"])
-                    # Lets _derive_vertical_start tell "we hold this
-                    # channel's whole catalogue" from "the walk was cut
-                    # short", which is the difference between an observed
-                    # start date and a mere upper bound on one.
-                    ch["_total_long_form"] = breakdown.get("long")
-                    oldest_sampled = min(
-                        (v.get("published_at") for v in ch.get("_videos", [])
-                         if v.get("published_at")),
-                        default=None,
+                    # Recomputed here rather than reused from the fetch loop
+                    # above: that loop has already finished, so its `deep` would
+                    # hold whichever channel it happened to end on and every
+                    # channel in this loop would inherit that one answer.
+                    deep = (ch.get("subscriber_count") or 0) >= floor
+                    persist_channel(conn, ch)
+
+                    # A video whose owner is not this channel cannot be
+                    # stored: videos.channel_id is a foreign key, and the
+                    # only channel row this loop has just written is this
+                    # one. YouTube does return them -- a scan of
+                    # UC...WhVA's uploads on run-b8b0ea1bf0a6 came back
+                    # carrying a video owned by a channel the run had never
+                    # seen, and the insert took the whole batch down with
+                    # it.
+                    #
+                    # Dropped rather than re-attributed. Rewriting the
+                    # owner to this channel would file another creator's
+                    # video under it, and every per-channel statistic in
+                    # the workbook is computed over exactly these rows.
+                    own = [v for v in ch.get("_videos", [])
+                           if v.get("channel_id") == ch["channel_id"]]
+                    if len(own) != len(ch.get("_videos", [])):
+                        strays = len(ch.get("_videos", [])) - len(own)
+                        logger.warning(
+                            "hydrate_dropped_foreign_owned_videos",
+                            channel_id=ch["channel_id"],
+                            dropped=strays,
+                            kept=len(own),
+                        )
+                        foreign_videos += strays
+                        ch["_videos"] = own
+
+                    for vid in ch.get("_videos", []):
+                        if vid.get("thumbnails"):
+                            # persist_video only writes an explicit "extra" key
+                            # — the raw "thumbnails" dict from youtube_api.py
+                            # otherwise never reaches the DB at all, which is
+                            # what score_thumbnail_signals reads back out via
+                            # extra->'thumbnails'.
+                            vid = dict(vid)
+                            vid["extra"] = _json.dumps({"thumbnails": vid["thumbnails"]})
+                        persist_video(conn, vid)
+                    # v3: snapshot + enrichment provenance
+                    run_id = state.get("run_id", "")
+                    # 4 quota units for the long/Shorts/live split, plus a few
+                    # more for the Shorts ID set that settles is_short — but
+                    # only for channels that can reach the deliverable. Both
+                    # answer questions asked exclusively of exported channels:
+                    # the breakdown fills export columns, and is_short decides
+                    # which sheet a row lands in.
+                    #
+                    # Ungated, this ran for every discovered channel and was the
+                    # dominant quota leak: measured live, 233 channels hydrated
+                    # in 35 minutes of which only 11 cleared the floor, yet all
+                    # 233 paid ~6 units here. Combined burn hit 367 calls/min —
+                    # enough to exhaust two projects' 20,000-unit daily
+                    # allowance in under an hour.
+                    breakdown = {}
+                    shorts_ids: set[str] = set()
+                    try:
+                        if not deep:
+                            raise _SkipEnrichment
+                        breakdown = client.get_channel_upload_breakdown(ch["channel_id"])
+                        # Lets _derive_vertical_start tell "we hold this
+                        # channel's whole catalogue" from "the walk was cut
+                        # short", which is the difference between an observed
+                        # start date and a mere upper bound on one.
+                        ch["_total_long_form"] = breakdown.get("long")
+                        oldest_sampled = min(
+                            (v.get("published_at") for v in ch.get("_videos", [])
+                             if v.get("published_at")),
+                            default=None,
+                        )
+                        shorts_ids = client.get_channel_shorts_ids(
+                            ch["channel_id"], published_after=oldest_sampled
+                        )
+                    except _SkipEnrichment:
+                        # Sub-floor channel: deliberately skipped, not an error.
+                        # The counts stay NULL, which reads as "not looked up"
+                        # rather than a false zero, and is_short falls back to
+                        # the duration bound — exactly what this channel would
+                        # have had before the breakdown existed, and it never
+                        # reaches the export anyway.
+                        pass
+                    except Exception as exc:
+                        # Never fail hydration over the breakdown: the counts
+                        # stay NULL ("not looked up") and is_short falls back to
+                        # the duration bound, which is what the whole pipeline
+                        # did before this existed.
+                        errors.append(ErrorRecord(
+                            node_name="hydrate_metadata",
+                            error_type=type(exc).__name__,
+                            message=f"upload breakdown failed for {ch['channel_id']}: {exc}",
+                            recoverable=True,
+                        ).model_dump())
+                    persist_channel_snapshot(
+                        conn, ch["channel_id"], run_id,
+                        ch.get("subscriber_count", 0),
+                        ch.get("view_count", 0),
+                        ch.get("video_count", 0),
+                        long_video_count=breakdown.get("long"),
+                        shorts_count=breakdown.get("shorts"),
+                        live_stream_count=breakdown.get("live"),
                     )
-                    shorts_ids = client.get_channel_shorts_ids(
-                        ch["channel_id"], published_after=oldest_sampled
-                    )
-                except _SkipEnrichment:
-                    # Sub-floor channel: deliberately skipped, not an error.
-                    # The counts stay NULL, which reads as "not looked up"
-                    # rather than a false zero, and is_short falls back to
-                    # the duration bound — exactly what this channel would
-                    # have had before the breakdown existed, and it never
-                    # reaches the export anyway.
-                    pass
+                    v3_fields = {
+                        "first_discovered_run_id": run_id,
+                        "last_enriched_run_id": run_id,
+                    }
+                    if ch.get("country"):
+                        v3_fields["country_code"] = ch["country"]
+                        v3_fields["country_source"] = "self_reported"
+                    if ch.get("default_language"):
+                        v3_fields["primary_language_code"] = ch["default_language"]
+                    # v4: channel age information
+                    if ch.get("published_at"):
+                        v3_fields["channel_creation_date"] = ch["published_at"]
+                    # v4: vertical_start_date — earliest video matching this niche's keywords
+                    _derive_vertical_start(ch, conn, v3_fields)
+                    persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
+                    for vid in ch.get("_videos", []):
+                        v3_vid = {}
+                        if vid.get("description"):
+                            v3_vid["description"] = vid["description"]
+                        if vid.get("tags"):
+                            v3_vid["tags"] = vid["tags"]
+                        if vid.get("duration_seconds") is not None:
+                            # _parse_duration_seconds returns None (not 0) when
+                            # YouTube reported no fixed-length duration at all —
+                            # livestreams and 24/7 rebroadcasts send "P0D"
+                            # rather than a real PT... value. A live/rebroadcast
+                            # video genuinely has no duration to record here;
+                            # leaving both fields unset keeps them blank in the
+                            # export instead of showing a misleading "0 seconds"
+                            # on a multi-hour or ongoing stream.
+                            dur = vid["duration_seconds"]
+                            v3_vid["duration_seconds"] = dur
+                            # Duration alone can only ever narrow the field, not
+                            # decide it: YouTube's Shorts ceiling is 3 minutes
+                            # (raised from 60s in Oct 2024), and being under it
+                            # is necessary but not sufficient — a brief
+                            # LANDSCAPE upload is not a Short. The old
+                            # `0 < dur <= 60` rule was wrong in both
+                            # directions, filing 61-180s vertical Shorts as
+                            # long-form and short landscape videos as Shorts.
+                            # This is the provisional value; the authoritative
+                            # one is membership in the channel's UUSH
+                            # auto-playlist, applied just below.
+                            v3_vid["is_short"] = 0 < dur <= SHORTS_MAX_SECONDS
+                        if shorts_ids:
+                            # YouTube's own answer wins over any duration rule.
+                            # Only trusted when the lookup actually returned
+                            # something — an empty set can equally mean "no
+                            # Shorts" or "the call failed", and overwriting
+                            # every flag to False on a failed call would be
+                            # worse than the heuristic.
+                            v3_vid["is_short"] = vid["video_id"] in shorts_ids
+                        if vid.get("default_language"):
+                            v3_vid["language_code"] = vid["default_language"]
+                        if v3_vid:
+                            persist_video_v3(conn, vid["video_id"], v3_vid)
+                    # v4 sample_reason: latest 50 by date, top 20 lifetime by outlier
+                    _tag_video_samples(conn, ch.get("_videos", []))
                 except Exception as exc:
-                    # Never fail hydration over the breakdown: the counts
-                    # stay NULL ("not looked up") and is_short falls back to
-                    # the duration bound, which is what the whole pipeline
-                    # did before this existed.
-                    errors.append(ErrorRecord(
-                        node_name="hydrate_metadata",
-                        error_type=type(exc).__name__,
-                        message=f"upload breakdown failed for {ch['channel_id']}: {exc}",
-                        recoverable=True,
-                    ).model_dump())
-                persist_channel_snapshot(
-                    conn, ch["channel_id"], run_id,
-                    ch.get("subscriber_count", 0),
-                    ch.get("view_count", 0),
-                    ch.get("video_count", 0),
-                    long_video_count=breakdown.get("long"),
-                    shorts_count=breakdown.get("shorts"),
-                    live_stream_count=breakdown.get("live"),
-                )
-                v3_fields = {
-                    "first_discovered_run_id": run_id,
-                    "last_enriched_run_id": run_id,
-                }
-                if ch.get("country"):
-                    v3_fields["country_code"] = ch["country"]
-                    v3_fields["country_source"] = "self_reported"
-                if ch.get("default_language"):
-                    v3_fields["primary_language_code"] = ch["default_language"]
-                # v4: channel age information
-                if ch.get("published_at"):
-                    v3_fields["channel_creation_date"] = ch["published_at"]
-                # v4: vertical_start_date — earliest video matching this niche's keywords
-                _derive_vertical_start(ch, conn, v3_fields)
-                persist_channel_v3(conn, ch["channel_id"], run_id, v3_fields)
-                for vid in ch.get("_videos", []):
-                    v3_vid = {}
-                    if vid.get("description"):
-                        v3_vid["description"] = vid["description"]
-                    if vid.get("tags"):
-                        v3_vid["tags"] = vid["tags"]
-                    if vid.get("duration_seconds") is not None:
-                        # _parse_duration_seconds returns None (not 0) when
-                        # YouTube reported no fixed-length duration at all —
-                        # livestreams and 24/7 rebroadcasts send "P0D"
-                        # rather than a real PT... value. A live/rebroadcast
-                        # video genuinely has no duration to record here;
-                        # leaving both fields unset keeps them blank in the
-                        # export instead of showing a misleading "0 seconds"
-                        # on a multi-hour or ongoing stream.
-                        dur = vid["duration_seconds"]
-                        v3_vid["duration_seconds"] = dur
-                        # Duration alone can only ever narrow the field, not
-                        # decide it: YouTube's Shorts ceiling is 3 minutes
-                        # (raised from 60s in Oct 2024), and being under it
-                        # is necessary but not sufficient — a brief
-                        # LANDSCAPE upload is not a Short. The old
-                        # `0 < dur <= 60` rule was wrong in both
-                        # directions, filing 61-180s vertical Shorts as
-                        # long-form and short landscape videos as Shorts.
-                        # This is the provisional value; the authoritative
-                        # one is membership in the channel's UUSH
-                        # auto-playlist, applied just below.
-                        v3_vid["is_short"] = 0 < dur <= SHORTS_MAX_SECONDS
-                    if shorts_ids:
-                        # YouTube's own answer wins over any duration rule.
-                        # Only trusted when the lookup actually returned
-                        # something — an empty set can equally mean "no
-                        # Shorts" or "the call failed", and overwriting
-                        # every flag to False on a failed call would be
-                        # worse than the heuristic.
-                        v3_vid["is_short"] = vid["video_id"] in shorts_ids
-                    if vid.get("default_language"):
-                        v3_vid["language_code"] = vid["default_language"]
-                    if v3_vid:
-                        persist_video_v3(conn, vid["video_id"], v3_vid)
-                # v4 sample_reason: latest 50 by date, top 20 lifetime by outlier
-                _tag_video_samples(conn, ch.get("_videos", []))
+                    # Roll back this channel's partial work so the connection
+                    # is usable for the next one, and keep its id out of
+                    # persisted_ids -- tagging a channel whose row was rolled
+                    # back would only move the foreign-key failure downstream.
+                    conn.rollback()
+                    errors.append(
+                        ErrorRecord(
+                            node_name="hydrate_metadata",
+                            error_type=type(exc).__name__,
+                            message=f"channel {ch.get('channel_id', '?')}: {exc}",
+                            recoverable=True,
+                        ).model_dump()
+                    )
+                    continue
+                persisted_ids.append(ch["channel_id"])
 
             # Membership, so this run's slice can be exported later without
             # run_id columns on the shared entity tables. This node is the only
@@ -501,12 +580,21 @@ def hydrate_metadata(state: dict) -> dict:
             # the same moment.
             from src.tools.dedup import persist_category_tags
 
+            # persisted_ids, not every channel handed to this node: a
+            # channel whose persistence was rolled back has no row to point
+            # at, and tagging it would push the same foreign-key failure
+            # into the tags table -- losing the whole batch a second time,
+            # one step later.
+            kept = set(persisted_ids)
             persist_category_tags(
                 conn,
                 run_id=state.get("run_id", ""),
                 tree_node_id=state.get("active_node_id") or "",
-                channel_ids=[ch["channel_id"] for ch in channels],
-                video_ids=all_video_ids,
+                channel_ids=persisted_ids,
+                video_ids=[
+                    v for ch in channels if ch["channel_id"] in kept
+                    for v in (vid["video_id"] for vid in ch.get("_videos", []))
+                ],
             )
         finally:
             put_connection(conn)
@@ -524,7 +612,13 @@ def hydrate_metadata(state: dict) -> dict:
     quota_spent = client.quota_consumed_this_call(quota_baseline)
 
     hydration_summary = {
-        "channels_hydrated": len(channels),
+        # What actually reached the database. This counted len(channels) --
+        # what the node was handed -- and so reported 21 hydrated on a run
+        # where one channel persisted and the rest were lost to an aborted
+        # loop. A count that cannot go down is not a measurement.
+        "channels_hydrated": len(persisted_ids),
+        "channels_attempted": len(channels),
+        "foreign_owned_videos_dropped": foreign_videos,
         "videos_fetched": len(all_video_ids),
         "quota_spent_this_round": quota_spent,
         "quota_used_total": client.get_quota_used(),
