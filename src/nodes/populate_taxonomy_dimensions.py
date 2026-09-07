@@ -221,18 +221,10 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
     # the IS NULL guard keeps any genuine raw label already recorded.
     labelled = 0
     try:
+        from src.tools.niche_labels import backfill_raw_niche_labels
+
         label_sql, label_params = scope_clause(state, "cn.channel_id")
-        with conn.cursor() as cur_lbl:
-            cur_lbl.execute(
-                "UPDATE channel_niches cn SET raw_niche_label = nt.niche_name "
-                "FROM niche_taxonomy nt "
-                "WHERE nt.niche_id = cn.niche_id "
-                "  AND cn.raw_niche_label IS NULL "
-                "  AND nt.niche_name IS NOT NULL " + label_sql,
-                label_params,
-            )
-            labelled = cur_lbl.rowcount or 0
-        conn.commit()
+        labelled = backfill_raw_niche_labels(conn, label_sql, label_params)
     except Exception as exc:
         conn.rollback()
         errors.append(ErrorRecord(

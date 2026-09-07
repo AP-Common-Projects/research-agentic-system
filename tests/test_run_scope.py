@@ -358,3 +358,50 @@ class TestFinalizeDatasetWritesToTheWorkbooksChannels:
         assert "first_discovered_run_id" in open(
             "src/nodes/finalize_dataset.py", encoding="utf-8"
         ).read()
+
+
+class TestRawNicheLabelHasOneDefinition:
+    """The last column with two copies of its rule -- the footage flags --
+    ended up with none in the pipeline at all: the derivation lived only in
+    a gapfill script, was run once by hand, and nothing wrote a flag
+    afterwards. One definition, called by the node and by any backfill."""
+
+    def test_the_node_calls_the_shared_backfill(self):
+        import inspect
+
+        from src.nodes.populate_taxonomy_dimensions import populate_taxonomy_dimensions
+
+        src = inspect.getsource(populate_taxonomy_dimensions)
+        assert "backfill_raw_niche_labels" in src
+
+    def test_the_node_keeps_no_copy_of_the_sql(self):
+        src = open("src/nodes/populate_taxonomy_dimensions.py", encoding="utf-8").read()
+        assert "SET raw_niche_label = nt.niche_name" not in src, (
+            "the rule lives in src/tools/niche_labels.py; a second copy is "
+            "how the footage flags ended up with no producer at all"
+        )
+
+    def test_it_never_overwrites_a_label_already_there(self):
+        from unittest.mock import MagicMock
+
+        from src.tools.niche_labels import backfill_raw_niche_labels
+
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.rowcount = 3
+        assert backfill_raw_niche_labels(conn) == 3
+        sql = cur.execute.call_args[0][0]
+        assert "cn.raw_niche_label IS NULL" in sql
+
+    def test_it_can_be_scoped(self):
+        from unittest.mock import MagicMock
+
+        from src.tools.niche_labels import backfill_raw_niche_labels
+
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.rowcount = 1
+        backfill_raw_niche_labels(conn, "AND cn.channel_id = ANY(%s) ", (["c1"],))
+        sql, params = cur.execute.call_args[0]
+        assert "cn.channel_id = ANY(%s)" in sql
+        assert params[0] == ["c1"]
