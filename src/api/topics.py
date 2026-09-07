@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.db.connection import get_connection, put_connection
 
 _MIN_CHANNELS_FOR_CATALOG = 20
@@ -262,10 +262,10 @@ def _proposed_subniches(topic: str) -> list[dict[str, Any]]:
     """Model-proposed sub-niches for a topic with no coverage yet."""
     from src.llm.cascade import complete_tier
 
-    result = complete_tier("cheap", f"Topic: {topic}", SUGGEST_PROMPT)
-    content = result.get("content") or ""
     try:
-        parsed = loads_forgiving(content, expect="array")
+        parsed, _ = complete_json(
+            complete_tier, "cheap", f"Topic: {topic}", SUGGEST_PROMPT, expect="array"
+        )
     except Exception:
         return []
     if not isinstance(parsed, list):

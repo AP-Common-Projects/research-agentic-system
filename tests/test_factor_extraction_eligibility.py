@@ -73,7 +73,9 @@ class TestASuccessfulAttemptIsAlwaysMarked:
         not a property of the channel, and marking it here would convert a
         retryable failure into a permanent skip."""
         src = inspect.getsource(mod.extract_success_failure_factors)
-        call_start = src.index("result = complete_tier(")
+        # complete_json now, which retries a reply that is not JSON before
+        # giving up -- the call itself is still the anchor.
+        call_start = src.index("complete_json(")
         except_start = src.index("except Exception as exc:", call_start)
         # The next statement after this except's body starts is `continue`
         # (via the errors.append/continue block); _mark_checked must not

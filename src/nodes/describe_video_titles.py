@@ -121,7 +121,7 @@ def describe_video_titles(state: dict) -> dict:
         )
         try:
             descriptions, result = complete_json(
-                "cheap", prompt, SYSTEM_PROMPT, expect="array"
+                complete_tier, "cheap", prompt, SYSTEM_PROMPT, expect="array"
             )
             usage = result.get("usage", {})
             total_cost += result.get(

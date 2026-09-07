@@ -287,7 +287,7 @@ def classify_channel(state: dict) -> dict:
                 # cannot retry for itself -- the `continue` below moves to
                 # the next channel and the refused one is simply lost.
                 parsed, result = complete_json(
-                    "mid", prompt, SYSTEM_PROMPT, expect="object"
+                    complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
                 )
             except Exception as exc:
                 errors.append(ErrorRecord(

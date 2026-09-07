@@ -17,7 +17,7 @@ import re
 import time
 from typing import Any
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
 from src.config import get_config
@@ -229,9 +229,9 @@ def populate_shared_fields(state: dict) -> dict:
                 # own data and would fail identically on every retry) can
                 # be marked without also marking a plain network blip.
                 try:
-                    result = complete_tier("mid", prompt, SYSTEM_PROMPT)
-                    content = result.get("content", "")
-                    parsed = loads_forgiving(content, expect="object")
+                    parsed, result = complete_json(
+                        complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
+                    )
                 except Exception as exc:
                     errors.append(ErrorRecord(
                         node_name="populate_shared_fields",

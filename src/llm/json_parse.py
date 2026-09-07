@@ -302,6 +302,7 @@ _JSON_ATTEMPTS = 3
 
 
 def complete_json(
+    call: Any,
     tier: str,
     prompt: str,
     system: str,
@@ -327,12 +328,15 @@ def complete_json(
 
     Raises the last JSONResponseError when every attempt comes back
     unusable, so a caller that treats that as "skip this item" still can.
-    """
-    from src.llm.cascade import complete_tier
 
+    `call` is the node's own complete_tier rather than one imported here.
+    Passing it keeps the seam where it has always been -- on the module
+    doing the work -- so a test that patches one node's model calls still
+    isolates that node, instead of every node at once.
+    """
     last_error: JSONResponseError | None = None
     for attempt in range(1, attempts + 1):
-        result = complete_tier(tier, prompt, system)
+        result = call(tier, prompt, system)
         try:
             return loads_forgiving(result.get("content", ""), expect), result
         except JSONResponseError as exc:

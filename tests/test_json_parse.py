@@ -298,42 +298,39 @@ class TestProseWhereJsonWasAskedFor:
             loads_forgiving(self.REFUSAL, expect="array")
 
     def test_complete_json_asks_again(self):
-        from unittest.mock import patch
-
         from src.llm.json_parse import complete_json
 
-        replies = [
+        from unittest.mock import MagicMock
+
+        call = MagicMock(side_effect=[
             {"content": self.REFUSAL},
             {"content": '["a description"]', "cost_usd": 0.01},
-        ]
-        with patch("src.llm.cascade.complete_tier", side_effect=replies) as call:
-            parsed, result = complete_json("cheap", "p", "s", expect="array")
+        ])
+        parsed, result = complete_json(call, "cheap", "p", "s", expect="array")
 
         assert parsed == ["a description"]
         assert result["cost_usd"] == 0.01, "the caller still needs the usage"
         assert call.call_count == 2
 
     def test_it_gives_up_rather_than_asking_forever(self):
-        from unittest.mock import patch
-
         from src.llm.json_parse import complete_json
 
-        with patch("src.llm.cascade.complete_tier",
-                   return_value={"content": self.REFUSAL}) as call:
-            with pytest.raises(JSONResponseError):
-                complete_json("cheap", "p", "s", expect="array", attempts=3)
+        from unittest.mock import MagicMock
+
+        call = MagicMock(return_value={"content": self.REFUSAL})
+        with pytest.raises(JSONResponseError):
+            complete_json(call, "cheap", "p", "s", expect="array", attempts=3)
         assert call.call_count == 3
 
     def test_a_reply_it_can_repair_costs_no_extra_call(self):
         """The repairs come first; only a reply with no JSON in it at all
         is worth paying for twice."""
-        from unittest.mock import patch
-
         from src.llm.json_parse import complete_json
 
-        with patch("src.llm.cascade.complete_tier",
-                   return_value={"content": '["a", "b"'}) as call:
-            parsed, _ = complete_json("cheap", "p", "s", expect="array")
+        from unittest.mock import MagicMock
+
+        call = MagicMock(return_value={"content": '["a", "b"'})
+        parsed, _ = complete_json(call, "cheap", "p", "s", expect="array")
 
         assert parsed == ["a", "b"]
         assert call.call_count == 1
@@ -341,14 +338,13 @@ class TestProseWhereJsonWasAskedFor:
     def test_the_error_it_raises_is_still_the_one_callers_catch(self):
         """Nodes treat JSONResponseError as "skip this item"; exhausting the
         retries must not change what escapes."""
-        from unittest.mock import patch
-
         from src.llm.json_parse import complete_json
 
-        with patch("src.llm.cascade.complete_tier",
-                   return_value={"content": self.REFUSAL}):
-            with pytest.raises(ValueError):
-                complete_json("cheap", "p", "s", attempts=1)
+        from unittest.mock import MagicMock
+
+        with pytest.raises(ValueError):
+            complete_json(MagicMock(return_value={"content": self.REFUSAL}),
+                          "cheap", "p", "s", attempts=1)
 
 
 class TestTheSitesThatCannotRetryForThemselves:
@@ -367,3 +363,61 @@ class TestTheSitesThatCannotRetryForThemselves:
         from src.nodes.describe_video_titles import describe_video_titles
 
         assert "complete_json(" in inspect.getsource(describe_video_titles)
+
+
+class TestEveryModelCallThatWantsJsonRetriesProse:
+    """A refusal is not specific to one node. Leaving some sites without the
+    retry means the answer to "will I see that error again" is "yes, from a
+    different node" -- which is not an answer."""
+
+    #: The three that already retry through their own attempt loop rather
+    #: than complete_json, checked separately below.
+    OWN_LOOP = {"compact_branch", "synthesize", "taxonomy"}
+    #: Not the pipeline: the offline judge, run by hand against hand-graded
+    #: cases, where a refusal is a result to look at rather than retry.
+    EXEMPT = {"judge"}
+
+    def test_no_pipeline_node_parses_a_model_reply_without_a_retry(self):
+        import pathlib
+
+        unprotected = []
+        for path in sorted(pathlib.Path("src").rglob("*.py")):
+            if path.name in ("json_parse.py",):
+                continue
+            code = path.read_text(encoding="utf-8")
+            if "loads_forgiving" not in code and "complete_json" not in code:
+                continue
+            stem = path.stem
+            if stem in self.OWN_LOOP or stem in self.EXEMPT:
+                continue
+            if "complete_json" not in code:
+                unprotected.append(str(path))
+
+        assert unprotected == [], (
+            f"these parse a model reply with no retry, so a prose refusal "
+            f"there is reported as an error and its work lost: {unprotected}"
+        )
+
+    def test_the_sites_with_their_own_loop_really_have_one(self):
+        """Exempted above, so the exemption has to be true."""
+        import pathlib
+
+        for stem in self.OWN_LOOP:
+            code = next(pathlib.Path("src").rglob(f"{stem}.py")).read_text(
+                encoding="utf-8"
+            )
+            assert "for attempt in range(" in code, stem
+
+    def test_the_caller_is_injected_so_a_node_stays_isolatable(self):
+        """complete_json takes the node's own complete_tier. Importing it
+        inside would make every patch of one node's model calls patch all
+        of them at once."""
+        import inspect
+
+        from src.llm.json_parse import complete_json
+
+        params = list(inspect.signature(complete_json).parameters)
+        assert params[0] == "call"
+        assert "from src.llm.cascade import complete_tier" not in inspect.getsource(
+            complete_json
+        )

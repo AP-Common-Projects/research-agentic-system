@@ -15,7 +15,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
 from src.config import get_config
@@ -304,12 +304,17 @@ def populate_crime_metadata(state: dict) -> dict:
             for r in rows
         ]
         try:
-            result = complete_tier("mid", json.dumps(payload, indent=2), SYSTEM_PROMPT)
-            content = result.get("content") or ""
             try:
-                parsed = loads_forgiving(content, expect="array")
+                parsed, result = complete_json(
+                    complete_tier, "mid", json.dumps(payload, indent=2), SYSTEM_PROMPT,
+                    expect="array",
+                )
             except Exception:
-                parsed = None
+                # A batch the model never answered in JSON. The halving path
+                # below still applies, but only after complete_json has
+                # already asked again -- a refusal is worth another attempt
+                # before a batch of eight is split into four.
+                parsed, result = None, {}
             if parsed is None or (isinstance(parsed, list) and len(parsed) != len(rows)):
                 logger.warning(
                     "crime_metadata_batch_unusable",

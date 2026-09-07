@@ -33,7 +33,7 @@ import json
 import time
 from typing import Any
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
 from src.config import get_config
@@ -301,14 +301,15 @@ def extract_success_failure_factors(state: dict) -> dict:
                 }, indent=2)
 
                 try:
-                    result = complete_tier("mid", prompt, SYSTEM_PROMPT)
+                    parsed, result = complete_json(
+                        complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
+                    )
                     usage = result.get("usage", {})
                     total_cost += result.get(
                         "cost_usd",
                         estimate_cost("mid", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
                     )
-                    content = result.get("content", "")
-                    parsed = loads_forgiving(content, expect="object")
+
                 except Exception as exc:
                     # NOT marked checked: this is the LLM call itself
                     # failing (network, malformed response, rate limit),

@@ -50,7 +50,7 @@ class TestClassifyChannelBudgetTracking:
 
         with patch("src.nodes.classify_channel.get_connection", return_value=conn), \
              patch("src.nodes.classify_channel.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.classify_channel.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_channel_v3"), \
              patch("src.tools.dedup.persist_channel_niche_membership"):
             mock_complete.return_value = _llm_response(
@@ -81,7 +81,7 @@ class TestClassifyChannelBudgetTracking:
 
         with patch("src.nodes.classify_channel.get_connection", return_value=conn), \
              patch("src.nodes.classify_channel.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.classify_channel.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_channel_v3"), \
              patch("src.tools.dedup.persist_channel_niche_membership"):
             mock_complete.return_value = _llm_response(
@@ -117,7 +117,7 @@ class TestClassifyChannelNicheDiscovery:
 
         with patch("src.nodes.classify_channel.get_connection", return_value=conn), \
              patch("src.nodes.classify_channel.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.classify_channel.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_channel_v3") as mock_persist, \
              patch("src.tools.dedup.persist_channel_niche_membership") as mock_membership:
             mock_complete.return_value = _llm_response(
@@ -158,7 +158,7 @@ class TestClassifyChannelNicheDiscovery:
 
         with patch("src.nodes.classify_channel.get_connection", return_value=conn), \
              patch("src.nodes.classify_channel.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.classify_channel.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_channel_v3"), \
              patch("src.tools.dedup.persist_channel_niche_membership") as mock_membership:
             mock_complete.return_value = _llm_response(
@@ -609,7 +609,7 @@ class TestDescribeVideoTitles:
 
         with patch("src.nodes.describe_video_titles.get_connection", return_value=conn), \
              patch("src.nodes.describe_video_titles.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.describe_video_titles.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_video_v3") as mock_persist:
             mock_complete.return_value = _llm_response(
                 '["A police bodycam clip showing an officer confronting an armed suspect.", '
@@ -638,7 +638,7 @@ class TestDescribeVideoTitles:
 
         with patch("src.nodes.describe_video_titles.get_connection", return_value=conn), \
              patch("src.nodes.describe_video_titles.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete, \
+             patch("src.nodes.describe_video_titles.complete_tier") as mock_complete, \
              patch("src.tools.dedup.persist_video_v3") as mock_persist:
             mock_complete.return_value = _llm_response('["Only one description."]')
             result = describe_video_titles({"thread_id": "t-1"})
@@ -654,7 +654,7 @@ class TestDescribeVideoTitles:
 
         with patch("src.nodes.describe_video_titles.get_connection", return_value=conn), \
              patch("src.nodes.describe_video_titles.put_connection"), \
-             patch("src.llm.cascade.complete_tier") as mock_complete:
+             patch("src.nodes.describe_video_titles.complete_tier") as mock_complete:
             result = describe_video_titles({"thread_id": "t-1"})
 
         mock_complete.assert_not_called()
