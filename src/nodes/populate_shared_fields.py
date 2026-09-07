@@ -316,6 +316,35 @@ def populate_shared_fields(state: dict) -> dict:
                 scope_params,
             )
             propagated = cur.rowcount or 0
+
+            # And for a channel with no answer anywhere, the deterministic
+            # estimate this node computes before it ever calls a model.
+            #
+            # The LLM pass is gated on creator_authority_checked_at -- a
+            # marker about the channel's AUTHORITY, which also decides
+            # whether its videos ever get this column. A channel marked
+            # checked whose call failed keeps that mark forever, so its
+            # videos could never be filled: one channel on
+            # run-44e01aab65c2 held 54 of them. The sixth time in this
+            # codebase that a marker for one piece of work has gated
+            # another.
+            #
+            # Identical to the `sb_est` fallback above, expressed in SQL --
+            # the same value the node writes whenever the model answers
+            # "unclear". Derived from signals already on the channel, so it
+            # costs nothing and states no more than the run already knows.
+            cur.execute(
+                "UPDATE videos v SET search_browse_estimate = CASE "
+                "  WHEN c.is_likely_news THEN 'news_driven' "
+                "  WHEN c.engagement_score > 60 THEN 'browse_driven' "
+                "  WHEN c.evergreen_score > 70 THEN 'search_driven' "
+                "  ELSE 'mixed' END "
+                "FROM channels c "
+                "WHERE c.channel_id = v.channel_id "
+                "  AND v.search_browse_estimate IS NULL " + scope_sql,
+                scope_params,
+            )
+            propagated += cur.rowcount or 0
         conn.commit()
     except Exception as exc:
         conn.rollback()

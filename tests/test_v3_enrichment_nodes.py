@@ -996,28 +996,66 @@ class TestSearchBrowseEstimateReachesEveryVideo:
         out, ctx = self._run()
         summary = out["node_logs"][0]["input_summary"]
         assert summary["classified"] == 0
-        assert summary["propagated"] == 7, "the propagation must run regardless"
+        # Both passes count: the copy from a sibling, then the derived
+        # fallback for channels with no answer anywhere. The mock reports 7
+        # rows for each.
+        assert summary["propagated"] == 14, "the propagation must run regardless"
 
-    def test_it_only_copies_a_channels_own_answer(self):
+    def _statements(self, ctx):
+        """Both passes, in order. There are two, and asserting only the
+        last silently stopped checking the first."""
+        return [c[0][0] for c in ctx.execute.call_args_list]
+
+    def test_it_copies_a_channels_own_answer_first(self):
         """Invents nothing: the value comes from another video of the SAME
         channel, which is the value the loop would have written."""
         _, ctx = self._run()
-        sql = ctx.execute.call_args[0][0]
-        assert "v.channel_id = known.channel_id" in sql
-        assert "v.search_browse_estimate IS NULL" in sql
+        copy_sql = self._statements(ctx)[0]
+        assert "v.channel_id = known.channel_id" in copy_sql
+        assert "v.search_browse_estimate IS NULL" in copy_sql
+        assert "WHERE search_browse_estimate IS NOT NULL" in copy_sql, (
+            "the source video must have a real answer to copy"
+        )
 
-    def test_a_channel_with_no_answer_anywhere_is_left_alone(self):
-        """That needs the model, not a copy -- filling it from a sibling
-        that does not exist would mean inventing one."""
-        _, ctx = self._run()
-        sql = ctx.execute.call_args[0][0]
-        assert "WHERE search_browse_estimate IS NOT NULL" in sql
+    def test_a_channel_with_no_answer_falls_back_to_the_derived_estimate(self):
+        """The LLM pass is gated on creator_authority_checked_at -- a marker
+        about the channel's AUTHORITY, which also decided whether its videos
+        ever got this column. A channel marked checked whose call failed kept
+        that mark forever and its videos could never be filled: one channel
+        on run-44e01aab65c2 held 54 of them.
 
-    def test_it_is_scoped_to_the_run(self):
+        The fallback is the same deterministic value the node writes whenever
+        the model answers "unclear", derived from signals already on the
+        channel -- so it costs nothing and states no more than the run knows.
+        """
         _, ctx = self._run()
-        sql, params = ctx.execute.call_args[0]
-        assert "v.channel_id = ANY(%s)" in sql
-        assert params[0] == ["c1"]
+        derive_sql = self._statements(ctx)[1]
+        assert "CASE" in derive_sql
+        assert "c.is_likely_news THEN 'news_driven'" in derive_sql
+        assert "ELSE 'mixed'" in derive_sql
+        assert "v.search_browse_estimate IS NULL" in derive_sql, (
+            "it must never overwrite an answer already there"
+        )
+
+    def test_the_fallback_matches_the_nodes_own_thresholds(self):
+        """Two expressions of one rule; if they drift, a video's estimate
+        depends on which path happened to reach it."""
+        import inspect
+
+        import src.nodes.populate_shared_fields as mod
+
+        src = inspect.getsource(mod.populate_shared_fields)
+        assert 'eng and float(eng or 0) > 60' in src
+        assert "c.engagement_score > 60 THEN 'browse_driven'" in src
+        assert 'eg and float(eg or 0) > 70' in src
+        assert "c.evergreen_score > 70 THEN 'search_driven'" in src
+
+    def test_both_passes_are_scoped_to_the_run(self):
+        _, ctx = self._run()
+        for sql in self._statements(ctx):
+            assert "v.channel_id = ANY(%s)" in sql
+        for call in ctx.execute.call_args_list:
+            assert call[0][1][0] == ["c1"]
 
     def test_the_gate_counts_propagation_as_progress(self):
         """heal() re-invokes a node while it reports progress. A call that

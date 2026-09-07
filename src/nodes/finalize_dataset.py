@@ -17,6 +17,29 @@ from src.db.connection import get_connection, put_connection
 from src.state import NodeLog
 
 
+def _run_channel_clause(state: dict, run_id: str) -> tuple[str, tuple]:
+    """The channels this run owns, for a WHERE on `channels`.
+
+    Prefers the run's own channel set over first_discovered_run_id. Every
+    column this node writes was scoped to channels the run was the FIRST to
+    see, and a workbook is mostly channels it re-found: on run-44e01aab65c2
+    that left data_completeness_score at 4 of 5, and no re-run could fix it
+    because the row was never in scope to begin with. The seventh time in
+    this codebase that a write asked "who found this first" when the
+    question was "what is in the workbook".
+
+    Falls back to first_discovered_run_id when there is no run context --
+    a bare CLI invocation -- and never to no clause at all: an unrestricted
+    UPDATE here would rewrite every channel in the database.
+    """
+    from src.tools.run_scope import channel_scope
+
+    ids = channel_scope(state)
+    if ids is None:
+        return "first_discovered_run_id = %s", (run_id,)
+    return "channel_id = ANY(%s)", (ids,)
+
+
 def finalize_dataset(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     run_id = state.get("run_id", "")
@@ -75,9 +98,10 @@ def finalize_dataset(state: dict) -> dict:
         # A single direct-column expression, correlated by the UPDATE's own
         # row (no subquery needed), fixes both.
         score_expr = " + ".join(f"(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END)" for col in required_cols)
+        where_sql, where_params = _run_channel_clause(state, run_id)
         cur.execute(
             f"UPDATE channels SET data_completeness_score = ({score_expr}) * 1.0 / {len(required_cols)} "
-            f"WHERE first_discovered_run_id = %s", (run_id,)
+            f"WHERE {where_sql}", where_params
         )
         conn.commit()
 
@@ -94,7 +118,7 @@ def finalize_dataset(state: dict) -> dict:
         cur.execute(
             f"UPDATE channels SET missing_required_fields = "
             f"ARRAY_REMOVE(ARRAY[{missing_expr}], NULL) "
-            f"WHERE first_discovered_run_id = %s", (run_id,)
+            f"WHERE {where_sql}", where_params
         )
         conn.commit()
 

@@ -297,3 +297,64 @@ class TestHydrationEnforcesTheChannelCap:
         assert "trimmed_to_cap" in src, (
             "a trimmed run must say so in its log, not silently drop channels"
         )
+
+
+class TestFinalizeDatasetWritesToTheWorkbooksChannels:
+    """Every column finalize_dataset writes was scoped to channels the run
+    was the FIRST to see, and a workbook is mostly channels it re-found.
+    run-44e01aab65c2 shipped data_completeness_score at 4 of 5, and no
+    re-run could fix it: the row was never in scope to begin with.
+
+    The seventh time in this codebase that a write asked "who found this
+    first" when the question was "what is in the workbook".
+    """
+
+    def test_it_uses_the_runs_own_channel_set(self):
+        from src.nodes.finalize_dataset import _run_channel_clause
+
+        sql, params = _run_channel_clause(
+            {"discovered_channel_ids": ["mine", "re-found"]}, "run-x"
+        )
+        assert sql == "channel_id = ANY(%s)"
+        assert sorted(params[0]) == ["mine", "re-found"]
+
+    def test_a_re_found_channel_is_in_scope(self):
+        """The exact row that could not be filled: this run tagged it, an
+        earlier run discovered it."""
+        from src.nodes.finalize_dataset import _run_channel_clause
+
+        _, params = _run_channel_clause(
+            {"discovered_channel_ids": ["found-by-an-earlier-run"]}, "run-x"
+        )
+        assert "found-by-an-earlier-run" in params[0]
+
+    def test_without_a_run_context_it_falls_back_rather_than_widening(self):
+        """A bare CLI invocation keeps the old behaviour. What it must never
+        do is drop the clause: an unrestricted UPDATE here rewrites every
+        channel in the database."""
+        from src.nodes.finalize_dataset import _run_channel_clause
+
+        sql, params = _run_channel_clause({}, "run-x")
+        assert sql == "first_discovered_run_id = %s"
+        assert params == ("run-x",)
+
+    def test_a_run_owning_nothing_writes_nothing(self):
+        from src.nodes.finalize_dataset import _run_channel_clause
+
+        sql, params = _run_channel_clause({"discovered_channel_ids": []}, "run-x")
+        assert sql == "channel_id = ANY(%s)"
+        assert params[0] == []
+
+    def test_the_workbook_columns_use_it(self):
+        import inspect
+
+        from src.nodes.finalize_dataset import finalize_dataset
+
+        src = inspect.getsource(finalize_dataset)
+        assert "data_completeness_score" in src and "WHERE {where_sql}" in src
+        assert "missing_required_fields" in src
+        # The growth columns keep the old clause on purpose: they are in
+        # ALWAYS_DROPPED_COLUMNS and never reach a workbook.
+        assert "first_discovered_run_id" in open(
+            "src/nodes/finalize_dataset.py", encoding="utf-8"
+        ).read()

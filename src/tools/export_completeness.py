@@ -252,6 +252,10 @@ SHEET_CHECKS: list[ColumnCheck] = [
                 "derived from country_code, which sits at 0.70 for the same "
                 "reason: a channel with no country signal has no region",
                 table="Channels"),
+    ColumnCheck("data_completeness_score", "finalize_dataset", 0.98,
+                "computed once at the end of the graph; a channel written "
+                "after it keeps NULL until the node is re-run",
+                table="Channels"),
     ColumnCheck("raw_sub_niche", "populate_taxonomy_dimensions", 0.95,
                 "what the model proposed before canonicalisation; it needs "
                 "the channel_niches row classify_channel creates, so a heal "
@@ -532,6 +536,7 @@ def audit(run_id: str) -> Report:
 #: and the graph, and audit() must stay usable without either.
 def _nodes() -> dict[str, Callable[[dict], Any]]:
     from src.nodes.assign_cohorts import assign_cohorts
+    from src.nodes.finalize_dataset import finalize_dataset
     from src.nodes.populate_crime_metadata import populate_crime_metadata
     from src.nodes.classify_channel import classify_channel
     from src.nodes.describe_video_titles import describe_video_titles
@@ -557,6 +562,9 @@ def _nodes() -> dict[str, Callable[[dict], Any]]:
         # Absent until 2026-09-07, so the crime columns could not have been
         # healed even once they were checked.
         "populate_crime_metadata": populate_crime_metadata,
+        # Idempotent: it recomputes a score from columns already written,
+        # so re-running it after a heal picks up whatever the heal filled.
+        "finalize_dataset": finalize_dataset,
     }
 
 

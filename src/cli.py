@@ -112,6 +112,35 @@ async def _run(
             # needed, opt-in only.
             xlsx_path = export_excel(export_run_id, path / f"{export_run_id}.xlsx")
             print(f"Excel workbook: {xlsx_path}")
+
+            # And then read back what was actually written.
+            #
+            # The gate above checks the rows it is about to export. This
+            # opens the file and reads the cells, which is a different and
+            # strictly later question -- every completeness failure this
+            # project has shipped came from those two questions quietly
+            # being different ones. There is nothing left between this and
+            # the client: whatever a person sees when they open the
+            # workbook is what this measured.
+            #
+            # It reports; it does not heal. The gate is where filling
+            # happens, and if that did not work, saying COMPLETE a second
+            # time is the whole problem repeating itself.
+            from src.tools.workbook_verify import verify_run_workbook
+
+            verdict = verify_run_workbook(export_run_id, xlsx_path)
+            print("\n" + verdict.render())
+            try:
+                (path / "verification.txt").write_text(
+                    verdict.render() + "\n", encoding="utf-8"
+                )
+            except Exception:
+                pass
+            if not verdict.ok:
+                print(
+                    "\n!! The workbook was written but did NOT verify. "
+                    "The gaps above are in the delivered file."
+                )
         except Exception as exc:
             print(f"\nExport failed ({type(exc).__name__}: {exc}) — the run itself is unaffected.")
 
