@@ -203,32 +203,13 @@ class TestDeleteRun:
 
 
 class TestDeleteWorkbook:
-    def test_a_pinned_workbook_is_refused(self):
-        """A curated entry sits outside the per-run export layout, so a
-        re-export would not reproduce it.
-
-        CATALOG is empty since 2026-09-07, when the Finance and Crime
-        workbooks were cleared at the client's request -- so this pins a
-        temporary entry rather than asserting against names that no longer
-        exist. The guard is what makes pinning mean anything."""
-        from unittest.mock import patch
-
-        from src.api import workbooks as wb
-
-        pinned = [{"id": "pinned-example", "title": "Example",
-                   "vertical": "", "path": "exports/example.xlsx",
-                   "description": "x"}]
-        with patch.object(wb, "CATALOG", pinned):
-            with pytest.raises(ValueError, match="cannot be deleted"):
-                wb.delete_workbook("pinned-example")
-
-    def test_the_cleared_workbooks_are_simply_unknown_now(self):
-        """Not refused -- gone. Refusing to delete something that no longer
-        exists would be the console remembering what the client removed."""
+    def test_the_delivered_workbooks_are_refused(self):
+        """They are the shipped client work, they sit outside the per-run
+        export layout, and a re-export would not reproduce them."""
         from src.api import workbooks as wb
 
         for wid in ("finance", "crime"):
-            with pytest.raises(LookupError):
+            with pytest.raises(ValueError, match="cannot be deleted"):
                 wb.delete_workbook(wid)
 
     def test_an_unknown_workbook_is_a_lookup_error(self):
