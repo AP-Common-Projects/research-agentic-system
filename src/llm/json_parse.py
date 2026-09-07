@@ -25,6 +25,12 @@ None is ambiguous about what was meant. All are mechanical to repair, and
 repairing them is strictly better than discarding a channel the run
 already paid to classify.
 
+A fourth failure is not malformed JSON at all but prose where JSON was
+asked for -- a history run got back a canned Chinese "I don't have
+information on that" against a batch of ordinary video titles. Nothing
+can be repaired out of that, so complete_json() asks again instead; see
+its docstring.
+
 What this will NOT do is guess. Every repair below is information
 preserving: it changes punctuation the model got wrong, never content. If
 the payload is genuinely unreadable it raises, because inventing a plausible
@@ -40,7 +46,7 @@ from typing import Any, Literal
 
 import structlog
 
-__all__ = ["loads_forgiving", "JSONResponseError"]
+__all__ = ["loads_forgiving", "complete_json", "JSONResponseError"]
 
 logger = structlog.get_logger(__name__)
 
@@ -287,3 +293,58 @@ def loads_forgiving(
     raise JSONResponseError(
         f"unreadable JSON ({first_error})", candidate
     ) from first_error
+
+
+#: Attempts at getting JSON out of a model that answered with prose.
+#: Small: a refusal comes back fast and cheap, and a model that has
+#: deflected three times is not going to answer the fourth.
+_JSON_ATTEMPTS = 3
+
+
+def complete_json(
+    tier: str,
+    prompt: str,
+    system: str,
+    expect: Literal["object", "array", "any"] = "any",
+    attempts: int = _JSON_ATTEMPTS,
+) -> tuple[Any, dict]:
+    """Ask the model for JSON and return (parsed, raw result).
+
+    A model asked for "ONLY a JSON array" sometimes answers in prose. Not
+    malformed JSON -- no JSON at all. Observed on a history run:
+
+        关于这个问题，我没有相关信息，您可以尝试问我其它问题，我会尽力为您解答~
+        ("I don't have information on that; try asking me something else.")
+
+    against a batch of ordinary video titles. That is a failed call in the
+    same sense as an empty completion, not an answer to be parsed, and the
+    same prompt succeeds on the next attempt.
+
+    It matters most where the caller cannot retry for itself.
+    describe_video_titles re-selects the same rows and comes back round;
+    classify_channel does not -- it moves to the next channel, and the one
+    that was refused is simply lost.
+
+    Raises the last JSONResponseError when every attempt comes back
+    unusable, so a caller that treats that as "skip this item" still can.
+    """
+    from src.llm.cascade import complete_tier
+
+    last_error: JSONResponseError | None = None
+    for attempt in range(1, attempts + 1):
+        result = complete_tier(tier, prompt, system)
+        try:
+            return loads_forgiving(result.get("content", ""), expect), result
+        except JSONResponseError as exc:
+            last_error = exc
+            logger.warning(
+                "llm_json_retry",
+                attempt=attempt,
+                of=attempts,
+                tier=tier,
+                error=str(exc),
+                excerpt=(exc.payload or "")[:200],
+            )
+
+    assert last_error is not None
+    raise last_error

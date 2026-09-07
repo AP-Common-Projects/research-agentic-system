@@ -276,3 +276,94 @@ class TestEveryLlmReplyGoesThroughIt:
                 offenders.append(str(path))
 
         assert offenders == [], f"hand-rolled JSON extraction remains in: {offenders}"
+
+
+class TestProseWhereJsonWasAskedFor:
+    """A history run got this back from a batch of ordinary video titles:
+
+        关于这个问题，我没有相关信息，您可以尝试问我其它问题，我会尽力为您解答~
+        ("I don't have information on that; try asking me something else.")
+
+    Not malformed JSON -- no JSON at all. Nothing can be repaired out of
+    it, and the parser is right to raise rather than invent. But it is a
+    failed call in the same sense as an empty completion, and the same
+    prompt succeeds on the next attempt.
+    """
+
+    #: The exact reply, kept verbatim.
+    REFUSAL = "关于这个问题，我没有相关信息，您可以尝试问我其它问题，我会尽力为您解答~"
+
+    def test_the_parser_still_refuses_to_invent_something(self):
+        with pytest.raises(JSONResponseError):
+            loads_forgiving(self.REFUSAL, expect="array")
+
+    def test_complete_json_asks_again(self):
+        from unittest.mock import patch
+
+        from src.llm.json_parse import complete_json
+
+        replies = [
+            {"content": self.REFUSAL},
+            {"content": '["a description"]', "cost_usd": 0.01},
+        ]
+        with patch("src.llm.cascade.complete_tier", side_effect=replies) as call:
+            parsed, result = complete_json("cheap", "p", "s", expect="array")
+
+        assert parsed == ["a description"]
+        assert result["cost_usd"] == 0.01, "the caller still needs the usage"
+        assert call.call_count == 2
+
+    def test_it_gives_up_rather_than_asking_forever(self):
+        from unittest.mock import patch
+
+        from src.llm.json_parse import complete_json
+
+        with patch("src.llm.cascade.complete_tier",
+                   return_value={"content": self.REFUSAL}) as call:
+            with pytest.raises(JSONResponseError):
+                complete_json("cheap", "p", "s", expect="array", attempts=3)
+        assert call.call_count == 3
+
+    def test_a_reply_it_can_repair_costs_no_extra_call(self):
+        """The repairs come first; only a reply with no JSON in it at all
+        is worth paying for twice."""
+        from unittest.mock import patch
+
+        from src.llm.json_parse import complete_json
+
+        with patch("src.llm.cascade.complete_tier",
+                   return_value={"content": '["a", "b"'}) as call:
+            parsed, _ = complete_json("cheap", "p", "s", expect="array")
+
+        assert parsed == ["a", "b"]
+        assert call.call_count == 1
+
+    def test_the_error_it_raises_is_still_the_one_callers_catch(self):
+        """Nodes treat JSONResponseError as "skip this item"; exhausting the
+        retries must not change what escapes."""
+        from unittest.mock import patch
+
+        from src.llm.json_parse import complete_json
+
+        with patch("src.llm.cascade.complete_tier",
+                   return_value={"content": self.REFUSAL}):
+            with pytest.raises(ValueError):
+                complete_json("cheap", "p", "s", attempts=1)
+
+
+class TestTheSitesThatCannotRetryForThemselves:
+    def test_classify_channel_uses_it(self):
+        """It moves to the next channel on a parse failure, so a refused
+        channel was simply lost."""
+        import inspect
+
+        from src.nodes.classify_channel import classify_channel
+
+        assert "complete_json(" in inspect.getsource(classify_channel)
+
+    def test_describe_video_titles_uses_it(self):
+        import inspect
+
+        from src.nodes.describe_video_titles import describe_video_titles
+
+        assert "complete_json(" in inspect.getsource(describe_video_titles)

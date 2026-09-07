@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.tools.run_scope import channel_scope
 from src.tools import deadline as run_deadline
 from src.db.connection import get_connection, put_connection
@@ -120,14 +120,14 @@ def describe_video_titles(state: dict) -> dict:
             {"titles": [f"{i + 1}. {t}" for i, t in enumerate(titles)]}, indent=2
         )
         try:
-            result = complete_tier("cheap", prompt, SYSTEM_PROMPT)
+            descriptions, result = complete_json(
+                "cheap", prompt, SYSTEM_PROMPT, expect="array"
+            )
             usage = result.get("usage", {})
             total_cost += result.get(
                 "cost_usd",
                 estimate_cost("cheap", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
             )
-            content = result.get("content", "")
-            descriptions = loads_forgiving(content, expect="array")
             if not isinstance(descriptions, list):
                 raise ValueError("response was not a JSON array")
         except Exception as exc:

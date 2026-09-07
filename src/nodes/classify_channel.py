@@ -29,7 +29,7 @@ import json
 import time
 from difflib import SequenceMatcher
 
-from src.llm.json_parse import loads_forgiving
+from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
@@ -282,9 +282,13 @@ def classify_channel(state: dict) -> dict:
 
             # LLM classification
             try:
-                result = complete_tier("mid", prompt, SYSTEM_PROMPT)
-                content = result.get("content", "")
-                parsed = loads_forgiving(content, expect="object")
+                # complete_json, not complete_tier + parse: a reply that
+                # is prose rather than JSON is a failed call, and this node
+                # cannot retry for itself -- the `continue` below moves to
+                # the next channel and the refused one is simply lost.
+                parsed, result = complete_json(
+                    "mid", prompt, SYSTEM_PROMPT, expect="object"
+                )
             except Exception as exc:
                 errors.append(ErrorRecord(
                     node_name="classify_channel",
