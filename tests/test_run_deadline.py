@@ -543,3 +543,61 @@ class TestTheTierCapReachesEnrichment:
                 {"discovered_channel_ids": [f"c{i}" for i in range(20)]}
             )
         assert len(got) == 20, "a config failure must not silently shrink a run"
+
+
+class TestHealingIsExemptFromTheRunDeadlineNotFromItsOwn:
+    """Healing runs after the run's window closes on purpose. It is still
+    bounded -- by the gate's budget -- and that has to be enforceable in
+    the same place the run deadline is.
+
+    Checked only between node calls it is not: one populate_crime_metadata
+    call is fifty videos, and a batch that hits a slow retry path holds it
+    for minutes. A 30-minute heal budget overran to 40 exactly that way.
+    """
+
+    def test_healing_ignores_the_run_deadline(self, monkeypatch):
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "passed", lambda: True)
+        assert d.writeup_passed({"healing": True, "heal_deadline_monotonic": 1e18}) is False
+
+    def test_healing_stops_at_its_own_budget(self, monkeypatch):
+        import time
+
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "passed", lambda: False)
+        spent = time.monotonic() - 1
+        assert d.writeup_passed({"healing": True, "heal_deadline_monotonic": spent}) is True
+
+    def test_a_heal_with_no_deadline_given_is_not_stopped(self):
+        """Backwards compatible: a caller that builds the state by hand and
+        omits the budget gets the old behaviour rather than an immediate
+        no-op that would look like the gate silently doing nothing."""
+        from src.tools import deadline as d
+
+        assert d.writeup_passed({"healing": True}) is False
+
+    def test_the_gate_passes_its_deadline_down(self):
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert '"heal_deadline_monotonic": deadline' in src
+
+
+class TestRetriesAreBoundedByTimeNotOnlyByCount:
+    """An attempt count assumes attempts are quick. A mid-tier crime batch
+    that answers with nothing takes ~2.5 minutes to do it, so five attempts
+    spent twelve minutes on one batch of eight videos."""
+
+    def test_a_wall_clock_stop_is_configured(self):
+        from src.llm.client import _MAX_RETRY_SECONDS
+
+        assert 0 < _MAX_RETRY_SECONDS <= 600
+
+    def test_both_limits_apply(self):
+        src = open("src/llm/client.py", encoding="utf-8").read()
+        code = "\n".join(
+            l for l in src.splitlines() if not l.strip().startswith("#")
+        )
+        assert "stop_after_attempt(5) | stop_after_delay(_MAX_RETRY_SECONDS)" in code, (
+            "whichever limit is reached first must win"
+        )

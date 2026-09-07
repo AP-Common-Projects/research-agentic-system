@@ -117,12 +117,21 @@ def writeup_passed(state: dict | None = None) -> bool:
     `state` matters. The export gate re-runs these very nodes AFTER the
     deadline, deliberately, to fill what the run ran out of time for -- so
     a node that simply asked passed() would turn the completeness gate into
-    a no-op and trade every missing column for the schedule. Healing passes
-    `healing` on the state it builds, and that bypasses the deadline: the
-    gate carries its own wall-clock budget and is not the thing this bounds.
+    a no-op and trade every missing column for the schedule.
+
+    Healing is therefore exempt from the RUN deadline, but not from every
+    deadline: it carries its own budget, and that budget has to be
+    enforceable in the same place. Checked only between node calls it is
+    not -- one populate_crime_metadata call is fifty videos, and a batch
+    that hits a slow retry path can hold it for minutes. A 30-minute heal
+    budget overran to 40 that way. So healing passes its own deadline down
+    and is measured against that instead.
     """
     if state is not None and state.get("healing"):
-        return False
+        heal_deadline = state.get("heal_deadline_monotonic")
+        if heal_deadline is None:
+            return False
+        return time.monotonic() >= float(heal_deadline)
     return passed()
 
 

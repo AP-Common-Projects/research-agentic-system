@@ -580,10 +580,13 @@ def heal(
         "discovered_channel_ids": ids,
         "scope_channel_ids": ids,
         "hydrated_channel_ids": set(),
-        # Bypasses the write-up chain's deadline check. The gate runs after
-        # the run's window has closed by design -- that is the whole point
-        # of it -- and is bounded by its own budget instead.
+        # Exempt from the RUN deadline -- the gate runs after the run's
+        # window has closed by design, that is the whole point of it -- but
+        # bound by the gate's own budget, passed down so the write-up loops
+        # can honour it per channel and per batch rather than only between
+        # node calls.
         "healing": True,
+        "heal_deadline_monotonic": deadline,
     }
 
     nodes = _nodes()

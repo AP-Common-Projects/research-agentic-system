@@ -18,6 +18,7 @@ from tenacity import (
     retry,
     retry_if_exception,
     stop_after_attempt,
+    stop_after_delay,
     wait_exponential_jitter,
 )
 
@@ -75,10 +76,18 @@ def _is_retryable(exception: BaseException) -> bool:
     return False
 
 
+#: Retries are bounded by wall clock as well as by count. An attempt count
+#: alone assumes attempts are quick, and they are not: a mid-tier crime
+#: batch that answers with nothing takes ~2.5 minutes to do it, so five
+#: attempts spent twelve minutes on one batch of eight videos and pushed a
+#: 30-minute heal budget to 40. Whichever limit is reached first wins.
+_MAX_RETRY_SECONDS = 180
+
+
 def _create_retry_decorator():
     return retry(
         wait=wait_exponential_jitter(initial=1, max=60, jitter=2),
-        stop=stop_after_attempt(5),
+        stop=(stop_after_attempt(5) | stop_after_delay(_MAX_RETRY_SECONDS)),
         retry=retry_if_exception(_is_retryable),
         before_sleep=lambda retry_state: logger.warning(
             "llm_retry",
