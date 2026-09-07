@@ -27,7 +27,7 @@ client reading "≈350-450 channels" is reading history rather than a promise.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 
@@ -82,6 +82,45 @@ _COST_MARGIN = 1.5
 #: (20,550/350).
 _VIDEOS_PER_CHANNEL = 54
 
+#: Crime carries a per-VIDEO stage no other vertical runs:
+#: populate_crime_metadata classifies each video into the fifteen case-file
+#: columns -- crime_type, victim_type, case_status, the footage flags and
+#: the rest -- at one mid-tier call per eight videos.
+#:
+#: Measured on run-0ef0d6792b9b: 50 videos in 236s, so 4.7s each. At 54
+#: videos per channel that is 254s on top of the 113s every channel costs,
+#: which is why a crime run of the same stated length delivers roughly a
+#: third of the channels. Quoting the same numbers for both was the reason
+#: a one-hour crime run took 2h34m.
+#:
+#: A backfill of 413 videos measured 13.5s each, but that was healing with
+#: the empty-completion retry stalling up to twelve minutes on a batch;
+#: those are now capped by wall clock, so the run-time figure is the one
+#: that describes a healthy run.
+_CRIME_SECONDS_PER_VIDEO = 4.7
+
+#: $0.0077 per 8-video batch measured on the healthy path is $0.00096 a
+#: video; an end-to-end backfill including retried and halved batches came
+#: to $0.00265. This sits between them, and _COST_MARGIN carries the rest:
+#: under-quoting strands a run, over-quoting only locks a tier earlier.
+_CRIME_USD_PER_VIDEO = 0.0018
+
+
+def is_crime_topic(topic: str | None) -> bool:
+    """Whether a topic runs the crime case-file stage.
+
+    Matched on the topic text because that is what the console has when it
+    renders the cards -- the parent_category is not decided until
+    classify_channel runs, long after the client has picked a depth.
+    """
+    return "crime" in (topic or "").strip().lower()
+
+
+def _seconds_per_channel(crime: bool) -> float:
+    if not crime:
+        return _SECONDS_PER_CHANNEL
+    return _SECONDS_PER_CHANNEL + _CRIME_SECONDS_PER_VIDEO * _VIDEOS_PER_CHANNEL
+
 
 @dataclass
 class DepthTier:
@@ -95,6 +134,9 @@ class DepthTier:
     est_openrouter_usd: float
     # Governor overrides handed to the run as env, mirroring PROFILES keys.
     governors: dict[str, Any] = field(default_factory=dict)
+    #: Set by for_topic(). Crime runs a per-video stage no other vertical
+    #: does, so the same hours buy materially fewer channels.
+    crime: bool = False
 
     def __post_init__(self) -> None:
         # Derived from `hours`, never written by hand: this is the ceiling
@@ -116,7 +158,41 @@ class DepthTier:
         columns and a run four times its stated length.
         """
         usable = self.hours * 3600 - _FIXED_OVERHEAD_SECONDS
-        return max(10, int(usable * _SAFETY_MARGIN / _SECONDS_PER_CHANNEL))
+        # The floor is lower for crime on purpose. Ten channels of crime is
+        # 3,670s of per-channel work against a one-hour window, so holding
+        # the same floor would restore exactly the overrun this removes --
+        # a small honest tier beats a larger one that cannot finish.
+        floor = 5 if self.crime else 10
+        return max(floor, int(usable * _SAFETY_MARGIN / _seconds_per_channel(self.crime)))
+
+    def for_topic(self, topic: str | None) -> "DepthTier":
+        """This tier as it applies to `topic`.
+
+        Crime is the only vertical that changes the arithmetic today. The
+        cost is the tier's own envelope plus the case-file surcharge; it is
+        deliberately not reduced for the smaller channel count, because
+        over-quoting only locks a tier earlier than it strictly must while
+        under-quoting strands a run mid-flight.
+        """
+        if not is_crime_topic(topic):
+            return self
+        # dict(governors), not the tier's own: dataclasses.replace copies
+        # the REFERENCE, and __post_init__ writes MAX_CHANNELS_PER_RUN into
+        # whatever dict it is handed. Sharing it meant one crime lookup
+        # rewrote the module-level tier's cap for every later caller,
+        # including non-crime runs in the same process.
+        crime_tier = replace(self, crime=True, governors=dict(self.governors))
+        surcharge = (
+            crime_tier.max_channels
+            * _VIDEOS_PER_CHANNEL
+            * _CRIME_USD_PER_VIDEO
+            * _COST_MARGIN
+        )
+        return replace(
+            crime_tier,
+            governors=dict(crime_tier.governors),
+            est_openrouter_usd=round(self.est_openrouter_usd + surcharge, 2),
+        )
 
     @property
     def est_channels(self) -> str:
@@ -243,8 +319,15 @@ TIERS: list[DepthTier] = [
 TIERS_BY_ID: dict[str, DepthTier] = {t.id: t for t in TIERS}
 
 
-def get_tier(tier_id: str) -> DepthTier | None:
-    return TIERS_BY_ID.get((tier_id or "").strip().lower())
+def get_tier(tier_id: str, topic: str | None = None) -> DepthTier | None:
+    """The tier, adjusted for the topic it will be run on.
+
+    `topic` matters because crime runs a per-video stage no other vertical
+    does. Passing it here is what makes the governors the run receives the
+    same ones the client was shown on the card.
+    """
+    tier = TIERS_BY_ID.get((tier_id or "").strip().lower())
+    return tier.for_topic(topic) if tier is not None else None
 
 
 def _provider(balances: dict[str, Any], name: str) -> dict[str, Any]:
@@ -254,7 +337,9 @@ def _provider(balances: dict[str, Any], name: str) -> dict[str, Any]:
     return {}
 
 
-def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
+def tiers_with_availability(
+    balances: dict[str, Any], topic: str | None = None
+) -> list[dict[str, Any]]:
     """Every tier, annotated with whether the wallet can currently fund it.
 
     A tier is locked only on evidence. An unknown balance -- Bright Data
@@ -267,7 +352,11 @@ def tiers_with_availability(balances: dict[str, Any]) -> list[dict[str, Any]]:
     brightdata = _provider(balances, "brightdata")
 
     out: list[dict[str, Any]] = []
-    for tier in TIERS:
+    for base in TIERS:
+        # Adjusted before affordability is judged: a crime run costs more
+        # and delivers fewer channels, and locking a depth against the
+        # wrong figure would be worse than not checking at all.
+        tier = base.for_topic(topic)
         row = asdict(tier)
         # asdict() sees dataclass FIELDS only, so every derived value has to
         # be added by hand. est_channels and est_videos became properties

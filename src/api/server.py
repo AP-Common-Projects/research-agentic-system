@@ -405,12 +405,17 @@ def api_connect_brightdata(body: ConnectBrightDataRequest) -> dict[str, Any]:
 
 
 @app.get("/api/depths")
-def api_depths() -> list[dict[str, Any]]:
-    """Depth tiers, each annotated with whether the wallet can fund it."""
+def api_depths(topic: str | None = None) -> list[dict[str, Any]]:
+    """Depth tiers, each annotated with whether the wallet can fund it.
+
+    `topic` because the same depth is not the same run on every vertical:
+    crime classifies every video into its case-file columns, so an hour
+    buys roughly a third of the channels and costs more.
+    """
     from src.api.balances import all_balances
     from src.api.depth import tiers_with_availability
 
-    return tiers_with_availability(all_balances())
+    return tiers_with_availability(all_balances(), topic)
 
 
 @app.get("/api/topics")

@@ -141,7 +141,9 @@ def launch_run(
     if depth:
         from src.api.depth import get_tier
 
-        tier = get_tier(depth)
+        # The topic decides the tier's arithmetic on crime, so the run is
+        # capped by the same number the client saw on the card.
+        tier = get_tier(depth, niches[0] if niches else None)
         if tier is None:
             raise ValueError(f"Unknown depth tier: {depth!r}")
         for key, value in tier.governors.items():

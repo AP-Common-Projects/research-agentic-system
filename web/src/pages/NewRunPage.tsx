@@ -221,9 +221,13 @@ export function NewRunPage() {
   const [launched, setLaunched] = useState<string | null>(null);
 
   const topics = useQuery({ queryKey: ['topics'], queryFn: api.topics });
+  // Keyed on the topic as well as nothing else: the same depth is not the
+  // same run on every vertical. Crime classifies every video into its
+  // case-file columns, so an hour buys roughly a third of the channels and
+  // costs more, and the cards have to say so before the client picks one.
   const depths = useQuery({
-    queryKey: ['depths'],
-    queryFn: api.depths,
+    queryKey: ['depths', submittedTopic],
+    queryFn: () => api.depths(submittedTopic ?? undefined),
     // The wallet moves while this page is open; a stale reading here is how
     // someone picks a tier that is no longer affordable.
     refetchInterval: 60_000,
@@ -419,6 +423,20 @@ export function NewRunPage() {
             )}
             {depths.data && (
               <>
+                {/* Said once, above the cards, rather than repeated on each:
+                    otherwise the smaller channel counts read as a mistake. */}
+                {depths.data.some((t) => t.crime) && (
+                  <p className="mb-3 rounded border border-line bg-sunken px-3 py-2 text-xs leading-snug text-ink-2">
+                    <span className="font-medium text-ink">
+                      Crime runs are sized differently.
+                    </span>{' '}
+                    Every video is also classified into the case-file columns
+                    &mdash; crime type, victim, case status, what footage it
+                    carries &mdash; which costs about four seconds a video on
+                    top of the usual work. The same hours therefore cover fewer
+                    channels, and cost more, than they would on another topic.
+                  </p>
+                )}
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {depths.data.map((tier) => (
                     <DepthCard

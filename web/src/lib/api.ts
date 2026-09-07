@@ -38,6 +38,9 @@ export interface DepthTier {
   locked: boolean;
   blockers: string[];
   warnings: string[];
+  /** Crime classifies every video into its case-file columns, so the same
+   *  hours buy fewer channels and cost more. Set by the server. */
+  crime?: boolean;
 }
 
 export interface Threshold {
@@ -442,7 +445,10 @@ export const api = {
   connectBrightData: (apiKey: string) =>
     post<ProviderBalance>('/api/balances/brightdata/connect', { api_key: apiKey }),
 
-  depths: () => get<DepthTier[]>('/api/depths'),
+  depths: (topic?: string) =>
+    get<DepthTier[]>(
+      `/api/depths${topic ? `?topic=${encodeURIComponent(topic)}` : ''}`,
+    ),
 
   thresholds: (depth?: string) =>
     get<Threshold[]>(`/api/thresholds${depth ? `?depth=${encodeURIComponent(depth)}` : ''}`),

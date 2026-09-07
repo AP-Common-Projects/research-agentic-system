@@ -270,7 +270,10 @@ export function BalancesPage() {
     queryFn: () => api.balances(),
     refetchInterval: 60_000,
   });
-  const depths = useQuery({ queryKey: ['depths'], queryFn: api.depths });
+  // Wrapped, not passed by reference: api.depths now takes an optional
+  // topic, and react-query would hand its own context object to it.
+  // This page shows the baseline tiers, so it asks for no topic.
+  const depths = useQuery({ queryKey: ['depths'], queryFn: () => api.depths() });
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-6">

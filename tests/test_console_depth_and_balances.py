@@ -491,3 +491,124 @@ class TestTopicSuggestions:
         out = topics_mod.suggest("crime")
         assert out["source"] == "dataset"
         assert all(not s["rationale"] for s in out["subniches"])
+
+
+class TestCrimeIsSizedDifferently:
+    """Crime runs a per-video stage no other vertical does:
+    populate_crime_metadata classifies every video into the fifteen
+    case-file columns. Measured on run-0ef0d6792b9b at 50 videos in 236s.
+    At 54 videos a channel that is 254s on top of the 113s every channel
+    already costs, and quoting the same numbers for both is why a one-hour
+    crime run took 2h34m."""
+
+    def test_a_crime_topic_buys_fewer_channels_for_the_same_hours(self):
+        for tier in depth_mod.TIERS:
+            crime = tier.for_topic("crime")
+            assert crime.hours == tier.hours, "the promise is the duration"
+            assert crime.max_channels < tier.max_channels, tier.id
+
+    def test_and_costs_more(self):
+        for tier in depth_mod.TIERS:
+            assert tier.for_topic("crime").est_openrouter_usd > tier.est_openrouter_usd
+
+    def test_the_deadline_is_unchanged(self):
+        """The hours are what the client was sold; crime spends them on
+        fewer channels rather than running longer."""
+        for tier in depth_mod.TIERS:
+            crime = tier.for_topic("crime")
+            assert (crime.governors["RUN_DEADLINE_SECONDS"]
+                    == tier.governors["RUN_DEADLINE_SECONDS"])
+
+    def test_the_cap_the_run_gets_matches_the_card(self):
+        """The whole point of threading the topic through: a run capped at
+        the non-crime number would overrun exactly as before."""
+        crime = depth_mod.TIERS[0].for_topic("true crime")
+        assert crime.governors["MAX_CHANNELS_PER_RUN"] == crime.max_channels
+        assert crime.max_channels < depth_mod.TIERS[0].max_channels
+
+    def test_the_channel_count_still_fits_the_window(self):
+        """Sized from the measurement rather than rounded to something that
+        looks respectable -- a tier that cannot finish is the bug."""
+        for tier in depth_mod.TIERS:
+            crime = tier.for_topic("crime")
+            work = crime.max_channels * depth_mod._seconds_per_channel(True)
+            budget = crime.hours * 3600 - depth_mod._FIXED_OVERHEAD_SECONDS
+            assert work <= budget, f"{tier.id}: {work:.0f}s of work in {budget:.0f}s"
+
+    def test_a_non_crime_topic_is_untouched(self):
+        for tier in depth_mod.TIERS:
+            for topic in ("automotive", "finance", None, ""):
+                same = tier.for_topic(topic)
+                assert same.max_channels == tier.max_channels, topic
+                assert same.est_openrouter_usd == tier.est_openrouter_usd, topic
+
+    def test_the_topic_is_matched_loosely_enough_to_be_useful(self):
+        """The console has free text at this point, not a category -- the
+        parent_category is not decided until classify_channel runs."""
+        for topic in ("crime", "Crime", "true crime", "  TRUE CRIME  ",
+                      "crime documentaries"):
+            assert depth_mod.is_crime_topic(topic), topic
+        for topic in ("automotive", "finance", None, "", "criminal justice reform"):
+            if topic and "crime" in topic.lower():
+                continue
+            assert not depth_mod.is_crime_topic(topic), topic
+
+    def test_affordability_is_judged_on_the_crime_figure(self):
+        """Locking a depth against the wrong number would be worse than not
+        checking: a crime deep run needs twice what the card used to say."""
+        deep = next(t for t in depth_mod.TIERS if t.id == "deep")
+        between = (deep.est_openrouter_usd
+                   + deep.for_topic("crime").est_openrouter_usd) / 2
+        rows = depth_mod.tiers_with_availability(
+            _balances(openrouter=between, brightdata=500.0), topic="crime"
+        )
+        row = next(r for r in rows if r["id"] == "deep")
+        assert row["locked"], "affordable as a normal run, not as a crime one"
+
+    def test_get_tier_carries_the_topic_through(self):
+        assert depth_mod.get_tier("sample", "crime").crime is True
+        assert depth_mod.get_tier("sample").crime is False
+        assert depth_mod.get_tier("sample", "automotive").crime is False
+
+
+class TestTheLauncherUsesTheTopicAdjustedTier:
+    def test_a_crime_run_is_capped_at_the_crime_number(self, tmp_path, monkeypatch):
+        import json
+        from unittest.mock import patch
+
+        from src.api import runs as runs_mod
+
+        monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)
+        captured = {}
+
+        class _P:
+            pid = 1
+
+        def _popen(argv, **kwargs):
+            captured["env"] = kwargs["env"]
+            return _P()
+
+        with patch("src.api.runs.subprocess.Popen", side_effect=_popen), \
+             patch("src.api.runs._append_registry"):
+            runs_mod.launch_run(["crime"], depth="sample")
+
+        expected = depth_mod.get_tier("sample", "crime").max_channels
+        assert captured["env"]["MAX_CHANNELS_PER_RUN"] == str(expected)
+        assert expected < depth_mod.get_tier("sample").max_channels
+        assert json is not None
+
+    def test_asking_for_a_crime_tier_does_not_rewrite_the_shared_one(self):
+        """dataclasses.replace copies the REFERENCE to governors, and
+        __post_init__ writes MAX_CHANNELS_PER_RUN into whatever dict it is
+        handed. Sharing it meant one crime lookup rewrote the module-level
+        tier's cap for every later caller, non-crime runs included -- in a
+        long-lived API process, permanently."""
+        before = {t.id: t.governors["MAX_CHANNELS_PER_RUN"] for t in depth_mod.TIERS}
+        for tier in depth_mod.TIERS:
+            tier.for_topic("crime")
+        after = {t.id: t.governors["MAX_CHANNELS_PER_RUN"] for t in depth_mod.TIERS}
+        assert before == after
+
+    def test_the_crime_tier_keeps_its_own_governors(self):
+        crime = depth_mod.TIERS[0].for_topic("crime")
+        assert crime.governors is not depth_mod.TIERS[0].governors
