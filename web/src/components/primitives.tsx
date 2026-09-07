@@ -437,7 +437,7 @@ export function TrackBadge({ method }: { method: DiscoveryMethod }) {
 
 const STATUS_META: Record<RunStatus, { label: string; color: string; pulse: boolean }> = {
   running: { label: 'Running', color: 'var(--track-graph)', pulse: true },
-  complete: { label: 'Complete', color: 'var(--status-good)', pulse: false },
+  complete: { label: 'Finished', color: 'var(--status-good)', pulse: false },
   stopped: { label: 'Stopped', color: 'var(--status-critical)', pulse: false },
   pending: { label: 'Pending', color: 'var(--ink-3)', pulse: false },
 };

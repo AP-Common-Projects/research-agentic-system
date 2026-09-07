@@ -238,3 +238,75 @@ class TestDeleteWorkbook:
 
         assert sorted(out["removed"]) == ["channels.csv", "manifest.json", "run-z.xlsx"]
         assert not export.exists()
+
+
+class TestAFinishedRunReadsAsFinished:
+    """A run that reached the end of the graph reported "Stopped", in red,
+    beside a workbook it had finished writing.
+
+    The test for completion was `any node_name == "synthesize"`, and the
+    graph contains no node by that name -- its terminal edge is
+    finalize_dataset -> END. So no run had ever satisfied it, and every
+    completed run in the console's history was mislabelled.
+    """
+
+    def _status(self, tmp_path, monkeypatch, nodes, pid=None, running=False):
+        import json
+
+        monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)
+        (tmp_path / "registry.jsonl").write_text(
+            json.dumps({"run_id": "run-a", "pid": pid,
+                        "started_at": "2026-09-07T00:00:00+00:00"}) + "\n"
+        )
+        (tmp_path / "run-a.jsonl").write_text(
+            "\n".join(json.dumps({"node_name": n, "thread_id": "t",
+                                  "timestamp": "2026-09-07T00:00:00+00:00"})
+                      for n in nodes) + "\n"
+        )
+        with patch.object(runs_mod, "is_process_running", return_value=running):
+            return next(r for r in runs_mod.list_runs() if r["run_id"] == "run-a")
+
+    def test_reaching_the_graphs_last_node_is_complete(self, tmp_path, monkeypatch):
+        run = self._status(tmp_path, monkeypatch,
+                           ["scan_niches", "classify_channel", "finalize_dataset"])
+        assert run["status"] == "complete"
+
+    def test_a_run_cut_short_is_still_stopped(self, tmp_path, monkeypatch):
+        """The distinction has to survive: a run killed mid-pipeline is not
+        the same as one that finished, and both were red before."""
+        run = self._status(tmp_path, monkeypatch, ["scan_niches", "score_signals"])
+        assert run["status"] == "stopped"
+
+    def test_a_live_run_is_running(self, tmp_path, monkeypatch):
+        run = self._status(tmp_path, monkeypatch, ["finalize_dataset"],
+                           pid=4242, running=True)
+        assert run["status"] == "running"
+
+    def test_a_run_that_logged_nothing_is_pending(self, tmp_path, monkeypatch):
+        import json
+
+        monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)
+        (tmp_path / "registry.jsonl").write_text(
+            json.dumps({"run_id": "run-a", "pid": None}) + "\n"
+        )
+        with patch.object(runs_mod, "is_process_running", return_value=False):
+            run = next(r for r in runs_mod.list_runs() if r["run_id"] == "run-a")
+        assert run["status"] == "pending"
+
+    def test_the_terminal_set_matches_the_graph(self):
+        """The guard against this drifting again. If the graph's last node
+        is renamed, this fails here rather than turning every finished run
+        red in the console."""
+        import re
+
+        src = open("src/graph.py", encoding="utf-8").read()
+        terminals = set(re.findall(r'add_edge\(\s*"([a-z_]+)"\s*,\s*END\s*\)', src))
+        assert terminals, "could not find the graph's terminal edge"
+        assert terminals <= set(runs_mod.TERMINAL_NODES), (
+            f"the graph ends at {sorted(terminals)}, which the run status "
+            f"does not recognise as finished"
+        )
+
+    def test_the_console_calls_it_finished_in_green(self):
+        src = open("web/src/components/primitives.tsx", encoding="utf-8").read()
+        assert "complete: { label: 'Finished', color: 'var(--status-good)'" in src

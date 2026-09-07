@@ -30,6 +30,17 @@ from src.config import get_config
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+#: Reaching one of these means the graph ran to its end, so the run
+#: finished rather than being cut short.
+#:
+#: It used to test for "synthesize" alone, and the graph does not contain a
+#: node by that name -- its terminal edge is finalize_dataset -> END. So no
+#: run has ever satisfied it, and every completed run reported "stopped",
+#: in red, next to a workbook it had finished writing. synthesize is kept
+#: for older runs whose logs carry it.
+TERMINAL_NODES = frozenset({"finalize_dataset", "synthesize"})
+
+
 def log_dir() -> Path:
     """Resolve the configured log directory relative to the repo root."""
     raw = Path(get_config().harness.log_dir)
@@ -354,11 +365,13 @@ def list_runs(include_log_only: bool = True) -> list[dict[str, Any]]:
     for run_id, entry in registry.items():
         entries = read_run_log(run_id)
         running = is_process_running(entry.get("pid"))
-        has_report = any(e.get("node_name") == "synthesize" for e in entries)
+        reached_end = any(
+            e.get("node_name") in TERMINAL_NODES for e in entries
+        )
 
         if running:
             status = "running"
-        elif has_report:
+        elif reached_end:
             status = "complete"
         elif entries:
             status = "stopped"
