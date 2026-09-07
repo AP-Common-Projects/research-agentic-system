@@ -425,3 +425,121 @@ class TestTerminationStillExports:
         }
         for terminal in ("check_saturation", "compact_branch", "finalize_dataset"):
             assert terminal not in guarded
+
+
+class TestTheWriteUpChainIsBoundedToo:
+    """research_passed() bounded discovery; nothing bounded what followed
+    it. Every enrichment and write-up node ran to completion however long
+    that took, which is how a one-hour crime run took 2h34m -- research
+    yielded on time at 48 minutes and the write-up then ran 1h45m."""
+
+    def test_it_stops_the_write_up_once_the_window_is_spent(self, monkeypatch):
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "passed", lambda: True)
+        assert d.writeup_passed({"run_id": "r"}) is True
+
+    def test_it_does_not_stop_it_before(self, monkeypatch):
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "passed", lambda: False)
+        assert d.writeup_passed({"run_id": "r"}) is False
+
+    def test_healing_is_exempt(self, monkeypatch):
+        """The export gate re-runs these very nodes AFTER the deadline, on
+        purpose, to fill what the run ran out of time for. A node that just
+        asked passed() would make the completeness gate a no-op and trade
+        every missing column for the schedule."""
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "passed", lambda: True)
+        assert d.writeup_passed({"healing": True}) is False
+
+    def test_the_gate_actually_sets_that_flag(self):
+        """Without it the two mechanisms cancel each other out silently."""
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert '"healing": True' in src
+
+    def test_every_write_up_node_checks_it(self):
+        """One unguarded node is enough to reinstate the overrun."""
+        import pathlib
+
+        expected = [
+            "populate_taxonomy_dimensions", "populate_shared_fields",
+            "populate_crime_metadata", "describe_video_titles",
+            "extract_success_failure_factors",
+        ]
+        for name in expected:
+            code = pathlib.Path(f"src/nodes/{name}.py").read_text(encoding="utf-8")
+            code = "\n".join(
+                l for l in code.splitlines() if not l.strip().startswith("#")
+            )
+            assert "run_deadline.writeup_passed(state)" in code, name
+
+    def test_it_is_checked_inside_the_loop_not_only_at_entry(self):
+        """Admission control alone bounds overshoot to a whole node, which
+        for these is the thing that took the hour."""
+        import pathlib
+
+        code = pathlib.Path(
+            "src/nodes/populate_taxonomy_dimensions.py"
+        ).read_text(encoding="utf-8")
+        loop_at = code.index("for ch_id, title, desc, fmt, nid, nname, category in eligible:")
+        assert code.index("run_deadline.writeup_passed(state)") > loop_at
+
+
+class TestTheTierCapReachesEnrichment:
+    """hydrate_metadata applied MAX_CHANNELS_PER_RUN where the API cost is.
+    Nothing applied it to the enrichment scope, so a sample run that
+    hydrated 21 channels under a cap of 21 went on to enrich 206."""
+
+    def _scope(self, cap, discovered, hydrated=()):
+        from unittest.mock import MagicMock, patch
+
+        from src.tools import run_scope
+
+        cfg = MagicMock()
+        cfg.harness.max_channels_per_run = cap
+        with patch("src.config.get_config", return_value=cfg):
+            return run_scope.channel_scope({
+                "discovered_channel_ids": list(discovered),
+                "hydrated_channel_ids": set(hydrated),
+            })
+
+    def test_the_scope_is_trimmed_to_the_cap(self):
+        got = self._scope(cap=3, discovered=[f"c{i}" for i in range(20)])
+        assert len(got) == 3
+
+    def test_hydrated_channels_are_kept_first(self):
+        """They are the cap's own selection -- biggest first -- and the ones
+        with data worth enriching."""
+        got = self._scope(cap=2, discovered=[f"c{i}" for i in range(20)],
+                          hydrated={"c17", "c18"})
+        assert set(got) == {"c17", "c18"}
+
+    def test_it_fills_the_remaining_room_deterministically(self):
+        """Two processes given the same state must pick the same channels."""
+        a = self._scope(cap=4, discovered=[f"c{i}" for i in range(20)], hydrated={"c9"})
+        b = self._scope(cap=4, discovered=list(reversed([f"c{i}" for i in range(20)])),
+                        hydrated={"c9"})
+        assert a == b
+        assert "c9" in a and len(a) == 4
+
+    def test_an_uncapped_run_is_untouched(self):
+        got = self._scope(cap=0, discovered=[f"c{i}" for i in range(20)])
+        assert len(got) == 20
+
+    def test_a_scope_under_the_cap_is_untouched(self):
+        got = self._scope(cap=50, discovered=["c1", "c2"])
+        assert sorted(got) == ["c1", "c2"]
+
+    def test_an_unreadable_config_does_not_narrow_the_run(self):
+        from unittest.mock import patch
+
+        from src.tools import run_scope
+
+        with patch("src.config.get_config", side_effect=RuntimeError("no config")):
+            got = run_scope.channel_scope(
+                {"discovered_channel_ids": [f"c{i}" for i in range(20)]}
+            )
+        assert len(got) == 20, "a config failure must not silently shrink a run"

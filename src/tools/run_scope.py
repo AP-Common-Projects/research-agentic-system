@@ -56,7 +56,47 @@ def channel_scope(state: dict[str, Any]) -> list[str] | None:
     # Union rather than discovered alone: a resumed run reloads hydrated
     # ids from its checkpoint without necessarily replaying discovery, and
     # those channels are still legitimately this run's to finish.
-    return list({*discovered, *hydrated})
+    scope = {*discovered, *hydrated}
+    return _within_cap(scope, hydrated)
+
+
+def _within_cap(scope: set[str], hydrated) -> list[str]:
+    """Trim the scope to the tier's channel cap.
+
+    hydrate_metadata applies MAX_CHANNELS_PER_RUN to what it hydrates,
+    because that is where the API cost is. Nothing applied it here, and
+    discovered_channel_ids counts every id discovery saw whether or not it
+    was hydrated -- so the enrichment chain worked through the untrimmed
+    set. The crime run of 2026-09-07 hydrated 21 channels under a sample
+    tier's cap of 21 and then enriched 206, which is most of why a
+    one-hour run took 2h34m: the duration estimate is built from the cap.
+
+    Hydrated ids are kept first and in full. They are the cap's own
+    selection -- biggest first, already <= cap -- and they are the channels
+    with data worth enriching. Anything else fills the remaining room in
+    sorted order, so two processes given the same state pick the same set.
+
+    A channel dropped here is not lost: it can still reach the workbook,
+    and the export gate heals the workbook's own rows afterwards, on its
+    own budget. That is the division of labour -- the run does bounded
+    work, the gate makes the file complete.
+    """
+    try:
+        from src.config import get_config
+
+        cap = int(get_config().harness.max_channels_per_run or 0)
+    except Exception:
+        # An unreadable config must not narrow a run that would have worked.
+        return sorted(scope)
+
+    if cap <= 0 or len(scope) <= cap:
+        return sorted(scope)
+
+    kept = list(dict.fromkeys(hydrated))[:cap]
+    room = cap - len(kept)
+    if room > 0:
+        kept += sorted(scope - set(kept))[:room]
+    return kept
 
 
 def scope_clause(

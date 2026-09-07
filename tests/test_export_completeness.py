@@ -20,6 +20,14 @@ import pytest
 from src.tools import export_completeness as gate
 
 
+def _scope(category):
+    """A WorkbookScope with just the field the sweep reads."""
+    from src.export import WorkbookScope
+    return WorkbookScope(category=category, min_subscribers=None,
+                         own_only=False, video_limit=None)
+
+
+
 class TestTheSpecIsHonest:
     def test_every_check_names_its_producer_or_admits_it_cannot_be_filled(self):
         """A column with no node behind it is reported, never silently
@@ -83,8 +91,12 @@ class TestTheSpecCoversTheWorkbook:
         return cols
 
     def test_every_videos_column_is_either_checked_or_explicitly_waived(self):
-        checked = {c.column for c in gate.VIDEO_CHECKS}
-        waived = set(gate.UNCHECKED_VIDEO_COLUMNS)
+        # The crime case-file columns are accounted for conditionally --
+        # checked on a crime workbook, dropped from the file on any other --
+        # so both halves count as a decision having been made.
+        checked = ({c.column for c in gate.VIDEO_CHECKS}
+                   | {c.column for c in gate.CRIME_VIDEO_CHECKS})
+        waived = set(gate.UNCHECKED_VIDEO_COLUMNS) | set(gate.CRIME_WAIVERS)
         undeclared = self._videos_sheet_columns() - checked - waived
         assert not undeclared, (
             "these Videos columns have no fill threshold and no stated "
@@ -383,3 +395,87 @@ class TestWaiversAreAccountable:
         """A column nobody classified is more likely to be one nobody
         noticed than one that is legitimately sparse."""
         assert gate._DEFAULT_MIN_FILL >= 0.95
+
+
+class TestAWaiverCannotExcuseTheDeliverable:
+    """The crime workbook shipped its case-file columns at 18% under a
+    COMPLETE report. Every one of them sat in the Videos waiver list marked
+    "crime only" -- true of an automotive run, where the export drops them,
+    and exactly backwards on a crime run, where they are the thing the
+    client commissioned.
+
+    A waiver is a claim about a kind of workbook, not about a column. These
+    hold the gate to that.
+    """
+
+    def test_every_crime_only_column_is_accounted_for(self):
+        """Sourced from the export's own frozenset, so adding a crime column
+        to the sheet forces a decision here rather than inheriting silence."""
+        from src.export import CRIME_ONLY_COLUMNS
+
+        checked = {c.column for c in gate.CRIME_VIDEO_CHECKS}
+        waived = set(gate.CRIME_WAIVERS)
+        missing = CRIME_ONLY_COLUMNS - checked - waived
+        assert not missing, (
+            f"these crime columns are neither checked on a crime workbook "
+            f"nor explicitly excused: {sorted(missing)}"
+        )
+
+    def test_no_crime_column_is_blanket_waived_any_more(self):
+        """The bug itself: a flat waiver applied on every run."""
+        from src.export import CRIME_ONLY_COLUMNS
+
+        for sheet, columns in gate.SHEET_WAIVERS.items():
+            overlap = CRIME_ONLY_COLUMNS & set(columns)
+            assert not overlap, (
+                f"{sheet} unconditionally waives {sorted(overlap)}, which a "
+                f"crime workbook exists to carry"
+            )
+
+    def test_a_crime_workbook_checks_them(self):
+        rows = {"Videos": [{"crime_type": None}, {"crime_type": "homicide"}]}
+        with patch("src.export.sheet_rows", return_value=rows), \
+             patch("src.export.workbook_scope",
+                   return_value=_scope(category="crime")):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+        found = [f for f in report.findings if f.column == "crime_type"]
+        assert found, "a crime workbook must check its case-file columns"
+        assert found[0].node == "populate_crime_metadata"
+        assert not found[0].ok, "1 of 2 is short of the 0.95 bar"
+
+    def test_a_non_crime_workbook_leaves_them_alone(self):
+        """They are dropped from the file on every other vertical, so a
+        fill rate on them measures a column nobody will see."""
+        rows = {"Videos": [{"crime_type": None}] * 10}
+        with patch("src.export.sheet_rows", return_value=rows), \
+             patch("src.export.workbook_scope",
+                   return_value=_scope(category="automotive")):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+        assert not [f for f in report.findings if f.column == "crime_type"]
+
+    def test_case_year_stays_excused_on_a_crime_workbook_with_its_evidence(self):
+        """Sparse in the delivered workbook too -- 27% of videos, 18% of
+        shorts -- so a threshold would fail every crime run forever."""
+        rows = {"Videos": [{"case_year": None}] * 10}
+        with patch("src.export.sheet_rows", return_value=rows), \
+             patch("src.export.workbook_scope",
+                   return_value=_scope(category="crime")):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+        assert not [f for f in report.findings if f.column == "case_year"]
+        assert "27%" in gate.CRIME_WAIVERS["case_year"]
+
+    def test_the_node_that_fills_them_can_actually_be_run(self):
+        """It was missing from _nodes() entirely, so even a correct check
+        could not have healed a single row."""
+        assert "populate_crime_metadata" in gate._nodes()
+        for check in gate.CRIME_VIDEO_CHECKS:
+            assert check.node in gate._nodes(), check.column
+
+    def test_the_bar_matches_what_a_good_crime_workbook_reaches(self):
+        """crime.xlsx achieved 99.4-99.8% on all of these across 11,161
+        videos. A bar below that would have passed this failure too."""
+        for check in gate.CRIME_VIDEO_CHECKS:
+            assert check.min_fill >= 0.95, check.column

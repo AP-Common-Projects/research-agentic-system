@@ -21,6 +21,7 @@ import time
 
 from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import channel_scope
+from src.tools import deadline as run_deadline
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
@@ -106,6 +107,12 @@ def describe_video_titles(state: dict) -> dict:
         return {"node_logs": _log({"reason": "query failed", "described": 0})}
 
     while batch:
+        # The write-up chain used to run to completion however long it
+        # took; a one-hour crime run spent 1h45m in it. Checked per
+        # batch so overshoot is one batch, not one whole node.
+        # Healing bypasses this -- see deadline.writeup_passed.
+        if run_deadline.writeup_passed(state):
+            break
         total_seen += len(batch)
         video_ids = [v[0] for v in batch]
         titles = [v[1] for v in batch]

@@ -125,6 +125,37 @@ VIDEO_CHECKS: list[ColumnCheck] = [
                 table="videos"),
 ]
 
+#: The crime case-file columns. On a crime workbook these ARE the
+#: deliverable; on any other the export drops them entirely. They sat in
+#: the Videos waiver list as "crime only", which reads as "not applicable"
+#: and was applied on every run -- so a crime workbook shipped them at 18%
+#: with the gate reporting COMPLETE, because it had excused the one thing
+#: the client had commissioned.
+#:
+#: Thresholds calibrated against the delivered crime.xlsx, which achieved
+#: 99.4-99.8% on every one of these across 11,161 videos and 2,532 shorts.
+CRIME_VIDEO_CHECKS: list[ColumnCheck] = [
+    ColumnCheck(column, "populate_crime_metadata", 0.95,
+                "a crime workbook's reason for existing", table="videos")
+    for column in (
+        "crime_type", "victim_type", "suspect_relationship",
+        "investigation_type", "evidence_type_primary", "case_status",
+        "case_fame_level", "case_country", "reveal_mechanisms",
+        "interrogation_available", "bodycam_available", "cctv_available",
+        "call_911_available", "court_footage_available",
+    )
+]
+
+#: Crime columns that are sparse even in a good crime workbook, with the
+#: measurement behind that claim.
+CRIME_WAIVERS: dict[str, str] = {
+    "case_year": (
+        "only a dated, identifiable case has a year the model can give. "
+        "The delivered crime.xlsx carries it on 27% of videos and 18% of "
+        "shorts, so a fill rate here would fail every crime run forever"
+    ),
+}
+
 #: Held to this when nobody has said otherwise. Deliberately strict: an
 #: unclassified column that is legitimately full passes in silence, and one
 #: that is quietly empty is exactly what this gate exists to catch. A column
@@ -160,21 +191,6 @@ UNCHECKED_VIDEO_COLUMNS: dict[str, str] = {
     "thumbnail_url": "absent for deleted or private videos",
     "thumbnail_has_face": "vision signals, run on a sample not the census",
     "thumbnail_text_density": "vision signals, run on a sample not the census",
-    "reveal_mechanisms": "crime only",
-    "crime_type": "crime only",
-    "victim_type": "crime only",
-    "suspect_relationship": "crime only",
-    "investigation_type": "crime only",
-    "evidence_type_primary": "crime only",
-    "case_status": "crime only",
-    "case_fame_level": "crime only",
-    "case_country": "crime only",
-    "case_year": "crime only",
-    "interrogation_available": "crime only",
-    "bodycam_available": "crime only",
-    "cctv_available": "crime only",
-    "call_911_available": "crime only",
-    "court_footage_available": "crime only",
 }
 
 
@@ -246,7 +262,7 @@ SHEET_CHECKS: list[ColumnCheck] = [
 #: are lowercased so "Channels" and the checks' table="channels" agree.
 _DECLARED: dict[tuple[str, str], ColumnCheck] = {
     (c.table.lower(), c.column): c
-    for c in CHANNEL_CHECKS + VIDEO_CHECKS + SHEET_CHECKS
+    for c in CHANNEL_CHECKS + VIDEO_CHECKS + SHEET_CHECKS + CRIME_VIDEO_CHECKS
 }
 
 
@@ -368,7 +384,13 @@ def _sweep(report: Report, already: set[tuple[str, str]]) -> None:
     the export drops a column that is entirely empty, so the emptiest
     column of all is the one that leaves no trace in the file.
     """
-    from src.export import ALWAYS_DROPPED_COLUMNS, sheet_rows
+    from src.export import ALWAYS_DROPPED_COLUMNS, sheet_rows, workbook_scope
+
+    # A waiver is only ever honest about a particular kind of workbook.
+    # "crime only" means "absent from this file" on an automotive run and
+    # "this is what the client paid for" on a crime one, and the gate has
+    # to know which it is looking at.
+    is_crime = workbook_scope(report.run_id).category == "crime"
 
     for sheet, rows in sheet_rows(report.run_id).items():
         if not rows:
@@ -379,6 +401,13 @@ def _sweep(report: Report, already: set[tuple[str, str]]) -> None:
         # deliverable cannot leave the gate complaining about it forever.
         waived = dict(SHEET_WAIVERS.get(sheet, {}))
         waived.update({c: "removed from the deliverable" for c in ALWAYS_DROPPED_COLUMNS})
+        if is_crime:
+            waived.update(CRIME_WAIVERS)
+        else:
+            # Dropped from the file on every other vertical, so a fill rate
+            # on them measures a column nobody will see.
+            waived.update({c.column: "crime only" for c in CRIME_VIDEO_CHECKS})
+            waived.update(CRIME_WAIVERS)
         columns: list[str] = []
         for row in rows:
             for key in row:
@@ -479,6 +508,7 @@ def audit(run_id: str) -> Report:
 #: and the graph, and audit() must stay usable without either.
 def _nodes() -> dict[str, Callable[[dict], Any]]:
     from src.nodes.assign_cohorts import assign_cohorts
+    from src.nodes.populate_crime_metadata import populate_crime_metadata
     from src.nodes.classify_channel import classify_channel
     from src.nodes.describe_video_titles import describe_video_titles
     from src.nodes.extract_metadata_signals import extract_metadata_signals
@@ -500,6 +530,9 @@ def _nodes() -> dict[str, Callable[[dict], Any]]:
         "extract_success_failure_factors": extract_success_failure_factors,
         "describe_video_titles": describe_video_titles,
         "assign_cohorts": assign_cohorts,
+        # Absent until 2026-09-07, so the crime columns could not have been
+        # healed even once they were checked.
+        "populate_crime_metadata": populate_crime_metadata,
     }
 
 
@@ -547,6 +580,10 @@ def heal(
         "discovered_channel_ids": ids,
         "scope_channel_ids": ids,
         "hydrated_channel_ids": set(),
+        # Bypasses the write-up chain's deadline check. The gate runs after
+        # the run's window has closed by design -- that is the whole point
+        # of it -- and is bounded by its own budget instead.
+        "healing": True,
     }
 
     nodes = _nodes()

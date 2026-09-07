@@ -35,6 +35,7 @@ from typing import Any
 
 from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
+from src.tools import deadline as run_deadline
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -239,6 +240,12 @@ def extract_success_failure_factors(state: dict) -> dict:
     while eligible:
         total_eligible_seen += len(eligible)
         for ch_id in eligible:
+            # The write-up chain used to run to completion however long it
+            # took; a one-hour crime run spent 1h45m in it. Checked per
+            # channel so overshoot is one channel, not one whole node.
+            # Healing bypasses this -- see deadline.writeup_passed.
+            if run_deadline.writeup_passed(state):
+                break
             try:
                 cur = conn.cursor()
                 cur.execute(

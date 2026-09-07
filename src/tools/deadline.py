@@ -102,6 +102,30 @@ def research_passed() -> bool:
     return run_elapsed_seconds() >= ceiling * RESEARCH_SHARE
 
 
+def writeup_passed(state: dict | None = None) -> bool:
+    """True when the write-up chain should stop taking on new work.
+
+    research_passed() bounds discovery; this bounds what follows it. Until
+    now nothing did: every enrichment and write-up node ran to completion
+    however long that took, which is how a one-hour crime run took 2h34m --
+    research yielded on time at 48 minutes and the write-up then spent an
+    hour and three quarters unbounded.
+
+    The check is per-iteration, so overshoot is one channel or one batch
+    rather than one whole node.
+
+    `state` matters. The export gate re-runs these very nodes AFTER the
+    deadline, deliberately, to fill what the run ran out of time for -- so
+    a node that simply asked passed() would turn the completeness gate into
+    a no-op and trade every missing column for the schedule. Healing passes
+    `healing` on the state it builds, and that bypasses the deadline: the
+    gate carries its own wall-clock budget and is not the thing this bounds.
+    """
+    if state is not None and state.get("healing"):
+        return False
+    return passed()
+
+
 def would_exceed(expected_seconds: float) -> bool:
     """True if work expected to take `expected_seconds` cannot finish in time.
 

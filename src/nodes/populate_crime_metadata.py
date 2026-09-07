@@ -17,6 +17,7 @@ from typing import Any
 
 from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
+from src.tools import deadline as run_deadline
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -341,6 +342,12 @@ def populate_crime_metadata(state: dict) -> dict:
 
     populated = 0
     for i in range(0, len(eligible), CRIME_METADATA_BATCH_SIZE):
+        # The write-up chain used to run to completion however long it
+        # took; a one-hour crime run spent 1h45m in it. Checked per
+        # batch so overshoot is one batch, not one whole node.
+        # Healing bypasses this -- see deadline.writeup_passed.
+        if run_deadline.writeup_passed(state):
+            break
         populated += _classify(eligible[i : i + CRIME_METADATA_BATCH_SIZE])
 
     put_connection(conn)

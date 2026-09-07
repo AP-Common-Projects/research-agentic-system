@@ -19,6 +19,7 @@ from typing import Any
 
 from src.llm.json_parse import loads_forgiving
 from src.tools.run_scope import scope_clause
+from src.tools import deadline as run_deadline
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
@@ -190,6 +191,12 @@ def populate_shared_fields(state: dict) -> dict:
         cur.close()
 
         for ch_id, title, desc, subs, eng, news, eg in eligible:
+            # The write-up chain used to run to completion however long it
+            # took; a one-hour crime run spent 1h45m in it. Checked per
+            # channel so overshoot is one channel, not one whole node.
+            # Healing bypasses this -- see deadline.writeup_passed.
+            if run_deadline.writeup_passed(state):
+                break
             try:
                 # Search/browse estimate from deterministic signals first
                 sb_est = "mixed"
