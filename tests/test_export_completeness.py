@@ -281,3 +281,105 @@ class TestItRunsBeforeTheExport:
         gate_at = src.index("gate_before_export(")
         export_at = src.index("export_excel(export_run_id")
         assert gate_at < export_at, "the gate must run before the workbook is written"
+
+
+class TestEveryColumnOfEverySheet:
+    """The declared checks are the columns with a node behind them -- the
+    gaps this gate can close. They were never the whole workbook: three of
+    the Videos sheet's forty columns, none of Niches, Success Factors or
+    Failure Factors. The sweep measures the rest, so a column nobody thought
+    to declare is still a column nobody ships empty.
+    """
+
+    def _audit_with(self, sheets):
+        with patch("src.export.sheet_rows", return_value=sheets), \
+             patch.object(gate, "_workbook_ids", return_value=(["c1"], ["v1"])), \
+             patch.object(gate, "get_connection"), \
+             patch.object(gate, "put_connection"):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+            return report
+
+    def test_an_undeclared_column_is_measured_not_ignored(self):
+        """The whole point. Nobody declared it, so nobody was watching it."""
+        report = self._audit_with({
+            "Channels": [{"nobody_declared_me": None}, {"nobody_declared_me": "x"}],
+        })
+        found = [f for f in report.findings if f.column == "nobody_declared_me"]
+        assert found, "an undeclared column must still be checked"
+        assert found[0].min_fill == gate._DEFAULT_MIN_FILL
+        assert not found[0].ok, "1 of 2 is short of the default bar"
+
+    def test_every_data_sheet_is_swept(self):
+        sheets = {
+            name: [{"col_x": None}]
+            for name in ("Channels", "Videos", "Niches",
+                         "Success Factors", "Failure Factors")
+        }
+        report = self._audit_with(sheets)
+        assert {f.table for f in report.findings} == set(sheets)
+
+    def test_a_waived_column_is_left_alone(self):
+        report = self._audit_with({"Channels": [{"description": None}]})
+        assert not [f for f in report.findings if f.column == "description"]
+
+    def test_a_column_the_export_removes_is_not_flagged(self):
+        """It is not in the file, so a fill rate on it measures nothing --
+        and these are the columns the client asked to have removed."""
+        from src.export import ALWAYS_DROPPED_COLUMNS
+
+        report = self._audit_with({
+            "Channels": [{c: None for c in ALWAYS_DROPPED_COLUMNS}],
+        })
+        assert report.findings == []
+
+    def test_the_dropped_list_is_read_from_the_export_not_copied(self):
+        """A copy drifts. Removing a column from the deliverable must not
+        leave the gate complaining about it for the rest of time."""
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert "from src.export import ALWAYS_DROPPED_COLUMNS" in src
+
+    def test_a_declared_column_is_not_reported_twice(self):
+        report = gate.Report(run_id="run-x")
+        with patch("src.export.sheet_rows", return_value={
+            "Videos": [{"video_description": "a"}],
+        }):
+            gate._sweep(report, already={("videos", "video_description")})
+        assert report.findings == []
+
+    def test_a_declared_columns_own_threshold_wins_over_the_default(self):
+        """country_code sits at 0.70 because a channel with no country
+        signal has none. The sweep must not quietly hold it to 0.98."""
+        report = self._audit_with({
+            "Channels": [{"country_code": "US"}] * 8 + [{"country_code": None}] * 2,
+        })
+        found = next(f for f in report.findings if f.column == "country_code")
+        assert found.min_fill == 0.70
+        assert found.ok, "8 of 10 clears its own bar"
+
+    def test_it_sweeps_the_rows_not_the_finished_sheet(self):
+        """An entirely empty column is removed from the workbook before it
+        is written, so the emptiest column of all is the one that leaves no
+        trace in the file. Reading the file back would never find it."""
+        report = self._audit_with({
+            "Channels": [{"quietly_empty": None} for _ in range(9)],
+        })
+        found = next(f for f in report.findings if f.column == "quietly_empty")
+        assert found.filled == 0
+        assert not found.ok
+
+    def test_an_empty_string_counts_as_missing(self):
+        report = self._audit_with({"Niches": [{"label": ""}, {"label": "x"}]})
+        assert next(f for f in report.findings if f.column == "label").filled == 1
+
+
+class TestWaiversAreAccountable:
+    def test_every_waiver_on_every_sheet_gives_a_reason(self):
+        for sheet, columns in gate.SHEET_WAIVERS.items():
+            for column, reason in columns.items():
+                assert reason.strip(), f"{sheet}.{column}"
+
+    def test_the_default_bar_is_strict(self):
+        """A column nobody classified is more likely to be one nobody
+        noticed than one that is legitimately sparse."""
+        assert gate._DEFAULT_MIN_FILL >= 0.95

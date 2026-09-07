@@ -10,10 +10,22 @@ So the export stops being the last step. This is:
 
     audit  ->  fill what is fillable  ->  audit again  ->  report
 
-Each column is declared here with the node that produces it and the fill
-rate below which it counts as broken, so "is this workbook finished" is a
-question with a written-down answer rather than a judgement someone makes
-per delivery.
+Columns with a node behind them are declared here with that node and the
+fill rate below which they count as broken, so "is this workbook finished"
+has a written-down answer rather than a judgement someone makes per
+delivery.
+
+Those declarations are not the whole workbook, and assuming they were is
+how six Videos columns shipped 85% full under a COMPLETE report: the list
+covered three of that sheet's forty columns and none of Niches, Success
+Factors or Failure Factors. So every column of every sheet is measured,
+from the rows the export is about to write. A column nobody classified is
+held to _DEFAULT_MIN_FILL rather than skipped -- an exception has to be
+claimed in SHEET_WAIVERS, with the reason a blank cell is correct there.
+
+The rows are swept, not the finished file, because the export removes a
+column that is entirely empty: the emptiest column of all is the one that
+would leave no trace to find.
 
 Two deliberate limits.
 
@@ -113,6 +125,13 @@ VIDEO_CHECKS: list[ColumnCheck] = [
                 table="videos"),
 ]
 
+#: Held to this when nobody has said otherwise. Deliberately strict: an
+#: unclassified column that is legitimately full passes in silence, and one
+#: that is quietly empty is exactly what this gate exists to catch. A column
+#: that earns an exception earns it explicitly, in SHEET_WAIVERS, with the
+#: reason written down.
+_DEFAULT_MIN_FILL = 0.98
+
 #: Videos-sheet columns deliberately NOT held to a fill rate, each with the
 #: reason. This is not a way to silence a column that is merely awkward --
 #: it is for ones where a blank cell is the correct answer, and a threshold
@@ -156,6 +175,78 @@ UNCHECKED_VIDEO_COLUMNS: dict[str, str] = {
     "cctv_available": "crime only",
     "call_911_available": "crime only",
     "court_footage_available": "crime only",
+}
+
+
+#: Per sheet, the columns where blank is the right answer. Everything not
+#: listed here is measured -- including columns nobody thought about, which
+#: is the point.
+SHEET_WAIVERS: dict[str, dict[str, str]] = {
+    "Videos": UNCHECKED_VIDEO_COLUMNS,
+    "Channels": {
+        "channel_id": "the key itself",
+        "description": "a channel is under no obligation to write one",
+        "language_confidence": (
+            "written only where the language had to be inferred. A channel "
+            "whose language came straight from the API has the language and "
+            "no confidence, because there was nothing to be unsure about -- "
+            "so a blank here means known, not missing. The language itself "
+            "is checked separately at 0.85"
+        ),
+        "missing_required_fields": (
+            "the diagnostic itself -- empty means nothing was missing, so a "
+            "fill rate on it would invert the meaning of the column"
+        ),
+        "banner_url": "not every channel sets a banner",
+        "custom_url": "only channels that claimed a handle have one",
+        "sponsor_name": "only where a sponsor was identified",
+        "sponsor_category": "only where a sponsor was identified",
+        "secondary_niche_id": "a channel with one clear niche has no second",
+        "notes": "free-text, written only where there is something to note",
+        "flagged_reason": "set only on a channel that was flagged",
+        "primary_niche": (
+            "the seeded niche-group label. Nothing in the pipeline assigns "
+            "primary_niche_group_id, so it is set only for niches that came "
+            "with the seed data and is empty for any newly discovered "
+            "vertical -- a real limitation, but not one a run can close"
+        ),
+        "vertical_start_date_basis": "only where a start date was resolved",
+        "vertical_start_date_confidence": "only where a start date was resolved",
+        "creator_authority_evidence": "quoted only where authority was found",
+        "crime_focus": "crime only",
+        "case_coverage_style": "crime only",
+    },
+    "Niches": {
+        "description": "a niche label can stand without a gloss",
+    },
+    "Success Factors": {
+        "evidence_note": "quoted only where the model cited a number",
+    },
+    "Failure Factors": {
+        "evidence_note": "quoted only where the model cited a number",
+    },
+}
+
+#: Thresholds for columns the sweep finds that have no SQL-level check --
+#: a sheet column whose right bar is not the strict default, with the reason
+#: it differs. Without these the choice is a waiver (no floor at all) or the
+#: default (a report that cries wolf every run), and neither is honest.
+SHEET_CHECKS: list[ColumnCheck] = [
+    ColumnCheck("region", "resolve_geo_language", 0.70,
+                "derived from country_code, which sits at 0.70 for the same "
+                "reason: a channel with no country signal has no region",
+                table="Channels"),
+    ColumnCheck("is_evergreen_prone", "classify_channel", 0.80,
+                "set when the model proposes a niche and it declines to "
+                "judge some; never revisited, so a re-run cannot raise it",
+                table="Niches"),
+]
+
+#: Declared checks, addressable by (sheet, column) for the sweep. Sheet names
+#: are lowercased so "Channels" and the checks' table="channels" agree.
+_DECLARED: dict[tuple[str, str], ColumnCheck] = {
+    (c.table.lower(), c.column): c
+    for c in CHANNEL_CHECKS + VIDEO_CHECKS + SHEET_CHECKS
 }
 
 
@@ -258,6 +349,60 @@ def _workbook_ids(run_id: str) -> tuple[list[str], list[str]]:
     )
 
 
+def _sweep(report: Report, already: set[tuple[str, str]]) -> None:
+    """Fill rates for every column of every sheet, declared or not.
+
+    The declared checks above are the ones with a node behind them -- the
+    gaps this gate can actually close. They are not, and cannot be, the
+    whole workbook: a hand-kept list covered three of the Videos sheet's
+    forty columns and none of Niches, Success Factors or Failure Factors,
+    which is how six columns shipped 85% full under a COMPLETE report.
+
+    So every column is measured, from the rows the export will write. A
+    column nobody classified is held to _DEFAULT_MIN_FILL rather than
+    ignored, because the cost of being wrong in that direction is one line
+    in a report, and the cost of the other direction is what this gate was
+    built after.
+
+    Sweeping the fetched rows rather than the finished sheet is deliberate:
+    the export drops a column that is entirely empty, so the emptiest
+    column of all is the one that leaves no trace in the file.
+    """
+    from src.export import ALWAYS_DROPPED_COLUMNS, sheet_rows
+
+    for sheet, rows in sheet_rows(report.run_id).items():
+        if not rows:
+            continue
+        # Columns the export removes before writing are not in the file, so
+        # a fill rate on them measures nothing. Read from the export's own
+        # frozenset rather than copied, so removing a column from the
+        # deliverable cannot leave the gate complaining about it forever.
+        waived = dict(SHEET_WAIVERS.get(sheet, {}))
+        waived.update({c: "removed from the deliverable" for c in ALWAYS_DROPPED_COLUMNS})
+        columns: list[str] = []
+        for row in rows:
+            for key in row:
+                if key not in columns:
+                    columns.append(key)
+
+        for column in columns:
+            if column in waived:
+                continue
+            if (sheet.lower(), column) in already:
+                continue
+            declared = _DECLARED.get((sheet.lower(), column))
+            filled = sum(
+                1 for r in rows
+                if r.get(column) is not None and r.get(column) != ""
+            )
+            report.findings.append(Finding(
+                column, sheet, filled, len(rows),
+                declared.min_fill if declared else _DEFAULT_MIN_FILL,
+                declared.node if declared else None,
+                declared.note if declared else "not individually declared",
+            ))
+
+
 def audit(run_id: str) -> Report:
     """Fill rates for every declared column, plus any empty table."""
     report = Report(run_id=run_id)
@@ -296,6 +441,10 @@ def audit(run_id: str) -> Report:
                     check.column, "videos", filled, total,
                     check.min_fill, check.node, check.note,
                 ))
+
+            # And then every remaining column of every sheet, so a gap in
+            # one nobody declared is still a gap the client never sees.
+            _sweep(report, {(f.table.lower(), f.column) for f in report.findings})
 
             # Tables whose emptiness is a sheet the client opens to nothing.
             for table, label in (

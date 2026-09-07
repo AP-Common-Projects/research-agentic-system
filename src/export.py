@@ -2112,6 +2112,33 @@ def workbook_rows(
     )
 
 
+def sheet_rows(
+    run_id: str, scope: WorkbookScope | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Every data sheet's rows, keyed by sheet name.
+
+    The completeness gate sweeps these, so it measures each sheet's real
+    columns -- including the ones computed at write time or renamed for the
+    client -- instead of a hand-kept list of SQL column names that only ever
+    covered part of one sheet.
+
+    Overview is absent on purpose: it is a label/value summary derived from
+    these same rows, not a table with its own completeness to check.
+    """
+    s = scope if scope is not None else workbook_scope(run_id)
+    channels, videos = workbook_rows(run_id, s)
+    return {
+        "Channels": channels,
+        "Videos": videos,
+        "Niches": fetch_run_niche_breakdown(
+            run_id, s.category, s.min_subscribers, s.own_only),
+        "Success Factors": fetch_run_success_factors(
+            run_id, s.category, s.min_subscribers, s.own_only),
+        "Failure Factors": fetch_run_failure_factors(
+            run_id, s.category, s.min_subscribers, s.own_only),
+    }
+
+
 def export_excel(
     run_id: str,
     out_path: Path | None = None,
