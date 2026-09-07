@@ -956,3 +956,71 @@ class TestVideoSignalsDoNotDependOnChannelEligibility:
         import src.nodes.extract_metadata_signals as mod
 
         assert 0 < mod._VIDEO_BATCH <= 5000
+
+
+class TestSearchBrowseEstimateReachesEveryVideo:
+    """search_browse_estimate is a channel-level judgement written onto that
+    channel's videos by an UPDATE inside populate_shared_fields' per-channel
+    loop -- and that loop's eligibility is creator_authority_checked_at, a
+    channel-level marker. A video hydrated after its channel was checked
+    never received the estimate, and no re-run could give it one: the
+    channel is marked, so it is never revisited.
+
+    The crime run of 2026-09-07 shipped the column at 55% for that reason,
+    and the export gate's healing could not move it. Same shape as
+    extract_metadata_signals' nested video pass: a marker on the channel
+    cannot gate work done per video.
+    """
+
+    def _run(self, state=None):
+        from unittest.mock import MagicMock, patch
+
+        import src.nodes.populate_shared_fields as mod
+
+        conn = MagicMock()
+        conn.cursor.return_value.fetchall.return_value = []
+        ctx = conn.cursor.return_value.__enter__.return_value
+        ctx.rowcount = 7
+        with patch.object(mod, "get_connection", return_value=conn), \
+             patch.object(mod, "put_connection"), \
+             patch.object(mod, "complete_tier"):
+            out = mod.populate_shared_fields(
+                state or {"thread_id": "t", "run_id": "r",
+                          "discovered_channel_ids": ["c1"]}
+            )
+        return out, ctx
+
+    def test_it_propagates_even_when_no_channel_is_eligible(self):
+        """Nothing to classify, and videos still missing the estimate --
+        the exact state the crime run was stuck in."""
+        out, ctx = self._run()
+        summary = out["node_logs"][0]["input_summary"]
+        assert summary["classified"] == 0
+        assert summary["propagated"] == 7, "the propagation must run regardless"
+
+    def test_it_only_copies_a_channels_own_answer(self):
+        """Invents nothing: the value comes from another video of the SAME
+        channel, which is the value the loop would have written."""
+        _, ctx = self._run()
+        sql = ctx.execute.call_args[0][0]
+        assert "v.channel_id = known.channel_id" in sql
+        assert "v.search_browse_estimate IS NULL" in sql
+
+    def test_a_channel_with_no_answer_anywhere_is_left_alone(self):
+        """That needs the model, not a copy -- filling it from a sibling
+        that does not exist would mean inventing one."""
+        _, ctx = self._run()
+        sql = ctx.execute.call_args[0][0]
+        assert "WHERE search_browse_estimate IS NOT NULL" in sql
+
+    def test_it_is_scoped_to_the_run(self):
+        _, ctx = self._run()
+        sql, params = ctx.execute.call_args[0]
+        assert "v.channel_id = ANY(%s)" in sql
+        assert params[0] == ["c1"]
+
+    def test_the_gate_counts_propagation_as_progress(self):
+        """heal() re-invokes a node while it reports progress. A call that
+        propagates and classifies nothing has to read as progress."""
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert '"propagated"' in src

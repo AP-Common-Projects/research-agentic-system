@@ -571,7 +571,11 @@ def heal(
                          # videos separately: its video pass is independent
                          # of channel eligibility, so a call that enriches
                          # 2,000 videos and 0 channels is still progress.
-                         "videos_enriched")
+                         "videos_enriched",
+                         # populate_shared_fields propagates a channel's
+                         # estimate onto videos its per-channel loop could
+                         # not reach; that is progress with 0 classified.
+                         "propagated")
                 and isinstance(v, (int, float))
             )
             if progress and name not in ran:

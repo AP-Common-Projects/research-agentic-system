@@ -277,11 +277,54 @@ def populate_shared_fields(state: dict) -> dict:
     except Exception:
         conn.rollback()
 
+    # Propagate the estimate to videos the per-channel loop above could not
+    # reach, deliberately outside it.
+    #
+    # search_browse_estimate is a channel-level judgement written onto that
+    # channel's videos by an UPDATE inside the loop -- and the loop's
+    # eligibility is creator_authority_checked_at, a channel-level marker.
+    # So a video hydrated after its channel was checked never receives the
+    # estimate, and no re-run can give it one: the channel is marked, so it
+    # is never revisited. The crime run of 2026-09-07 shipped this column at
+    # 55% for exactly that reason, and healing could not move it.
+    #
+    # Copying a channel's own answer onto its remaining videos invents
+    # nothing: it is the same value the loop would have written, and the
+    # loop applied it to every video of the channel indiscriminately. A
+    # channel with no answer at all is left alone -- that needs the model,
+    # not a copy.
+    propagated = 0
+    try:
+        scope_sql, scope_params = scope_clause(state, "v.channel_id")
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE videos v SET search_browse_estimate = known.estimate "
+                "FROM (SELECT DISTINCT ON (channel_id) channel_id, "
+                "             search_browse_estimate AS estimate "
+                "        FROM videos WHERE search_browse_estimate IS NOT NULL "
+                "       ORDER BY channel_id) known "
+                "WHERE v.channel_id = known.channel_id "
+                "  AND v.search_browse_estimate IS NULL "
+                + scope_sql,
+                scope_params,
+            )
+            propagated = cur.rowcount or 0
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        errors.append(ErrorRecord(
+            node_name="populate_shared_fields",
+            error_type=type(exc).__name__,
+            message=f"search_browse_estimate propagation failed: {exc}",
+            recoverable=True,
+        ).model_dump())
+
     put_connection(conn)
     return {
         "node_logs": _log({
             "sponsor_updated": sponsor_updated,
             "classified": classified,
+            "propagated": propagated,
         }),
         "errors": errors,
     }
