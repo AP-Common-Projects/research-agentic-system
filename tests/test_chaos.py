@@ -477,3 +477,87 @@ def test_graph_build_still_valid():
     nodes = set(build_graph().nodes)
     assert {"keyword_search", "graph_walk", "hydrate_metadata", "check_saturation", "cluster_branch"} <= nodes
     assert "analyze_deep" not in nodes
+
+
+class TestASnapshotThatIsNotQuiteReadyIsWaitedFor:
+    """/progress said "ready", /snapshot returned
+    {'status': 'building', 'message': 'Snapshot is building, try again in
+    30s'}, and the code raised. BrightDataError is not retryable, so a
+    whole discovery collection was thrown away over a fetch that arrived a
+    few seconds early -- on a response that told us exactly what to do.
+
+    The job is billed at the trigger either way. Giving up saves nothing
+    except the wait, and costs every record.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_polls_again_rather_than_discarding_the_snapshot(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.tools.bright_data import BrightDataClient, SnapshotNotReady
+
+        with patch("src.tools.bright_data.get_config") as cfg:
+            cfg.return_value = _brightdata_config()
+            client = BrightDataClient()
+
+        rows = [{"channel_id": "c1"}]
+        fetch = AsyncMock(side_effect=[SnapshotNotReady("building"), rows])
+        with patch.object(client, "_trigger", AsyncMock(return_value="snap-1")), \
+             patch.object(client, "_progress", AsyncMock(return_value="ready")), \
+             patch.object(client, "_fetch", fetch), \
+             patch("src.tools.bright_data.record_spend_intent"), \
+             patch("src.tools.bright_data.asyncio.sleep", AsyncMock()), \
+             patch("src.tools.bright_data.run_deadline.research_passed",
+                   return_value=False):
+            got = await client._collect("channels", [{"url": "x"}])
+
+        assert got == rows, "the rows must survive a first fetch that was early"
+        assert fetch.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_it_still_stops_at_the_poll_deadline(self):
+        """Waiting forever would be the other failure. The snapshot budget
+        still bounds it."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.tools.bright_data import (
+            BrightDataClient, BrightDataError, SnapshotNotReady,
+        )
+
+        with patch("src.tools.bright_data.get_config") as cfg:
+            conf = _brightdata_config()
+            conf.brightdata.poll_max_seconds = 0.0
+            cfg.return_value = conf
+            client = BrightDataClient()
+
+        with patch.object(client, "_trigger", AsyncMock(return_value="snap-1")), \
+             patch.object(client, "_progress", AsyncMock(return_value="ready")), \
+             patch.object(client, "_fetch",
+                          AsyncMock(side_effect=SnapshotNotReady("building"))), \
+             patch("src.tools.bright_data.record_spend_intent"), \
+             patch("src.tools.bright_data.asyncio.sleep", AsyncMock()), \
+             patch("src.tools.bright_data.run_deadline.research_passed",
+                   return_value=False):
+            with pytest.raises(BrightDataError, match="still"):
+                await client._collect("channels", [{"url": "x"}])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_snapshot_still_raises_immediately(self):
+        """Only "not ready yet" earns another wait; a job that ended badly
+        is not going to improve."""
+        from unittest.mock import AsyncMock, patch
+
+        from src.tools.bright_data import BrightDataClient, BrightDataError
+
+        with patch("src.tools.bright_data.get_config") as cfg:
+            cfg.return_value = _brightdata_config()
+            client = BrightDataClient()
+
+        with patch.object(client, "_trigger", AsyncMock(return_value="snap-1")), \
+             patch.object(client, "_progress", AsyncMock(return_value="failed")), \
+             patch("src.tools.bright_data.record_spend_intent"), \
+             patch("src.tools.bright_data.asyncio.sleep", AsyncMock()), \
+             patch("src.tools.bright_data.run_deadline.research_passed",
+                   return_value=False):
+            with pytest.raises(BrightDataError, match="ended with status"):
+                await client._collect("channels", [{"url": "x"}])

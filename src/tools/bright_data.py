@@ -63,6 +63,18 @@ class BrightDataError(RuntimeError):
     """Non-retryable failure from the Datasets API (validation, auth, timeout)."""
 
 
+class SnapshotNotReady(BrightDataError):
+    """/snapshot says the job is still building, whatever /progress said.
+
+    The two endpoints disagree, and the one holding the rows is the one to
+    believe. Raised so _collect can go back to waiting instead of throwing
+    away a snapshot that has already been paid for -- a crime run on
+    2026-09-07 lost a whole discovery collection to a single fetch that
+    arrived a few seconds early, on a response whose own message read
+    "Snapshot is building, try again in 30s".
+    """
+
+
 def _is_retryable(exception: BaseException) -> bool:
     if isinstance(exception, httpx.HTTPStatusError):
         return exception.response.status_code in RETRYABLE_STATUSES
@@ -360,8 +372,10 @@ class BrightDataClient:
         data = response.json()
         if isinstance(data, list):
             return [row for row in data if isinstance(row, dict)]
-        # A dict here means "still running" despite progress saying ready.
-        raise BrightDataError(f"snapshot not ready: {str(data)[:200]}")
+        # A dict here means the snapshot is not actually finished, however
+        # /progress answered. Its own message says "try again in 30s", so
+        # the caller waits rather than discarding the job -- see _collect.
+        raise SnapshotNotReady(f"snapshot not ready: {str(data)[:200]}")
 
     async def _collect(
         self,
@@ -422,10 +436,24 @@ class BrightDataClient:
                     params=params or {},
                 )
 
+                rows: list[dict] | None = None
                 while True:
                     status = await self._progress(client, snapshot_id)
                     if status == "ready":
-                        break
+                        try:
+                            rows = await self._fetch(client, snapshot_id)
+                            break
+                        except SnapshotNotReady as exc:
+                            # Believe /snapshot over /progress and keep
+                            # waiting; the job is billed either way, and
+                            # the only thing giving up saves is the wait.
+                            status = "building"
+                            logger.info(
+                                "brightdata_snapshot_not_ready_yet",
+                                collector=collector,
+                                snapshot_id=snapshot_id,
+                                detail=str(exc)[:120],
+                            )
                     if status in ("failed", "canceled"):
                         raise BrightDataError(
                             f"snapshot {snapshot_id} ended with status={status}"
@@ -448,7 +476,7 @@ class BrightDataClient:
                         )
                     await asyncio.sleep(self._cfg.poll_interval_seconds)
 
-                rows = await self._fetch(client, snapshot_id)
+                assert rows is not None  # the loop only breaks with rows
 
         record_spend_intent(
             self._run_id,
