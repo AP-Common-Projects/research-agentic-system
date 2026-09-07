@@ -46,7 +46,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import structlog
+
 from src.db.connection import get_connection, put_connection
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -309,6 +313,9 @@ class Finding:
 @dataclass
 class Report:
     run_id: str
+    #: Channels re-tagged from the run's own checkpoint because its
+    #: membership had been lost. 0 on a healthy run.
+    recovered_channels: int = 0
     findings: list[Finding] = field(default_factory=list)
     empty_tables: list[str] = field(default_factory=list)
     rounds: int = 0
@@ -325,6 +332,11 @@ class Report:
 
     def render(self) -> str:
         lines = [f"  export completeness for {self.run_id}"]
+        if self.recovered_channels:
+            lines.append(
+                f"  RECOVERED: {self.recovered_channels} channels re-tagged "
+                f"from the run's own checkpoint; its membership had been lost"
+            )
         if self.empty_tables:
             lines.append(f"  EMPTY: {', '.join(self.empty_tables)}")
         for f in sorted(self.findings, key=lambda f: (f.ok, f.column)):
@@ -353,6 +365,123 @@ def _run_channel_ids(conn, run_id: str, floor_only: bool = True) -> list[str]:
         return [r[0] for r in cur.fetchall()]
     finally:
         cur.close()
+
+
+def recover_membership(run_id: str) -> int:
+    """Rebuild a run's category_tags from its own state. Returns channels tagged.
+
+    A workbook is assembled from category_tags: they are the record of
+    which shared rows belong to which run. hydrate_metadata writes them as
+    the last statement of its persistence block, so anything that escaped
+    that block took the tagging with it -- and the export then had no rows
+    to draw, producing a file with every sheet empty.
+
+    That happened on run-b8b0ea1bf0a6: a foreign-key violation on one video
+    aborted the loop, 0 tags were written, and the client received an empty
+    workbook. The isolation fix in hydrate_metadata stops the abort; this
+    repairs a run that already suffered one, and any future cause of the
+    same shape.
+
+    Nothing here is invented. The channel ids come from the run's own
+    checkpoint -- what it discovered and hydrated -- filtered to rows that
+    exist, and the videos are the ones the store already holds for those
+    channels. A run whose tags are intact is left alone entirely.
+
+    The video set is what we hold rather than the in-memory sample the run
+    chose, because that sample died with the aborted loop. It is the same
+    channels either way, and every sheet is filtered by floor and category
+    downstream regardless.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM category_tags "
+                "WHERE run_id = %s AND entity_type = 'channel'",
+                (run_id,),
+            )
+            if (cur.fetchone() or [0])[0]:
+                return 0  # intact; not this function's business
+    finally:
+        put_connection(conn)
+
+    ids = _run_state_channel_ids(run_id)
+    if not ids:
+        return 0
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT channel_id FROM channels WHERE channel_id = ANY(%s)",
+                (ids,),
+            )
+            known = [r[0] for r in cur.fetchall()]
+            if not known:
+                return 0
+            cur.execute(
+                "SELECT video_id FROM videos WHERE channel_id = ANY(%s)",
+                (known,),
+            )
+            video_ids = [r[0] for r in cur.fetchall()]
+
+        from src.tools.dedup import persist_category_tags
+
+        persist_category_tags(
+            conn,
+            run_id=run_id,
+            # The tags carry a branch id; a recovered run has no single
+            # branch to name, so it is labelled for what it is.
+            tree_node_id="recovered",
+            channel_ids=known,
+            video_ids=video_ids,
+        )
+        logger.warning(
+            "run_membership_recovered",
+            run_id=run_id,
+            channels=len(known),
+            videos=len(video_ids),
+        )
+        return len(known)
+    except Exception as exc:
+        conn.rollback()
+        logger.warning("run_membership_recovery_failed", run_id=run_id, error=str(exc))
+        return 0
+    finally:
+        put_connection(conn)
+
+
+def _run_state_channel_ids(run_id: str) -> list[str]:
+    """The channels a run's checkpoint says it found. Empty if unreadable."""
+    try:
+        import json
+        from pathlib import Path
+
+        from src.api.runs import registry_path
+
+        thread_id = ""
+        for line in Path(registry_path()).read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("run_id") == run_id:
+                thread_id = entry.get("thread_id") or ""
+        if not thread_id:
+            return []
+
+        from src.db.checkpointer import get_checkpointer
+        from src.graph import compile_graph
+
+        app = compile_graph(get_checkpointer())
+        values = app.get_state(
+            {"configurable": {"thread_id": thread_id}}
+        ).values or {}
+        return sorted({
+            *(values.get("discovered_channel_ids") or []),
+            *(values.get("hydrated_channel_ids") or []),
+        })
+    except Exception:
+        return []
 
 
 def _workbook_ids(run_id: str) -> tuple[list[str], list[str]]:
@@ -671,7 +800,15 @@ def ensure_complete(
     saying so, not another hour of retries.
     """
     deadline = time.monotonic() + budget_seconds
+
+    # Before anything is measured: a run whose tags were lost has no rows
+    # to audit, and every column of an empty workbook trivially "passes"
+    # its fill rate over zero rows. Rebuilding the membership first is what
+    # turns that into a workbook the rest of this can actually check.
+    recovered = recover_membership(run_id)
+
     report = audit(run_id)
+    report.recovered_channels = recovered
     for round_no in range(1, max_rounds + 1):
         if report.complete:
             break

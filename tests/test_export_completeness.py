@@ -518,3 +518,88 @@ class TestAnEmptySheetIsNeverSilent:
             report.empty_tables.append("Niches")
             gate._sweep(report, already=set())
         assert report.empty_tables.count("Niches") == 1
+
+
+class TestAWorkbookWithNoRowsIsRepairedNotReported:
+    """category_tags is the record of which shared rows belong to a run, and
+    the export assembles the workbook from it. hydrate_metadata writes those
+    tags as the last statement of its persistence block, so anything that
+    escaped that block took the tagging with it.
+
+    run-b8b0ea1bf0a6: a foreign-key violation on one video aborted the loop,
+    0 tags were written, and the client received a workbook with every sheet
+    empty. The gate saw it -- "EMPTY: channels" -- and only said so.
+
+    Every column of an empty workbook trivially passes its fill rate over
+    zero rows, so there is nothing for the rest of the gate to measure until
+    the membership exists. Rebuilding it is the first step now.
+    """
+
+    def _recover(self, tag_count, state_ids, known_ids, video_ids=("v1",)):
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.fetchone.return_value = (tag_count,)
+        cur.fetchall.side_effect = [
+            [(c,) for c in known_ids],
+            [(v,) for v in video_ids],
+        ]
+        with patch.object(gate, "get_connection", return_value=conn), \
+             patch.object(gate, "put_connection"), \
+             patch.object(gate, "_run_state_channel_ids", return_value=list(state_ids)), \
+             patch("src.tools.dedup.persist_category_tags") as tag:
+            n = gate.recover_membership("run-x")
+        return n, tag
+
+    def test_a_run_that_lost_its_tags_is_rebuilt_from_its_own_checkpoint(self):
+        n, tag = self._recover(tag_count=0, state_ids=["c1", "c2"],
+                               known_ids=["c1", "c2"])
+        assert n == 2
+        assert tag.call_args.kwargs["channel_ids"] == ["c1", "c2"]
+
+    def test_an_intact_run_is_left_completely_alone(self):
+        """A healthy run must not be re-tagged under a different branch id."""
+        n, tag = self._recover(tag_count=42, state_ids=["c1"], known_ids=["c1"])
+        assert n == 0
+        tag.assert_not_called()
+
+    def test_only_channels_that_actually_exist_are_tagged(self):
+        """The checkpoint lists everything discovery saw; most were never
+        persisted. Tagging one would point at a row that is not there."""
+        n, tag = self._recover(tag_count=0, state_ids=["c1", "ghost"],
+                               known_ids=["c1"])
+        assert n == 1
+        assert tag.call_args.kwargs["channel_ids"] == ["c1"]
+
+    def test_nothing_recoverable_means_nothing_invented(self):
+        n, tag = self._recover(tag_count=0, state_ids=["ghost"], known_ids=[])
+        assert n == 0
+        tag.assert_not_called()
+
+    def test_an_unreadable_checkpoint_is_not_an_exception(self):
+        """The gate must still run and report; losing the repair is not
+        worth losing the report."""
+        from unittest.mock import MagicMock
+
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = (0,)
+        with patch.object(gate, "get_connection", return_value=conn), \
+             patch.object(gate, "put_connection"), \
+             patch.object(gate, "_run_state_channel_ids", return_value=[]):
+            assert gate.recover_membership("run-x") == 0
+
+    def test_it_runs_before_anything_is_measured(self):
+        import inspect
+
+        src = inspect.getsource(gate.ensure_complete)
+        assert src.index("recover_membership(") < src.index("audit(run_id)")
+
+    def test_the_report_says_when_it_repaired_a_run(self):
+        report = gate.Report(run_id="run-x")
+        report.recovered_channels = 6
+        assert "RECOVERED" in report.render()
+        assert "6 channels" in report.render()
+
+    def test_a_healthy_run_says_nothing_about_recovery(self):
+        assert "RECOVERED" not in gate.Report(run_id="run-x").render()
