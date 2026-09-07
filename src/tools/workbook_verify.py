@@ -191,12 +191,52 @@ def verify_workbook(
     return report
 
 
-def verify_run_workbook(run_id: str, path: str | Path) -> VerifyReport:
-    """verify_workbook, with `expect_crime` answered from the run itself."""
-    try:
-        from src.export import workbook_scope
+def _run_seed_niches(run_id: str) -> list[str]:
+    """What the client asked for, from the launch registry."""
+    import json
+    from pathlib import Path as _Path
 
-        is_crime = workbook_scope(run_id).category == "crime"
+    try:
+        from src.api.runs import registry_path
+
+        for line in _Path(registry_path()).read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("run_id") == run_id:
+                return [str(n) for n in (entry.get("niches") or [])]
     except Exception:
-        is_crime = False
+        pass
+    return []
+
+
+def verify_run_workbook(run_id: str, path: str | Path) -> VerifyReport:
+    """verify_workbook, with `expect_crime` answered from the run itself.
+
+    Asked of the SEED TOPIC as well as the resolved category, and either
+    is enough.
+
+    The resolved category alone is not a safe answer, because the failure
+    it is meant to catch is the one that destroys it. A crime run whose
+    classification comes out thin or tied resolves to no category at all;
+    the export then treats it as a non-crime workbook and drops all
+    fifteen case columns -- and a verifier asking the same resolved
+    category would agree they were not wanted, and pass a crime
+    deliverable with no case file in it. That is precisely what shipped on
+    2026-09-07.
+
+    The seed topic cannot be defeated that way. It is what the client
+    typed, recorded at launch, before any classification could fail.
+    """
+    seeds = [n.lower() for n in _run_seed_niches(run_id)]
+    is_crime = any("crime" in n for n in seeds)
+    if not is_crime:
+        try:
+            from src.export import workbook_scope
+
+            is_crime = workbook_scope(run_id).category == "crime"
+        except Exception:
+            is_crime = False
     return verify_workbook(path, expect_crime=is_crime)

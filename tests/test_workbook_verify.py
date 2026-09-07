@@ -213,3 +213,72 @@ class TestItRunsAfterEveryExport:
         """So it survives the console scrolling away."""
         src = open("src/cli.py", encoding="utf-8").read()
         assert "verification.txt" in src
+
+
+class TestWhetherItIsACrimeWorkbookIsAskedSafely:
+    """The resolved category alone is not a safe answer, because the failure
+    it is meant to catch is the one that destroys it.
+
+    A crime run whose classification comes out thin or tied resolves to no
+    category; the export then treats it as a non-crime workbook and drops
+    all fifteen case columns -- and a verifier asking that same resolved
+    category would agree they were not wanted, and pass a crime deliverable
+    with no case file in it. That is what shipped on 2026-09-07.
+    """
+
+    def test_the_seed_topic_decides_even_when_the_category_did_not_resolve(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        from src.export import WorkbookScope
+
+        path = _full(tmp_path)
+        unresolved = WorkbookScope(category=None, min_subscribers=None,
+                                   own_only=False, video_limit=None)
+        with patch.object(wv, "_run_seed_niches", return_value=["crime"]), \
+             patch("src.export.workbook_scope", return_value=unresolved):
+            report = wv.verify_run_workbook("run-x", path)
+
+        assert report.missing_columns, (
+            "a run the client asked for as crime must be held to its case "
+            "file however the classification turned out"
+        )
+
+    def test_the_resolved_category_still_counts(self, tmp_path):
+        from unittest.mock import patch
+
+        from src.export import WorkbookScope
+
+        crime = WorkbookScope(category="crime", min_subscribers=None,
+                              own_only=False, video_limit=None)
+        with patch.object(wv, "_run_seed_niches", return_value=[]), \
+             patch("src.export.workbook_scope", return_value=crime):
+            report = wv.verify_run_workbook("run-x", _full(tmp_path))
+        assert report.missing_columns
+
+    def test_a_non_crime_run_is_not_asked_for_them(self, tmp_path):
+        from unittest.mock import patch
+
+        from src.export import WorkbookScope
+
+        other = WorkbookScope(category="gaming", min_subscribers=None,
+                              own_only=False, video_limit=None)
+        with patch.object(wv, "_run_seed_niches", return_value=["gaming"]), \
+             patch("src.export.workbook_scope", return_value=other):
+            report = wv.verify_run_workbook("run-x", _full(tmp_path))
+        assert report.missing_columns == []
+
+    def test_the_seed_is_read_from_the_launch_registry(self):
+        """What the client typed, recorded before any classification could
+        fail."""
+        import inspect
+
+        src = inspect.getsource(wv._run_seed_niches)
+        assert "registry_path" in src and "niches" in src
+
+    def test_an_unreadable_registry_does_not_crash_the_verification(self):
+        from unittest.mock import patch
+
+        with patch("src.api.runs.registry_path", side_effect=RuntimeError("gone")):
+            assert wv._run_seed_niches("run-x") == []
