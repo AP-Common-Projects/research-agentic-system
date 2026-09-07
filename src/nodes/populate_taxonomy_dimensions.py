@@ -203,8 +203,51 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
                 recoverable=True,
             ).model_dump())
 
+    # raw_niche_label, outside the loop above.
+    #
+    # It was written inside it, and that loop's eligibility is
+    # "primary_topic IS NULL" -- a marker for entirely different work. Once
+    # the topic was filled, by this node or by a heal, no channel was ever
+    # eligible again and the label could never be set. The gaming workbook
+    # of 2026-09-07 shipped raw_sub_niche at 0/10 with primary_topic at
+    # 10/10, and re-running this node could not move it. The fifth time in
+    # this codebase that a marker for one piece of work has gated another.
+    #
+    # It writes the canonical niche name, which is what the in-loop version
+    # wrote too: the column comment describes the model's pre-canonical
+    # proposal and nothing has ever captured that -- classify_channel does
+    # not write this column at all. So this is the existing behaviour with
+    # the wrong gate removed, not a new claim about the data. COALESCE via
+    # the IS NULL guard keeps any genuine raw label already recorded.
+    labelled = 0
+    try:
+        label_sql, label_params = scope_clause(state, "cn.channel_id")
+        with conn.cursor() as cur_lbl:
+            cur_lbl.execute(
+                "UPDATE channel_niches cn SET raw_niche_label = nt.niche_name "
+                "FROM niche_taxonomy nt "
+                "WHERE nt.niche_id = cn.niche_id "
+                "  AND cn.raw_niche_label IS NULL "
+                "  AND nt.niche_name IS NOT NULL " + label_sql,
+                label_params,
+            )
+            labelled = cur_lbl.rowcount or 0
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        errors.append(ErrorRecord(
+            node_name="populate_taxonomy_dimensions",
+            error_type=type(exc).__name__,
+            message=f"raw_niche_label backfill failed: {exc}",
+            recoverable=True,
+        ).model_dump())
+
     put_connection(conn)
     return {
-        "node_logs": _log({"populated": populated, "eligible": len(eligible)}),
+        "node_logs": _log({
+            "populated": populated,
+            "eligible": len(eligible),
+            "labelled": labelled,
+        }),
         "errors": errors,
     }

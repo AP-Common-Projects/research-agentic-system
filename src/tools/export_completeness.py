@@ -252,6 +252,15 @@ SHEET_CHECKS: list[ColumnCheck] = [
                 "derived from country_code, which sits at 0.70 for the same "
                 "reason: a channel with no country signal has no region",
                 table="Channels"),
+    ColumnCheck("raw_sub_niche", "populate_taxonomy_dimensions", 0.95,
+                "what the model proposed before canonicalisation; it needs "
+                "the channel_niches row classify_channel creates, so a heal "
+                "that ran taxonomy before classification leaves it empty and "
+                "nothing re-runs it unless it is declared here",
+                table="Channels"),
+    ColumnCheck("commercial_intent", "populate_shared_fields", 0.90,
+                "a niche-level attribute; a niche created after the node ran "
+                "keeps NULL until it is re-run", table="Channels"),
     ColumnCheck("is_evergreen_prone", "classify_channel", 0.80,
                 "set when the model proposes a niche and it declines to "
                 "judge some; never revisited, so a re-run cannot raise it",
