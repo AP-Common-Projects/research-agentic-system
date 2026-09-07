@@ -18,23 +18,13 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Curated rather than globbed: `exports/` also holds per-run scratch output
-# that is not a client deliverable, and the client asked for these two.
-CATALOG: list[dict[str, str]] = [
-    {
-        "id": "finance",
-        "title": "Finance",
-        "vertical": "finance",
-        "path": "exports/now big runs-Aug 22/Finance/finance.xlsx",
-        "description": "Finance channel research workbook",
-    },
-    {
-        "id": "crime",
-        "title": "Crime",
-        "vertical": "crime",
-        "path": "exports/now big runs-Aug 22/Crime/crime.xlsx",
-        "description": "Crime channel research workbook",
-    },
-]
+# that is not a client deliverable.
+#
+# Empty since 2026-09-07, when the client asked for the Finance and Crime
+# workbooks to be cleared. The list and the delete guard below stay: a
+# pinned entry sits outside the per-run export layout, so a re-export would
+# not reproduce it, and that is still true of whatever is pinned next.
+CATALOG: list[dict[str, str]] = []
 
 # key -> (mtime, size, payload)
 _meta_cache: dict[str, tuple[float, int, dict[str, Any]]] = {}
@@ -179,20 +169,24 @@ def list_workbooks() -> list[dict[str, Any]]:
 def delete_workbook(workbook_id: str) -> dict[str, Any]:
     """Remove an exported workbook and the artefacts beside it.
 
-    The two curated deliverables are refused. They are the shipped client
-    work, they live outside the per-run export layout, and there is no
-    button in this console worth losing them to -- a re-export cannot
-    reproduce them, because the runs that built them have been through
-    manual backfills since.
+    Anything pinned in CATALOG is refused: a curated entry lives outside
+    the per-run export layout, so a re-export cannot reproduce it. CATALOG
+    is empty as of 2026-09-07 -- the Finance and Crime workbooks were
+    cleared at the client's request -- but the guard is what makes pinning
+    something mean anything, so it stays.
 
     Everything else is a run export, which CAN be reproduced from its run
     id, so deleting it costs a re-export rather than the data itself.
     """
+    # Anything in CATALOG is a curated deliverable pinned by hand, sitting
+    # outside the per-run export layout -- a re-export would not reproduce
+    # it, so it is not deletable from the console. The list is empty today:
+    # the Finance and Crime workbooks were removed at the client's request
+    # on 2026-09-07. The guard stays for whatever is pinned next.
     pinned = {spec["id"] for spec in CATALOG}
     if workbook_id in pinned:
         raise ValueError(
-            "The Finance and Crime workbooks are the delivered deliverables "
-            "and cannot be deleted here."
+            f"{workbook_id} is a pinned deliverable and cannot be deleted here."
         )
 
     path = resolve_path(workbook_id)
