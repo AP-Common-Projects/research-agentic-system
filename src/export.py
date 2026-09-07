@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1995,11 +1995,9 @@ def dominant_run_category(run_id: str) -> str | None:
     is a fact about the data, readable directly, rather than something the
     caller has to remember and pass in.
 
-    Two conditions on that reading, both learned the hard way. It counts
-    only channels this run first discovered: a run also re-tags channels
-    found by earlier runs, and those carry the earlier run's labels.
-    And it demands a real signal — enough classified channels to have a
-    majority, and a strict winner.
+    It demands a real signal — enough classified channels to have a
+    majority, and a strict winner. Those two guards are what stop a thin
+    or ambiguous run from being confidently mislabelled.
 
     Observed 2026-09-05, an automotive run: its deadline stopped
     classification at 0 of 273 discovered channels, so the only channels
@@ -2007,18 +2005,31 @@ def dominant_run_category(run_id: str) -> str | None:
     crime, one entertainment, one finance, one politics. ORDER BY n DESC
     LIMIT 1 broke that four-way tie of ones arbitrarily, export filtered
     the whole workbook to `crime`, and the client received an automotive
-    deliverable containing a single true-crime channel.
+    deliverable containing a single true-crime channel. The minimum and
+    the strict-winner test below are what catch that; they still do.
 
-    Returning None is the honest answer when the data cannot say, and the
-    caller treats it as "do not filter by category" — a workbook holding
-    everything the run found beats one confidently labelled wrong.
+    It counts every channel the run TAGGED, not only the ones it was the
+    first to see. Counting first-discovered channels alone looked like the
+    stricter reading and was the wrong one: a run that mostly re-finds
+    known channels has almost no first-discovered rows to count, so the
+    category came back None, and None means "do not filter by category",
+    which in turn means own_only — a workbook of only this run's brand-new
+    channels. On the crime run of 2026-09-07 that was 7 channels, all
+    under the floor, and the client got an EMPTY workbook while the run's
+    real 12 crime channels sat right there in its tagged set. Read over
+    the tagged set every one of these runs answers correctly, automotive
+    included (automotive=44 against finance=4).
+
+    Returning None is still the honest answer when the data cannot say.
     """
     rows = _fetch(
         f"""
         SELECT nt.parent_category, COUNT(*) AS n
         FROM channels c
+        JOIN category_tags t
+          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
-        WHERE c.first_discovered_run_id = %s
+        WHERE t.run_id = %s
           AND c.subscriber_count >= {_floor()}
         GROUP BY nt.parent_category
         ORDER BY n DESC
@@ -2047,6 +2058,15 @@ def dominant_run_category(run_id: str) -> str | None:
         )
         return None
     return top["parent_category"]
+
+
+class EmptyWorkbookError(RuntimeError):
+    """The scope selected no rows for a run that has some.
+
+    Raised rather than written. An empty workbook is indistinguishable
+    from a finished one until someone opens it, which is how a 2h34m crime
+    run was handed over as a file with zero rows in it.
+    """
 
 
 @dataclass(frozen=True)
@@ -2086,7 +2106,7 @@ def workbook_scope(
     elif category is None:
         category = dominant_run_category(run_id)
 
-    return WorkbookScope(
+    scope = WorkbookScope(
         category=category,
         min_subscribers=0 if all_channels else None,
         # With no category resolved there is nothing keeping other verticals
@@ -2095,6 +2115,35 @@ def workbook_scope(
         own_only=category is None,
         video_limit=get_config().harness.export_max_videos if cap_videos else None,
     )
+
+    # A scope that selects nothing is never the right answer for a run that
+    # found something. own_only is a guard against letting other verticals
+    # into an unlabelled workbook; it was never meant to be able to empty
+    # one. On 2026-09-07 it did exactly that -- no category resolved, so
+    # own_only, and the run's 7 first-discovered channels were all under the
+    # floor. The client got a workbook with zero rows in it while the run's
+    # 12 crime channels sat in its tagged set.
+    #
+    # So the guard yields to the thing it was protecting. An unlabelled
+    # workbook containing what the run found is a real deliverable; an
+    # empty one is not, and looks like a delivered result, which is worse
+    # than a loud failure.
+    if scope.own_only and not fetch_run_channels(
+        run_id, scope.category, scope.min_subscribers, True
+    ):
+        widened = replace(scope, own_only=False)
+        if fetch_run_channels(
+            run_id, widened.category, widened.min_subscribers, False
+        ):
+            logger.warning(
+                "workbook_scope_widened",
+                run_id=run_id,
+                reason="own_only selected no channels; the run's rows come "
+                       "from channels earlier runs discovered first",
+            )
+            return widened
+
+    return scope
 
 
 def workbook_rows(
@@ -2191,6 +2240,25 @@ def export_excel(
     own_only = scope.own_only
 
     channels, videos = workbook_rows(run_id, scope)
+
+    # Backstop. workbook_scope() already refuses to return a scope that
+    # selects nothing, so reaching here means some other filter emptied the
+    # workbook -- and a workbook with no rows is the one output worse than
+    # no workbook at all, because it looks like a delivered result. The run
+    # keeps its CSVs, its graph and its research bundle; only the hollow
+    # .xlsx is refused, loudly, instead of being handed over.
+    if not channels:
+        tagged = _fetch(
+            "SELECT COUNT(*) AS n FROM category_tags "
+            "WHERE run_id = %s AND entity_type = 'channel'",
+            (run_id,),
+        )
+        if tagged and int(tagged[0]["n"]) > 0:
+            raise EmptyWorkbookError(
+                f"{run_id} tagged {int(tagged[0]['n'])} channels but the "
+                f"workbook scope selected none ({scope}). Refusing to write "
+                f"an empty workbook."
+            )
     niches = fetch_run_niche_breakdown(run_id, category, min_subscribers, own_only)
     success_factors = fetch_run_success_factors(run_id, category, min_subscribers, own_only)
     failure_factors = fetch_run_failure_factors(run_id, category, min_subscribers, own_only)
