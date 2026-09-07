@@ -876,3 +876,83 @@ class TestEnrichmentIsFloorGated:
         out = self._run(self._client(1_000))
         assert not [e for e in out.get("errors", [])
                     if "breakdown" in e.get("message", "")]
+
+
+class TestVideoSignalsDoNotDependOnChannelEligibility:
+    """The video pass used to be nested inside the channel loop, whose
+    eligibility is `has_affiliate_signal IS NULL` -- a one-time marker. So a
+    channel any earlier run had already processed skipped its videos too,
+    including videos hydrated long afterwards. 31,665 videos in the live
+    database had no title signals for that reason, and run-3f649c9246a3
+    shipped six Videos columns at 85% because one such channel entered its
+    workbook through the category filter.
+
+    A marker on the channel cannot gate work done per video.
+    """
+
+    def _run(self, channel_rows, video_rows):
+        from unittest.mock import MagicMock, patch
+
+        import src.nodes.extract_metadata_signals as mod
+
+        conn = MagicMock()
+        cursors = []
+
+        def _cursor():
+            cur = MagicMock()
+            cursors.append(cur)
+            # First call selects channels, the last selects videos.
+            cur.fetchall.side_effect = lambda: (
+                channel_rows if len(cursors) == 1 else video_rows
+            )
+            return cur
+
+        conn.cursor.side_effect = _cursor
+        persisted = []
+        with patch.object(mod, "get_connection", return_value=conn), \
+             patch.object(mod, "put_connection"), \
+             patch("src.tools.dedup.persist_channel_v3"), \
+             patch("src.tools.dedup.persist_video_v3",
+                   side_effect=lambda c, vid, f: persisted.append((vid, f))):
+            out = mod.extract_metadata_signals(
+                {"thread_id": "t", "run_id": "r", "discovered_channel_ids": ["c1"]}
+            )
+        return out, persisted
+
+    def test_videos_are_enriched_even_when_no_channel_is_eligible(self):
+        """The exact shape that shipped: nothing to do at channel level,
+        seventy videos with no title signals."""
+        out, persisted = self._run(
+            channel_rows=[],  # every channel already has has_affiliate_signal
+            video_rows=[("v1", "How the M4 Chip Works", "")],
+        )
+        assert [vid for vid, _ in persisted] == ["v1"]
+        assert persisted[0][1]["title_word_count"] == 5
+
+    def test_it_reports_video_progress_separately_from_channel_progress(self):
+        """The export gate re-invokes a node while it reports progress. A
+        call that enriches videos and no channels has to read as progress,
+        or the backlog is abandoned after one call."""
+        out, _ = self._run(
+            channel_rows=[],
+            video_rows=[("v1", "A Title", ""), ("v2", "Another", "")],
+        )
+        summary = out["node_logs"][0]["input_summary"]
+        assert summary["processed"] == 0
+        assert summary["videos_enriched"] == 2
+
+    def test_the_gate_counts_that_key_as_progress(self):
+        from src.tools import export_completeness as gate
+
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert '"videos_enriched"' in src, (
+            "heal() must recognise the video pass, or it stops after one call"
+        )
+        assert gate is not None
+
+    def test_the_video_pass_is_bounded(self):
+        """One call must not run away on a 31,665-row backlog; the caller
+        re-invokes while progress continues."""
+        import src.nodes.extract_metadata_signals as mod
+
+        assert 0 < mod._VIDEO_BATCH <= 5000

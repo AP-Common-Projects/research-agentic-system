@@ -97,7 +97,66 @@ VIDEO_CHECKS: list[ColumnCheck] = [
     ColumnCheck("outlier_score", None, 0.95,
                 "written during hydration; cannot be filled afterwards",
                 table="videos"),
+    # The title signals. Deterministic functions of the title -- nothing
+    # about them depends on a model answering, so a gap is a node that did
+    # not reach the row, not a judgement call, and 0.98 says so. They were
+    # absent from this list entirely until run-3f649c9246a3 shipped them
+    # 85% full: a gate only checks what it declares, and TestTheSpecCovers
+    # TheWorkbook now refuses to let a Videos column go undeclared again.
+    ColumnCheck("title_word_count", "extract_metadata_signals", 0.98, table="videos"),
+    ColumnCheck("title_has_number", "extract_metadata_signals", 0.98, table="videos"),
+    ColumnCheck("title_is_question", "extract_metadata_signals", 0.98, table="videos"),
+    ColumnCheck("title_capitalization", "extract_metadata_signals", 0.98, table="videos"),
+    ColumnCheck("title_emoji_count", "extract_metadata_signals", 0.98, table="videos"),
+    ColumnCheck("is_likely_news", "extract_metadata_signals", 0.98,
+                "the video-level flag, not the channel one of the same name",
+                table="videos"),
 ]
+
+#: Videos-sheet columns deliberately NOT held to a fill rate, each with the
+#: reason. This is not a way to silence a column that is merely awkward --
+#: it is for ones where a blank cell is the correct answer, and a threshold
+#: would make the gate cry wolf on every run until someone switched it off.
+UNCHECKED_VIDEO_COLUMNS: dict[str, str] = {
+    "video_id": "the key itself",
+    "channel_id": "the key itself",
+    "channel_title": "joined from channels, checked there",
+    "title": "written at hydration; a video without one is not stored",
+    "view_count": "hydration",
+    "like_count": "creators can hide likes",
+    "comment_count": "creators can disable comments",
+    "published_at": "hydration",
+    "days_since_published": "computed in SQL from published_at",
+    "duration_seconds": "hydration",
+    "is_short": "hydration",
+    "language_code": "a video with no language signal has none",
+    "sample_reason": "set only for videos pulled in by a specific sampler",
+    "evergreen_score": "scored only where there is enough history to score",
+    "views_per_day_since_publish": "hydration",
+    "commercial_intent": "a niche-level attribute, absent for unclassified niches",
+    "sponsor_status": "most videos have no sponsor, which is the finding",
+    "sponsor_category": "only where a sponsor was found",
+    "sponsor_name": "only where a sponsor was named",
+    "extra": "the raw JSON blob thumbnail_url is read out of, not a column",
+    "thumbnail_url": "absent for deleted or private videos",
+    "thumbnail_has_face": "vision signals, run on a sample not the census",
+    "thumbnail_text_density": "vision signals, run on a sample not the census",
+    "reveal_mechanisms": "crime only",
+    "crime_type": "crime only",
+    "victim_type": "crime only",
+    "suspect_relationship": "crime only",
+    "investigation_type": "crime only",
+    "evidence_type_primary": "crime only",
+    "case_status": "crime only",
+    "case_fame_level": "crime only",
+    "case_country": "crime only",
+    "case_year": "crime only",
+    "interrogation_available": "crime only",
+    "bodycam_available": "crime only",
+    "cctv_available": "crime only",
+    "call_911_available": "crime only",
+    "court_footage_available": "crime only",
+}
 
 
 @dataclass
@@ -159,6 +218,12 @@ class Report:
 
 
 def _run_channel_ids(conn, run_id: str, floor_only: bool = True) -> list[str]:
+    """Channels this run discovered. NOT the same set the workbook writes.
+
+    Kept for callers that genuinely mean "what this run found". Anything
+    asking "what will be in the file" must use _workbook_ids instead --
+    see the comment there.
+    """
     cur = conn.cursor()
     try:
         sql = ("SELECT channel_id FROM channels WHERE first_discovered_run_id = %s")
@@ -170,12 +235,35 @@ def _run_channel_ids(conn, run_id: str, floor_only: bool = True) -> list[str]:
         cur.close()
 
 
+def _workbook_ids(run_id: str) -> tuple[list[str], list[str]]:
+    """The channel and video ids the workbook will actually contain.
+
+    This gate exists to check the file before a client opens it, so the only
+    row set worth checking is the file's own. Deriving it independently is
+    what let run-3f649c9246a3 pass: the gate audited the 15 channels the run
+    discovered, the workbook was written from 9 -- a different set, because
+    a resolved category admits channels earlier runs found. One of those was
+    a science channel from run-kw-fail whose 70 videos no scoped enrichment
+    node had ever touched, and six title-signal columns shipped 85% full
+    under a COMPLETE report.
+
+    Asking the export removes the possibility of disagreeing with it.
+    """
+    from src.export import workbook_rows
+
+    channels, videos = workbook_rows(run_id)
+    return (
+        [c["channel_id"] for c in channels],
+        [v["video_id"] for v in videos],
+    )
+
+
 def audit(run_id: str) -> Report:
     """Fill rates for every declared column, plus any empty table."""
     report = Report(run_id=run_id)
+    ids, video_ids = _workbook_ids(run_id)
     conn = get_connection()
     try:
-        ids = _run_channel_ids(conn, run_id)
         if not ids:
             report.empty_tables.append("channels")
             return report
@@ -195,10 +283,13 @@ def audit(run_id: str) -> Report:
                 ))
 
             for check in VIDEO_CHECKS:
+                # By video id, not by channel: the Videos sheet carries the
+                # rows the export selected, and a channel's other videos are
+                # neither written nor worth billing a heal for.
                 cur.execute(
                     f"SELECT COUNT(*), COUNT(v.{check.column}) FROM videos v "
-                    "WHERE v.channel_id = ANY(%s)",
-                    (ids,),
+                    "WHERE v.video_id = ANY(%s)",
+                    (video_ids,),
                 )
                 total, filled = cur.fetchone()
                 report.findings.append(Finding(
@@ -291,11 +382,13 @@ def heal(
     already paid for twice.
     """
     deadline = time.monotonic() + budget_seconds
-    conn = get_connection()
-    try:
-        ids = _run_channel_ids(conn, run_id, floor_only=False)
-    finally:
-        put_connection(conn)
+    # The workbook's channels, not the run's. Every enrichment node is
+    # scoped to the channels it is handed, so healing the run's own set
+    # could never fix a row belonging to a channel an earlier run
+    # discovered -- which is precisely the row that was short. Widening
+    # the scope here is safe because a channel only reaches this list by
+    # being in the file about to be written.
+    ids, _ = _workbook_ids(run_id)
     if not ids:
         return []
 
@@ -324,7 +417,12 @@ def heal(
                 int(v) for k, v in summary.items()
                 if k in ("classified", "populated", "resolved", "extracted",
                          "assigned", "described", "processed", "scored",
-                         "channels_scored", "sponsor_updated")
+                         "channels_scored", "sponsor_updated",
+                         # extract_metadata_signals reports channels and
+                         # videos separately: its video pass is independent
+                         # of channel eligibility, so a call that enriches
+                         # 2,000 videos and 0 channels is still progress.
+                         "videos_enriched")
                 and isinstance(v, (int, float))
             )
             if progress and name not in ran:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -2048,6 +2049,69 @@ def dominant_run_category(run_id: str) -> str | None:
     return top["parent_category"]
 
 
+@dataclass(frozen=True)
+class WorkbookScope:
+    """Exactly which rows a workbook will contain.
+
+    Split out of export_excel because it was being re-derived elsewhere and
+    drifted. The completeness gate had its own idea of a run's rows --
+    "channels whose first_discovered_run_id is this run" -- while the
+    workbook takes every channel tagged into the run, whoever discovered it.
+    On run-3f649c9246a3 the gate audited 15 channels and passed; the Videos
+    sheet was written from 9, one of them a science channel an older run had
+    found, whose 70 videos no scoped enrichment node had ever touched. Six
+    title-signal columns shipped 85% full behind a COMPLETE report.
+
+    One function decides now, and both callers ask it.
+    """
+
+    category: str | None
+    min_subscribers: int | None
+    own_only: bool
+    video_limit: int | None
+
+
+def workbook_scope(
+    run_id: str,
+    category: str | None = None,
+    all_categories: bool = False,
+    all_channels: bool = False,
+    cap_videos: bool = False,
+) -> WorkbookScope:
+    """The filters export_excel will apply, for the same arguments."""
+    if all_channels:
+        all_categories = True
+    if all_categories:
+        category = None
+    elif category is None:
+        category = dominant_run_category(run_id)
+
+    return WorkbookScope(
+        category=category,
+        min_subscribers=0 if all_channels else None,
+        # With no category resolved there is nothing keeping other verticals
+        # out, and a run re-tags channels earlier runs discovered. When a
+        # category IS resolved it already does that job.
+        own_only=category is None,
+        video_limit=get_config().harness.export_max_videos if cap_videos else None,
+    )
+
+
+def workbook_rows(
+    run_id: str, scope: WorkbookScope | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The channel and video rows the workbook will actually be written from.
+
+    The gate audits these rather than re-deriving them, so "what was
+    checked" and "what was written" cannot disagree.
+    """
+    s = scope if scope is not None else workbook_scope(run_id)
+    return (
+        fetch_run_channels(run_id, s.category, s.min_subscribers, s.own_only),
+        fetch_run_videos(run_id, s.video_limit, s.category, s.min_subscribers, s.own_only),
+    )
+
+
 def export_excel(
     run_id: str,
     out_path: Path | None = None,
@@ -2088,26 +2152,18 @@ def export_excel(
         out_path = export_dir(run_id) / f"{run_id}.xlsx"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if all_channels:
-        all_categories = True
-    if all_categories:
-        category = None
-    elif category is None:
-        category = dominant_run_category(run_id)
+    # On the automotive run an unresolved category meant four strangers --
+    # one crime, one entertainment, one finance, one politics -- riding into
+    # the workbook and putting their niche families on the Overview sheet.
+    # workbook_scope() is what decides that now, and the completeness gate
+    # asks the same function so it audits the rows this writes.
+    scope = workbook_scope(run_id, category, all_categories, all_channels, cap_videos)
+    category = scope.category
+    min_subscribers = scope.min_subscribers
+    video_limit = scope.video_limit
+    own_only = scope.own_only
 
-    min_subscribers = 0 if all_channels else None
-    video_limit = get_config().harness.export_max_videos if cap_videos else None
-
-    # With no category resolved there is nothing keeping other verticals
-    # out, and a run re-tags channels earlier runs discovered. On the
-    # automotive run that meant four strangers -- one crime, one
-    # entertainment, one finance, one politics -- riding into the workbook
-    # and putting their niche families on the Overview sheet. Scope to what
-    # this run actually found instead. When a category IS resolved it
-    # already does this job, so nothing changes for those exports.
-    own_only = category is None
-    channels = fetch_run_channels(run_id, category, min_subscribers, own_only)
-    videos = fetch_run_videos(run_id, video_limit, category, min_subscribers, own_only)
+    channels, videos = workbook_rows(run_id, scope)
     niches = fetch_run_niche_breakdown(run_id, category, min_subscribers, own_only)
     success_factors = fetch_run_success_factors(run_id, category, min_subscribers, own_only)
     failure_factors = fetch_run_failure_factors(run_id, category, min_subscribers, own_only)

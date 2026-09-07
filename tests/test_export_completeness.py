@@ -58,6 +58,113 @@ class TestTheSpecIsHonest:
                 assert check.node in available, check.node
 
 
+class TestTheSpecCoversTheWorkbook:
+    """The gate is only as good as its declaration, and the declaration was
+    short. run-3f649c9246a3 shipped six title-signal columns at 85% behind a
+    COMPLETE report because VIDEO_CHECKS named three columns and the Videos
+    sheet writes forty. Hand-maintained lists drift; this makes the drift a
+    test failure instead of something a client finds."""
+
+    def _videos_sheet_columns(self):
+        """The columns fetch_run_videos actually selects, read off a real
+        query rather than a second hand-written list that could drift too."""
+        import re
+
+        src = open("src/export.py", encoding="utf-8").read()
+        start = src.index("def fetch_run_videos(")
+        body = src[start:src.index("def fetch_run_niche_breakdown(")]
+        select = body[body.index("SELECT DISTINCT"):body.index("FROM videos v")]
+        select = "\n".join(
+            line for line in select.splitlines()
+            if not line.strip().startswith("--")
+        )
+        cols = set(re.findall(r"\bAS\s+([a-z_][a-z0-9_]*)", select))
+        cols |= set(re.findall(r"\b(?:v|c|nt|ccm)\.([a-z_][a-z0-9_]*)", select))
+        return cols
+
+    def test_every_videos_column_is_either_checked_or_explicitly_waived(self):
+        checked = {c.column for c in gate.VIDEO_CHECKS}
+        waived = set(gate.UNCHECKED_VIDEO_COLUMNS)
+        undeclared = self._videos_sheet_columns() - checked - waived
+        assert not undeclared, (
+            "these Videos columns have no fill threshold and no stated "
+            f"reason to be exempt: {sorted(undeclared)}. Add a ColumnCheck, "
+            "or an entry in UNCHECKED_VIDEO_COLUMNS saying why blank is "
+            "the right answer for it."
+        )
+
+    def test_a_waiver_has_to_give_a_reason(self):
+        for column, reason in gate.UNCHECKED_VIDEO_COLUMNS.items():
+            assert reason.strip(), column
+
+    def test_nothing_is_both_checked_and_waived(self):
+        overlap = {c.column for c in gate.VIDEO_CHECKS} & set(gate.UNCHECKED_VIDEO_COLUMNS)
+        assert not overlap, overlap
+
+    def test_the_title_signals_are_held_to_the_deterministic_bar(self):
+        """They are pure functions of the title. A gap is a node that did
+        not reach the row, never a model declining to answer."""
+        by_col = {c.column: c for c in gate.VIDEO_CHECKS}
+        for col in ("title_word_count", "title_has_number", "title_is_question",
+                    "title_capitalization", "title_emoji_count"):
+            assert by_col[col].min_fill >= 0.98, col
+            assert by_col[col].node == "extract_metadata_signals", col
+
+
+class TestTheGateChecksWhatTheFileContains:
+    """The bug behind the missing columns was not the thresholds at all: the
+    gate audited the 15 channels the run discovered while the workbook was
+    written from 9, a set that includes channels earlier runs found."""
+
+    def test_it_asks_the_export_which_rows_those_are(self):
+        with patch("src.export.workbook_rows", return_value=(
+            [{"channel_id": "c1"}, {"channel_id": "c2"}],
+            [{"video_id": "v1"}, {"video_id": "v2"}, {"video_id": "v3"}],
+        )) as rows:
+            ids, video_ids = gate._workbook_ids("run-x")
+
+        rows.assert_called_once_with("run-x")
+        assert ids == ["c1", "c2"]
+        assert video_ids == ["v1", "v2", "v3"]
+
+    def test_a_channel_an_earlier_run_discovered_is_still_audited(self):
+        """The exact shape that shipped: the workbook carries a channel the
+        run did not discover, so scoping the audit to first_discovered_run_id
+        looks past the only rows that were short."""
+        with patch("src.export.workbook_rows", return_value=(
+            [{"channel_id": "mine"}, {"channel_id": "from-an-older-run"}], [],
+        )):
+            ids, _ = gate._workbook_ids("run-x")
+        assert "from-an-older-run" in ids
+
+    def test_healing_is_scoped_to_the_workbook_not_the_run(self):
+        """A node handed only the run's own channels can never fill the row
+        that was actually blank."""
+        seen = {}
+
+        def _node(state):
+            seen.update(state)
+            return {"node_logs": [{"input_summary": {"populated": 0}}]}
+
+        with patch.object(gate, "_workbook_ids", return_value=(["mine", "stranger"], [])), \
+             patch.object(gate, "_nodes", lambda: {"extract_metadata_signals": _node}):
+            gate.heal("run-x", only={"extract_metadata_signals"})
+
+        assert seen["scope_channel_ids"] == ["mine", "stranger"]
+
+    def test_video_columns_are_counted_over_the_exported_videos(self):
+        """Counting every video of every workbook channel would measure rows
+        the sheet does not carry, and bill a heal for filling them."""
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        body = src[src.index("for check in VIDEO_CHECKS:"):]
+        body = body[:body.index("empty_tables") if "empty_tables" in body else 800]
+        code = "\n".join(
+            line for line in body.splitlines() if not line.strip().startswith("#")
+        )
+        assert "v.video_id = ANY(%s)" in code
+        assert "v.channel_id = ANY(%s)" not in code
+
+
 class TestFindingArithmetic:
     def test_a_finding_knows_whether_it_passes(self):
         f = gate.Finding("x", "channels", 90, 100, 0.90, "n")
@@ -86,9 +193,7 @@ class TestHealingIsBounded:
             return {"node_logs": [{"input_summary": {"classified": 0}}]}
 
         with patch.object(gate, "_nodes", lambda: {"classify_channel": _stuck}), \
-             patch.object(gate, "_run_channel_ids", lambda *a, **k: ["c1"]), \
-             patch.object(gate, "get_connection", lambda: None), \
-             patch.object(gate, "put_connection", lambda c: None):
+             patch.object(gate, "_workbook_ids", lambda *a, **k: (["c1"], ["v1"])):
             gate.heal("run-x", only={"classify_channel"})
 
         assert len(calls) == 1
@@ -102,9 +207,7 @@ class TestHealingIsBounded:
             return {"node_logs": [{"input_summary": {"classified": 0 if done else 50}}]}
 
         with patch.object(gate, "_nodes", lambda: {"classify_channel": _drains}), \
-             patch.object(gate, "_run_channel_ids", lambda *a, **k: ["c1"]), \
-             patch.object(gate, "get_connection", lambda: None), \
-             patch.object(gate, "put_connection", lambda c: None):
+             patch.object(gate, "_workbook_ids", lambda *a, **k: (["c1"], ["v1"])):
             ran = gate.heal("run-x", only={"classify_channel"})
 
         assert counter["n"] == 3
@@ -119,9 +222,7 @@ class TestHealingIsBounded:
             return {"node_logs": [{"input_summary": {"described": 30}}]}
 
         with patch.object(gate, "_nodes", lambda: {"describe_video_titles": _slow}), \
-             patch.object(gate, "_run_channel_ids", lambda *a, **k: ["c1"]), \
-             patch.object(gate, "get_connection", lambda: None), \
-             patch.object(gate, "put_connection", lambda c: None):
+             patch.object(gate, "_workbook_ids", lambda *a, **k: (["c1"], ["v1"])):
             ran = gate.heal("run-x", only={"describe_video_titles"}, budget_seconds=0)
 
         assert ran == [], "a spent budget must stop before the first call"
@@ -137,9 +238,7 @@ class TestHealingIsBounded:
                 "classify_channel": _boom,
                 "populate_taxonomy_dimensions": _fine,
              }), \
-             patch.object(gate, "_run_channel_ids", lambda *a, **k: ["c1"]), \
-             patch.object(gate, "get_connection", lambda: None), \
-             patch.object(gate, "put_connection", lambda c: None):
+             patch.object(gate, "_workbook_ids", lambda *a, **k: (["c1"], ["v1"])):
             ran = gate.heal("run-x")
 
         assert ran == []

@@ -231,6 +231,12 @@ def _compute_upload_stats(videos: list[dict]) -> dict:
     }
 
 
+#: Videos enriched per call. These are pure string computations plus a
+#: write each -- no model, no quota -- so the bound is about keeping one
+#: invocation predictable, not about cost.
+_VIDEO_BATCH = 2000
+
+
 def extract_metadata_signals(state: dict) -> dict:
     thread_id = state.get("thread_id", "")
     start = time.monotonic()
@@ -305,40 +311,62 @@ def extract_metadata_signals(state: dict) -> dict:
             ).model_dump())
             continue
 
-        # Video-level: hashtags and title signals
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT video_id, title, description FROM videos WHERE channel_id = %s AND hashtags IS NULL",
-                (ch_id,),
-            )
-            videos_to_enrich = cur.fetchall()
-            cur.close()
-            for vid_id, v_title, v_desc in videos_to_enrich:
-                v_fields: dict = {}
-                v_fields["hashtags"] = _extract_hashtags(f"{v_title or ''} {v_desc or ''}")
-                v_fields.update(_title_signals(v_title or ""))
-                v_fields["is_likely_news"] = _is_news_title(v_title or "")
-                try:
-                    persist_video_v3(conn, vid_id, v_fields)
-                except Exception as exc:
-                    conn.rollback()
-                    errors.append(ErrorRecord(
-                        node_name="extract_metadata_signals",
-                        error_type=type(exc).__name__,
-                        message=f"video persist failed for {vid_id}: {exc}",
-                        recoverable=True,
-                    ).model_dump())
-                    continue
-        except Exception as exc:
-            conn.rollback()
-            errors.append(ErrorRecord(
-                node_name="extract_metadata_signals",
-                error_type=type(exc).__name__,
-                message=f"video enrichment query failed for {ch_id}: {exc}",
-                recoverable=True,
-            ).model_dump())
-            continue
+    # Video-level enrichment, deliberately NOT nested in the loop above.
+    #
+    # It used to be, which meant a channel's videos were only ever reached
+    # while the channel itself was eligible -- and channel eligibility is
+    # "has_affiliate_signal IS NULL", a one-time marker. So a channel any
+    # earlier run had already processed skipped this entirely, including
+    # videos hydrated long afterwards. 31,665 videos in this database had
+    # no title signals for that reason, and run-3f649c9246a3 shipped six
+    # Videos columns at 85% because one such channel came into its workbook
+    # through the category filter.
+    #
+    # Videos carry their own marker, so they get their own pass.
+    videos_enriched = 0
+    try:
+        cur = conn.cursor()
+        video_scope_sql, video_scope_params = scope_clause(state, "channel_id")
+        cur.execute(
+            "SELECT video_id, title, description FROM videos "
+            "WHERE hashtags IS NULL " + video_scope_sql
+            # Bounded so one call cannot run away on a large backlog. The
+            # caller re-invokes while progress is reported, which is how the
+            # export gate drains a backlog without a fixed call ceiling.
+            + "ORDER BY video_id LIMIT %s",
+            video_scope_params + (_VIDEO_BATCH,),
+        )
+        videos_to_enrich = cur.fetchall()
+        cur.close()
+
+        for vid_id, v_title, v_desc in videos_to_enrich:
+            v_fields: dict = {}
+            v_fields["hashtags"] = _extract_hashtags(f"{v_title or ''} {v_desc or ''}")
+            v_fields.update(_title_signals(v_title or ""))
+            v_fields["is_likely_news"] = _is_news_title(v_title or "")
+            try:
+                persist_video_v3(conn, vid_id, v_fields)
+                videos_enriched += 1
+            except Exception as exc:
+                conn.rollback()
+                errors.append(ErrorRecord(
+                    node_name="extract_metadata_signals",
+                    error_type=type(exc).__name__,
+                    message=f"video persist failed for {vid_id}: {exc}",
+                    recoverable=True,
+                ).model_dump())
+                continue
+    except Exception as exc:
+        conn.rollback()
+        errors.append(ErrorRecord(
+            node_name="extract_metadata_signals",
+            error_type=type(exc).__name__,
+            message=f"video enrichment query failed: {exc}",
+            recoverable=True,
+        ).model_dump())
 
     put_connection(conn)
-    return {"node_logs": _log({"processed": processed}), "errors": errors}
+    return {
+        "node_logs": _log({"processed": processed, "videos_enriched": videos_enriched}),
+        "errors": errors,
+    }
