@@ -350,8 +350,34 @@ def populate_crime_metadata(state: dict) -> dict:
             break
         populated += _classify(eligible[i : i + CRIME_METADATA_BATCH_SIZE])
 
+    # The five footage-availability flags, derived from what was just
+    # written. They had no producer in the pipeline at all: a one-off
+    # gapfill script filled 15,564 rows by hand and every row written by a
+    # run since carried NULL in all five, which is how a crime workbook
+    # shipped them at 16.6% while the case fields beside them reached 64%.
+    #
+    # Deterministic and set-based, so it costs nothing to run every time
+    # and is safe to repeat -- it only touches rows that have no value yet.
+    footage_flags = 0
+    try:
+        from src.tools.footage_flags import derive_footage_flags
+
+        footage_flags = derive_footage_flags(conn, scope_sql, scope_params)
+    except Exception as exc:
+        conn.rollback()
+        errors.append(ErrorRecord(
+            node_name="populate_crime_metadata",
+            error_type=type(exc).__name__,
+            message=f"footage flag derivation failed: {exc}",
+            recoverable=True,
+        ).model_dump())
+
     put_connection(conn)
     return {
-        "node_logs": _log({"populated": populated, "eligible": len(eligible)}),
+        "node_logs": _log({
+            "populated": populated,
+            "eligible": len(eligible),
+            "footage_flags": footage_flags,
+        }),
         "errors": errors,
     }

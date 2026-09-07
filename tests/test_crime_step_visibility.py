@@ -126,3 +126,72 @@ class TestTheConsoleSideOfIt:
             "an unread balance must be surfaced too -- it does not lock a "
             "depth, so nothing else would tell the client it went unchecked"
         )
+
+
+class TestTheFootageFlagsHaveAProducer:
+    """The five footage-availability columns the brief asks for had no step
+    in the pipeline that wrote them. A gapfill script filled 15,564 rows by
+    hand once; every crime_case_metadata row written by a run since carried
+    NULL in all five. The crime workbook of 2026-09-07 shipped them at
+    16.6% while the case fields beside them reached 64%.
+
+    A column whose only producer is a script someone remembers to run is a
+    column that will be empty.
+    """
+
+    def test_the_node_derives_them(self):
+        import inspect
+
+        src = inspect.getsource(mod.populate_crime_metadata)
+        assert "derive_footage_flags" in src
+
+    def test_it_reports_them_so_the_gate_sees_the_work(self):
+        conn = _conn_with_gate(True)
+        conn.cursor.return_value.fetchall.return_value = []
+        with patch("src.tools.footage_flags.derive_footage_flags", return_value=9):
+            out = _run({"thread_id": "t", "run_id": "r"}, conn)
+        assert out["node_logs"][0]["input_summary"]["footage_flags"] == 9
+
+    def test_the_gate_counts_that_as_progress(self):
+        src = open("src/tools/export_completeness.py", encoding="utf-8").read()
+        assert '"footage_flags"' in src
+
+    def test_a_failure_there_does_not_lose_the_case_metadata(self):
+        """The flags are a derivation on top of work already committed;
+        losing them must not lose the rows they describe."""
+        conn = _conn_with_gate(True)
+        conn.cursor.return_value.fetchall.return_value = []
+        with patch("src.tools.footage_flags.derive_footage_flags",
+                   side_effect=RuntimeError("boom")):
+            out = _run({"thread_id": "t", "run_id": "r"}, conn)
+        assert out["node_logs"], "the node must still report"
+        assert any("footage flag" in e["message"] for e in out["errors"])
+
+    def test_the_script_and_the_pipeline_share_one_set_of_rules(self):
+        """Two copies is how this happened: the rules existed only in the
+        script, so the pipeline had none."""
+        script = open("scripts/gapfill/derive_footage_flags.py", encoding="utf-8").read()
+        assert "from src.tools.footage_flags import derive_footage_flags" in script
+        assert "interrogation_confession" not in script, (
+            "the script must not carry its own copy of the rules"
+        )
+
+    def test_every_flag_the_export_carries_has_a_rule(self):
+        from src.tools.footage_flags import RULES
+
+        expected = {
+            "interrogation_available", "bodycam_available", "cctv_available",
+            "call_911_available", "court_footage_available",
+        }
+        assert set(RULES) == expected
+
+    def test_the_derivation_is_scopeable_to_one_run(self):
+        """Unscoped it would rewrite every crime row in the database on
+        every run -- the whole-table sweep is the script's job, not a
+        node's."""
+        import inspect
+
+        from src.tools.footage_flags import derive_footage_flags
+
+        params = inspect.signature(derive_footage_flags).parameters
+        assert "scope_sql" in params and "scope_params" in params

@@ -615,7 +615,7 @@ def heal(
                          # populate_shared_fields propagates a channel's
                          # estimate onto videos its per-channel loop could
                          # not reach; that is progress with 0 classified.
-                         "propagated")
+                         "propagated", "footage_flags")
                 and isinstance(v, (int, float))
             )
             if progress and name not in ran:
