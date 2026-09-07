@@ -153,3 +153,83 @@ class TestAnEmptyWorkbookIsRefused:
                 ex.export_excel("run-x", out_path=None)
         assert "14" in str(exc.value)
         assert "own_only=True" in str(exc.value)
+
+
+class TestFactorSheetsFollowTheWorkbooksChannels:
+    """Both sheets filtered on `extracted_by_run_id = run_id` -- who wrote
+    the row, not whose workbook it belongs in. A factor is a fact about a
+    channel, and a run that re-finds a known channel does not re-extract
+    facts already on file.
+
+    The crime run of 2026-09-07 carried four channels whose factors had
+    been extracted across four earlier runs. Both sheets shipped empty
+    while every one of those channels had rows in the table.
+    """
+
+    def test_it_scopes_by_the_runs_tagged_channels(self):
+        captured = {}
+        with patch.object(ex, "_fetch", lambda sql, params: captured.setdefault("sql", sql) or []):
+            ex.fetch_run_success_factors("run-x", None, None, False)
+        assert "t.run_id = %s" in captured["sql"]
+        assert "category_tags" in captured["sql"]
+
+    def test_it_no_longer_asks_who_extracted_the_row(self):
+        captured = {}
+        with patch.object(ex, "_fetch", lambda sql, params: captured.setdefault("sql", sql) or []):
+            ex.fetch_run_failure_factors("run-x", None, None, False)
+        assert "extracted_by_run_id" not in captured["sql"], (
+            "a factor belongs to a channel, not to the run that happened to "
+            "extract it first"
+        )
+
+    def test_a_channel_carrying_factors_from_several_runs_is_not_duplicated(self):
+        captured = {}
+        with patch.object(ex, "_fetch", lambda sql, params: captured.setdefault("sql", sql) or []):
+            ex.fetch_run_success_factors("run-x", None, None, False)
+        assert "SELECT DISTINCT" in captured["sql"]
+
+
+class TestTheCategoryNeedsAMajorityNotAHeadcount:
+    """A fixed minimum of 5 does not survive a small tier. The crime sample
+    tier caps at 6 channels, so a run whose channels were 4 out of 4 crime
+    -- unanimously -- resolved to None and had every crime column dropped
+    from its workbook."""
+
+    def _category(self, rows):
+        with patch.object(ex, "_fetch", lambda *a: rows), \
+             patch.object(ex, "_floor", lambda: 50000):
+            return ex.dominant_run_category("run-x")
+
+    def test_a_unanimous_four_is_a_category(self):
+        assert self._category([{"parent_category": "crime", "n": 4}]) == "crime"
+
+    def test_two_agreeing_channels_are_the_smallest_signal_accepted(self):
+        assert self._category([{"parent_category": "crime", "n": 2}]) == "crime"
+
+    def test_one_channel_is_never_a_category(self):
+        assert self._category([{"parent_category": "crime", "n": 1}]) is None
+
+    def test_the_automotive_strangers_are_still_rejected(self):
+        """Four re-seen channels at one category each: not a majority, and
+        below the floor. This is the case the old guard was written for and
+        it must keep failing."""
+        rows = [{"parent_category": c, "n": 1}
+                for c in ("crime", "entertainment", "finance", "politics")]
+        assert self._category(rows) is None
+
+    def test_a_minority_leader_is_rejected(self):
+        """4 of 12 leads but does not describe the workbook."""
+        rows = [{"parent_category": "crime", "n": 4},
+                {"parent_category": "finance", "n": 4},
+                {"parent_category": "gaming", "n": 4}]
+        assert self._category(rows) is None
+
+    def test_a_clear_winner_over_stragglers_is_accepted(self):
+        rows = [{"parent_category": "automotive", "n": 44},
+                {"parent_category": "finance", "n": 4}]
+        assert self._category(rows) == "automotive"
+
+    def test_a_tie_is_still_refused(self):
+        rows = [{"parent_category": "crime", "n": 5},
+                {"parent_category": "finance", "n": 5}]
+        assert self._category(rows) is None

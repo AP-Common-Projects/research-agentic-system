@@ -479,3 +479,42 @@ class TestAWaiverCannotExcuseTheDeliverable:
         videos. A bar below that would have passed this failure too."""
         for check in gate.CRIME_VIDEO_CHECKS:
             assert check.min_fill >= 0.95, check.column
+
+
+class TestAnEmptySheetIsNeverSilent:
+    """The sweep skipped a sheet with no rows. There is a separate
+    empty-table check, but it counts rows in the TABLE for the workbook's
+    channels -- a different question from what the export writes. The crime
+    run of 2026-09-07 had success and failure factors on all four of its
+    channels and shipped both sheets blank: the table check said "not
+    empty", the sweep said nothing, and the gate reported COMPLETE."""
+
+    def test_a_sheet_the_export_returns_empty_is_reported(self):
+        with patch("src.export.sheet_rows", return_value={
+            "Channels": [{"channel_id": "c1"}],
+            "Success Factors": [],
+            "Failure Factors": [],
+        }), patch("src.export.workbook_scope", return_value=_scope(category="crime")):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+
+        assert "Success Factors" in report.empty_tables
+        assert "Failure Factors" in report.empty_tables
+        assert not report.complete, "an empty sheet cannot be COMPLETE"
+
+    def test_a_populated_sheet_is_not_reported(self):
+        with patch("src.export.sheet_rows", return_value={
+            "Success Factors": [{"factor_code": "x"}],
+        }), patch("src.export.workbook_scope", return_value=_scope(category="crime")):
+            report = gate.Report(run_id="run-x")
+            gate._sweep(report, already=set())
+        assert report.empty_tables == []
+
+    def test_it_is_not_double_reported(self):
+        """The table check may already have named it; one line is enough."""
+        with patch("src.export.sheet_rows", return_value={"Niches": []}), \
+             patch("src.export.workbook_scope", return_value=_scope(category=None)):
+            report = gate.Report(run_id="run-x")
+            report.empty_tables.append("Niches")
+            gate._sweep(report, already=set())
+        assert report.empty_tables.count("Niches") == 1

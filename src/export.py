@@ -330,17 +330,33 @@ def _fetch_run_factors(
 ) -> list[dict[str, Any]]:
     """Shared body for the success/failure factor sheets — identical shape,
     identical filters, only the pair of table names differs. Both are
-    scoped to the same channels the Channels sheet carries."""
+    scoped to the same channels the Channels sheet carries.
+
+    That last sentence was the intent and not the code. It filtered on
+    `f.extracted_by_run_id = run_id` — who wrote the row, not whose
+    workbook it belongs in. A factor is a fact about a channel, and a run
+    that re-finds a known channel does not re-extract facts already on
+    file: the crime run of 2026-09-07 carried four channels whose factors
+    had been extracted across four earlier runs, so both sheets came out
+    empty while every one of those channels had rows in the table.
+
+    Joined through category_tags now, exactly as fetch_run_channels does,
+    so "the channels this workbook carries" is asked the same way in both
+    places and cannot drift apart again.
+    """
     floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
-        SELECT f.channel_id, c.title AS channel_title, c.subscriber_count,
+        SELECT DISTINCT f.channel_id, c.title AS channel_title,
+               c.subscriber_count,
                ft.factor_code, ft.factor_label, ft.factor_group,
                f.evidence_grade, f.evidence_note, f.corroboration_count
         FROM {table} f
         JOIN {taxonomy} ft ON ft.factor_id = f.factor_id
         JOIN channels c ON c.channel_id = f.channel_id
+        JOIN category_tags t
+          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
-        WHERE f.extracted_by_run_id = %s
+        WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
     params: tuple = (run_id,)
@@ -1984,7 +2000,10 @@ def build_excel_workbook_v3(
 
 #: A category has to be earned. Below this many of the run's OWN classified
 #: channels there is no majority to read, only stragglers.
-_MIN_CHANNELS_FOR_CATEGORY = 5
+#: Absolute floor beneath the majority rule below. One channel is
+#: never a category; two agreeing channels are the smallest honest
+#: signal a six-channel tier can produce.
+_MIN_CHANNELS_FOR_CATEGORY = 2
 
 
 def dominant_run_category(run_id: str) -> str | None:
@@ -2040,13 +2059,24 @@ def dominant_run_category(run_id: str) -> str | None:
         return None
 
     top = rows[0]
-    if int(top["n"]) < _MIN_CHANNELS_FOR_CATEGORY:
+    total = sum(int(r["n"]) for r in rows)
+    # A majority of what was classified, with a small absolute floor --
+    # rather than a fixed headcount, which does not survive a small tier.
+    # The crime sample tier caps at 6 channels, so a minimum of 5 was
+    # effectively unreachable: a run whose channels were 4 out of 4 crime,
+    # unanimously, resolved to None and had every crime column dropped from
+    # its workbook. The guard exists to reject the automotive run's four
+    # re-seen strangers at one category each -- 1 of 4 is neither a
+    # majority nor above the floor, so that is still rejected.
+    minimum = max(_MIN_CHANNELS_FOR_CATEGORY, (total + 1) // 2)
+    if int(top["n"]) < minimum:
         logger.warning(
             "dominant_category_too_thin",
             run_id=run_id,
             top_category=top["parent_category"],
             n=int(top["n"]),
-            minimum=_MIN_CHANNELS_FOR_CATEGORY,
+            classified=total,
+            minimum=minimum,
         )
         return None
     if len(rows) > 1 and int(rows[1]["n"]) == int(top["n"]):

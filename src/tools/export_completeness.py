@@ -403,6 +403,21 @@ def _sweep(report: Report, already: set[tuple[str, str]]) -> None:
 
     for sheet, rows in sheet_rows(report.run_id).items():
         if not rows:
+            # An empty sheet is the loudest possible gap and was the one
+            # thing the sweep passed over in silence.
+            #
+            # There is a separate empty-table check, but it counts rows in
+            # the TABLE for the workbook's channels -- a different question
+            # from what the export writes. The crime run of 2026-09-07 had
+            # success and failure factors on all four of its channels and
+            # shipped both sheets blank, so the table check said "not
+            # empty", the sweep said nothing at all, and the gate reported
+            # COMPLETE over a workbook with two empty sheets in it.
+            #
+            # Asked of the rows the export returns, there is no gap between
+            # the question and the file.
+            if sheet not in report.empty_tables:
+                report.empty_tables.append(sheet)
             continue
         # Columns the export removes before writing are not in the file, so
         # a fill rate on them measures nothing. Read from the export's own
