@@ -27,6 +27,10 @@ export interface DepthTier {
   hours: number;
   /** Server-formatted: "30m", "1h", "72h". Absent on older servers. */
   duration_label?: string;
+  /** Research window plus the completeness gate — what the client waits. */
+  total_duration_label?: string;
+  /** The gate's own share, e.g. "up to 27m". */
+  gate_label?: string;
   tagline: string;
   description: string;
   est_channels: string;

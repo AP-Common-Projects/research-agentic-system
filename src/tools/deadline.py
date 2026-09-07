@@ -80,7 +80,7 @@ def passed() -> bool:
     return remaining is not None and remaining <= 0
 
 
-def research_passed() -> bool:
+def research_passed(state: dict | None = None) -> bool:
     """True once the RESEARCH half of the window is spent.
 
     A run has two phases and only one of them is open-ended. Discovery,
@@ -96,6 +96,19 @@ def research_passed() -> bool:
     means 30 minutes; it just spends the last part of them finishing the
     deliverable instead of looking for more channels.
     """
+    if state is not None and state.get("healing"):
+        # The export gate re-runs classify_channel to fill primary_niche_id,
+        # and it does so after the run's window has closed -- which is the
+        # only time it is ever needed. Asking the run deadline there meant
+        # the node broke on its first channel and reported 0 classified, so
+        # the single column three sheets depend on could never be healed.
+        # The gaming run of 2026-09-07 shipped Niches, Success Factors and
+        # Failure Factors empty for exactly that reason.
+        heal_deadline = state.get("heal_deadline_monotonic")
+        if heal_deadline is None:
+            return False
+        return time.monotonic() >= float(heal_deadline)
+
     ceiling = deadline_seconds()
     if ceiling <= 0:
         return False

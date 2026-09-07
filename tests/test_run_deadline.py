@@ -130,7 +130,10 @@ class TestClassifierYieldsAtTheDeadline:
         loop_start = src.index("for ch_id in eligible:")
         try_start = src.index("try:", loop_start)
         between = src[loop_start:try_start]
-        assert "run_deadline.research_passed()" in between, (
+        # research_passed(state), not research_passed(): the export gate
+        # re-runs this node after the run's deadline, which is the only time
+        # it is ever needed, so it has to be exempt there.
+        assert "run_deadline.research_passed(state)" in between, (
             "the deadline check must be inside the per-channel loop"
         )
         assert "stopped_on" in src, "a truncated pass must say why in its log"
@@ -601,3 +604,58 @@ class TestRetriesAreBoundedByTimeNotOnlyByCount:
         assert "stop_after_attempt(5) | stop_after_delay(_MAX_RETRY_SECONDS)" in code, (
             "whichever limit is reached first must win"
         )
+
+
+class TestClassifyChannelCanBeHealed:
+    """primary_niche_id is the column three sheets and the discovery graph
+    key off. classify_channel is its only producer, and it asked the RUN
+    deadline -- which has always passed by the time the export gate calls
+    it, because that is the only time the gate ever runs.
+
+    So the node broke on its first channel, reported 0 classified, and the
+    gate gave up. The gaming run of 2026-09-07 shipped Niches, Success
+    Factors and Failure Factors empty for exactly that reason, with the
+    gate correctly reporting every one of them and unable to fix any.
+    """
+
+    def test_research_passed_lets_a_heal_through(self, monkeypatch):
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "deadline_seconds", lambda: 60)
+        monkeypatch.setattr(d, "run_elapsed_seconds", lambda: 99999)
+        assert d.research_passed() is True
+        assert d.research_passed({"healing": True,
+                                  "heal_deadline_monotonic": 1e18}) is False
+
+    def test_a_heal_still_stops_at_its_own_budget(self, monkeypatch):
+        import time
+
+        from src.tools import deadline as d
+
+        monkeypatch.setattr(d, "deadline_seconds", lambda: 0)
+        assert d.research_passed({"healing": True,
+                                  "heal_deadline_monotonic": time.monotonic() - 1}) is True
+
+    def test_classify_channel_passes_its_state(self):
+        """Without this the bypass exists and nothing uses it."""
+        import pathlib
+
+        code = pathlib.Path("src/nodes/classify_channel.py").read_text(encoding="utf-8")
+        code = "\n".join(l for l in code.splitlines() if not l.strip().startswith("#"))
+        assert "run_deadline.research_passed(state)" in code
+
+    def test_discovery_stays_bound_by_the_run_deadline(self):
+        """hydrate_metadata, the graph routers and the Bright Data poller are
+        never called by the healer, so they must keep asking the run's own
+        deadline -- exempting them would uncap discovery itself."""
+        import pathlib
+
+        for path in ("src/tools/hydrate_metadata.py", "src/graph.py",
+                     "src/tools/bright_data.py"):
+            code = pathlib.Path(path).read_text(encoding="utf-8")
+            assert "research_passed(state)" not in code, path
+
+    def test_the_healer_can_reach_the_node_at_all(self):
+        from src.tools import export_completeness as gate
+
+        assert "classify_channel" in gate._nodes()

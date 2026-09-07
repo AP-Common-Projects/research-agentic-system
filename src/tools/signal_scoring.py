@@ -249,6 +249,11 @@ def score_signals(state: dict) -> dict:
     if not channel_ids:
         return {"next_action": "continue"}
 
+    # Read once, above both loops. It used to be bound inside the per-channel
+    # loop, so the size-bucket-only branch below -- which runs precisely when
+    # that loop does not -- would have raised NameError on it.
+    cfg = get_config().harness
+
     try:
         conn = get_connection()
         try:
@@ -275,7 +280,6 @@ def score_signals(state: dict) -> dict:
                     scored += 1
 
                     # v3: evergreen, engagement, floor, news
-                    cfg = get_config().harness
                     run_id = state.get("run_id", "")
                     v3_fields: dict[str, Any] = {}
                     v3_vid_updates: dict[str, dict] = {}
@@ -420,9 +424,36 @@ def score_signals(state: dict) -> dict:
                         cur_b.close()
                     if not row or row[0] is None:
                         continue
+                    subs = int(row[0])
+                    # meets_subscriber_floor too, not just the bucket.
+                    #
+                    # It defaults to FALSE, and FALSE is indistinguishable
+                    # from "computed, and genuinely below the floor" -- so a
+                    # channel this branch skipped was permanently invisible
+                    # to every floor-gated node: classify_channel,
+                    # describe_video_titles, populate_crime_metadata,
+                    # extract_success_failure_factors. On the gaming run of
+                    # 2026-09-07 that included a 5.5M-subscriber channel
+                    # against a 50,000 floor, and its whole workbook shipped
+                    # unclassified.
+                    #
+                    # No videos are needed to answer it: the floor is a
+                    # subscriber threshold, and compute_subscriber_floor
+                    # returns True on the count alone. Videos only matter for
+                    # the breakout and thriving overrides, which apply to
+                    # channels BELOW the floor -- those stay False here and
+                    # are re-evaluated once their videos land.
+                    meets, reason = compute_subscriber_floor(
+                        {"subscriber_count": subs, "_videos": []}, cfg
+                    )
+                    fields = {
+                        "channel_size_bucket": channel_size_bucket(subs),
+                        "meets_subscriber_floor": meets,
+                    }
+                    if reason:
+                        fields["floor_override_reason"] = reason
                     persist_channel_v3(
-                        conn, ch_id, state.get("run_id", ""),
-                        {"channel_size_bucket": channel_size_bucket(int(row[0]))},
+                        conn, ch_id, state.get("run_id", ""), fields,
                     )
                 except Exception as exc:
                     conn.rollback()

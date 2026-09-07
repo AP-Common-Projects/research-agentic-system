@@ -1024,3 +1024,77 @@ class TestSearchBrowseEstimateReachesEveryVideo:
         propagates and classifies nothing has to read as progress."""
         src = open("src/tools/export_completeness.py", encoding="utf-8").read()
         assert '"propagated"' in src
+
+
+class TestTheSubscriberFloorIsAlwaysComputed:
+    """meets_subscriber_floor defaults to FALSE, and FALSE is
+    indistinguishable from "computed, and genuinely below the floor". A
+    channel score_signals reached only for its size bucket therefore looked
+    like it had failed the floor, and every floor-gated node -- classify_
+    channel, describe_video_titles, populate_crime_metadata,
+    extract_success_failure_factors -- skipped it permanently.
+
+    On the gaming run of 2026-09-07 that included a channel with 5,500,000
+    subscribers against a floor of 50,000.
+    """
+
+    def test_a_channel_with_no_videos_still_gets_the_flag(self):
+        from unittest.mock import MagicMock, patch
+
+        import src.tools.signal_scoring as mod
+
+        persisted = {}
+        conn = MagicMock()
+        conn.cursor.return_value.fetchone.return_value = (5_500_000,)
+        cfg = MagicMock()
+        cfg.harness.subscriber_floor = 50_000
+
+        with patch("src.db.connection.get_connection", return_value=conn), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.config.get_config", return_value=cfg), \
+             patch("src.tools.dedup.fetch_videos_by_channels", return_value=[]), \
+             patch("src.tools.dedup.persist_channel_v3",
+                   side_effect=lambda c, cid, rid, f: persisted.update(f)):
+            mod.score_signals({"discovered_channel_ids": ["c1"],
+                               "thread_id": "t", "run_id": "r"})
+
+        assert persisted.get("meets_subscriber_floor") is True, (
+            "5.5M subscribers against a 50k floor must not read as below it"
+        )
+        assert "channel_size_bucket" in persisted
+
+    def test_a_genuinely_small_channel_still_reads_as_below(self):
+        from unittest.mock import MagicMock, patch
+
+        import src.tools.signal_scoring as mod
+
+        persisted = {}
+        conn = MagicMock()
+        conn.cursor.return_value.fetchone.return_value = (900,)
+        cfg = MagicMock()
+        cfg.harness.subscriber_floor = 50_000
+
+        with patch("src.db.connection.get_connection", return_value=conn), \
+             patch("src.db.connection.put_connection"), \
+             patch("src.config.get_config", return_value=cfg), \
+             patch("src.tools.dedup.fetch_videos_by_channels", return_value=[]), \
+             patch("src.tools.dedup.persist_channel_v3",
+                   side_effect=lambda c, cid, rid, f: persisted.update(f)):
+            mod.score_signals({"discovered_channel_ids": ["c1"],
+                               "thread_id": "t", "run_id": "r"})
+
+        assert persisted.get("meets_subscriber_floor") is False
+
+    def test_the_floor_needs_no_videos_to_be_answered(self):
+        """The overrides do; the threshold itself does not, which is why
+        the missing videos were never a reason to leave it unanswered."""
+        from unittest.mock import MagicMock
+
+        from src.tools.signal_scoring import compute_subscriber_floor
+
+        cfg = MagicMock()
+        cfg.subscriber_floor = 50_000
+        meets, reason = compute_subscriber_floor(
+            {"subscriber_count": 413_000, "_videos": []}, cfg
+        )
+        assert meets is True and reason is None

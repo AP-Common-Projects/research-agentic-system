@@ -60,3 +60,18 @@ export function clockTime(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleTimeString('en', { hour12: false });
 }
+
+/**
+ * When a workbook was written, short enough to sit beside its title.
+ *
+ * Used to tell apart workbooks that share one: a topic run twice is two
+ * deliverables with the same name, and the console listed three "Crime"
+ * tabs with nothing to choose between them.
+ */
+export function workbookStamp(epochSeconds: number | undefined): string {
+  if (!epochSeconds) return '';
+  const d = new Date(epochSeconds * 1000);
+  const day = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `${day} ${time}`;
+}

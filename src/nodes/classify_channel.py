@@ -222,7 +222,9 @@ def classify_channel(state: dict) -> dict:
         # ~25 seconds of its deadline instead of finishing the whole batch
         # -- the difference between a duration that is stated and one that
         # is merely intended.
-        if run_deadline.research_passed():
+        # `state`, so a heal is not stopped by the run's own deadline. The
+        # gate only ever calls this node after that deadline has passed.
+        if run_deadline.research_passed(state):
             stopped_on_deadline = True
             break
         try:

@@ -63,6 +63,16 @@ _SECONDS_PER_CHANNEL = 113.0
 #: twice shortened every tier.
 _FIXED_OVERHEAD_SECONDS = 600.0
 
+#: The completeness gate runs AFTER the graph, on its own budget, and the
+#: cards never counted it. Measured on the two sample runs of 2026-09-07
+#: with the deadline governor working: the graph stopped on time at 57 and
+#: 61 minutes against its 60, and the gate then took a further 25 and 30 --
+#: so a card saying "1h" described 82 and 91 minutes of waiting.
+#:
+#: Expressed as a share of the research window because that is what it
+#: scales with: the gate heals the channels the run collected.
+_GATE_SHARE_OF_RESEARCH = 0.45
+
 #: Channel counts are set to this fraction of what the window theoretically
 #: allows. A tier that fits only if every stage hits its average is a tier
 #: that overruns whenever one does not.
@@ -146,6 +156,10 @@ class DepthTier:
         # and without it "30m" was a projection that ran 3-5 hours.
         self.governors["RUN_DEADLINE_SECONDS"] = int(self.hours * 3600)
         self.governors["MAX_CHANNELS_PER_RUN"] = self.max_channels
+        # Bounded and stated, rather than a fixed 30 minutes bolted onto
+        # whatever the run took. The client is told this time up front now,
+        # so the run has to keep to it.
+        self.governors["GATE_BUDGET_SECONDS"] = self.gate_budget_seconds
 
     @property
     def max_channels(self) -> int:
@@ -211,6 +225,36 @@ class DepthTier:
     @property
     def est_total_usd(self) -> float:
         return round(self.est_brightdata_usd + self.est_openrouter_usd, 2)
+
+    @property
+    def gate_budget_seconds(self) -> int:
+        """Wall clock the completeness gate may spend after the graph."""
+        return int(self.hours * 3600 * _GATE_SHARE_OF_RESEARCH)
+
+    @property
+    def total_duration_label(self) -> str:
+        """What the client actually waits: research plus the checks.
+
+        The headline on the card. Quoting the research window alone was
+        true of the graph and false of the wait, which is the only figure
+        a client can act on.
+        """
+        total = self.hours * 3600 + self.gate_budget_seconds
+        hours, rem = divmod(int(total), 3600)
+        minutes = rem // 60
+        if hours and minutes:
+            return f"~{hours}h {minutes}m"
+        if hours:
+            return f"~{hours}h"
+        return f"~{minutes}m"
+
+    @property
+    def gate_label(self) -> str:
+        minutes = self.gate_budget_seconds // 60
+        if minutes < 60:
+            return f"up to {minutes}m"
+        h, m = divmod(minutes, 60)
+        return f"up to {h}h {m}m" if m else f"up to {h}h"
 
     @property
     def duration_label(self) -> str:
@@ -367,6 +411,8 @@ def tiers_with_availability(
         row["est_channels"] = tier.est_channels
         row["est_videos"] = tier.est_videos
         row["max_channels"] = tier.max_channels
+        row["total_duration_label"] = tier.total_duration_label
+        row["gate_label"] = tier.gate_label
 
         blockers: list[str] = []
         warnings: list[str] = []

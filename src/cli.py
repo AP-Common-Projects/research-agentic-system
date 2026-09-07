@@ -90,7 +90,16 @@ async def _run(
             # It never blocks the export. A workbook that is 90% populated
             # is still worth handing over WITH its gaps named; refusing to
             # write one would leave the client with nothing at all.
-            gate = gate_before_export(export_run_id)
+            # The tier budgets this, and the client is quoted it on the
+            # card, so it is enforced rather than left at a fixed default
+            # that no stated duration accounted for.
+            import os as _os
+
+            _gate_budget = _os.environ.get("GATE_BUDGET_SECONDS")
+            gate = (
+                gate_before_export(export_run_id, budget_seconds=float(_gate_budget))
+                if _gate_budget else gate_before_export(export_run_id)
+            )
             print("\n" + gate.render())
 
             path = export_run(export_run_id, thread_id)

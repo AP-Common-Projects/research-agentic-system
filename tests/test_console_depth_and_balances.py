@@ -612,3 +612,68 @@ class TestTheLauncherUsesTheTopicAdjustedTier:
     def test_the_crime_tier_keeps_its_own_governors(self):
         crime = depth_mod.TIERS[0].for_topic("crime")
         assert crime.governors is not depth_mod.TIERS[0].governors
+
+
+class TestTheCardQuotesTheWholeWait:
+    """The card quoted the research window. The completeness gate runs after
+    the graph and was never counted, so "1h" described 82 and 91 minutes on
+    the two sample runs of 2026-09-07 that had the deadline governor
+    working -- the graph stopped on time at 57 and 61 minutes, and the gate
+    then took a further 25 and 30."""
+
+    def test_the_headline_is_research_plus_the_gate(self):
+        for tier in depth_mod.TIERS:
+            assert tier.total_duration_label.startswith("~")
+            total = tier.hours * 3600 + tier.gate_budget_seconds
+            assert total > tier.hours * 3600
+
+    def test_the_sample_tier_matches_what_two_runs_measured(self):
+        """82 and 91 minutes observed; the card must land in that region
+        rather than repeat the 60 that was wrong."""
+        sample = next(t for t in depth_mod.TIERS if t.id == "sample")
+        minutes = (sample.hours * 3600 + sample.gate_budget_seconds) / 60
+        assert 80 <= minutes <= 95, minutes
+
+    def test_the_gate_budget_is_handed_to_the_run(self):
+        """Quoting a time the gate is not held to would be the same bug in
+        the other direction."""
+        for tier in depth_mod.TIERS:
+            assert tier.governors["GATE_BUDGET_SECONDS"] == tier.gate_budget_seconds
+
+    def test_the_cli_honours_it(self):
+        src = open("src/cli.py", encoding="utf-8").read()
+        assert "GATE_BUDGET_SECONDS" in src
+        assert "budget_seconds=float(_gate_budget)" in src
+
+    def test_the_research_window_is_still_the_deadline(self):
+        """The graph's governor does not move; only what the client is told
+        about the total does."""
+        for tier in depth_mod.TIERS:
+            assert tier.governors["RUN_DEADLINE_SECONDS"] == int(tier.hours * 3600)
+
+    def test_both_halves_are_shown_so_the_number_is_explainable(self):
+        for tier in depth_mod.TIERS:
+            assert tier.gate_label.startswith("up to ")
+        src = open("web/src/pages/NewRunPage.tsx", encoding="utf-8").read()
+        assert "tier.total_duration_label" in src
+        assert "tier.gate_label" in src
+
+
+class TestWorkbooksWithTheSameNameAreTellableApart:
+    def test_the_picker_stamps_only_the_ambiguous_ones(self):
+        """Three "Crime" tabs with nothing to choose between them; a unique
+        name should not gain a date nobody has to read."""
+        src = open("web/src/components/WorkbookPicker.tsx", encoding="utf-8").read()
+        code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("//"))
+        assert "ambiguous(w.title)" in code
+        assert "workbookStamp(w.modified_at)" in code
+
+    def test_a_screen_reader_gets_the_distinguishing_part_too(self):
+        src = open("web/src/components/WorkbookPicker.tsx", encoding="utf-8").read()
+        assert "aria-label=" in src and "exported ${stamp}" in src
+
+    def test_the_stamp_carries_a_date_and_a_time(self):
+        """Two runs of one topic on one day differ only by the hour."""
+        src = open("web/src/lib/format.ts", encoding="utf-8").read()
+        fn = src[src.index("export function workbookStamp"):]
+        assert "toLocaleDateString" in fn and "toLocaleTimeString" in fn

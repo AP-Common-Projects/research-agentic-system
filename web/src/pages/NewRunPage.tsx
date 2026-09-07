@@ -45,12 +45,24 @@ function DepthCard({
     >
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-medium text-ink">{tier.label}</span>
+        {/* The total, not the research window. Quoting the window alone
+            was true of the graph and false of the wait: measured 2026-09-07,
+            two "1h" sample runs took 82 and 91 minutes because the
+            completeness gate runs after the graph and was never counted. */}
         <span className="rounded bg-sunken px-1.5 py-0.5 text-xs tabular-nums text-ink-2">
-          {duration(tier.duration_label, tier.hours)}
+          {tier.total_duration_label ?? duration(tier.duration_label, tier.hours)}
         </span>
       </div>
 
       <p className="mt-1.5 text-xs leading-snug text-ink-2">{tier.tagline}</p>
+
+      {tier.gate_label && (
+        <p className="mt-1 text-[11px] leading-snug text-ink-3">
+          {duration(tier.duration_label, tier.hours)} researching, then{' '}
+          {tier.gate_label} checking and filling every column before the
+          workbook is written.
+        </p>
+      )}
 
       <dl className="mt-3 space-y-1 text-xs">
         <div className="flex justify-between gap-2">

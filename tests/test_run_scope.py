@@ -208,7 +208,12 @@ class TestSizeBucketDoesNotRequireVideos:
             "channels absent from by_channel need a size bucket path of "
             "their own; the video loop will never reach them"
         )
-        assert "channel_size_bucket(int(row[0]))" in src
+        assert "channel_size_bucket(subs)" in src
+        # And the floor flag alongside it. It defaults to FALSE, which is
+        # indistinguishable from "below the floor", so a channel this branch
+        # reached for its bucket alone was invisible to every floor-gated
+        # node -- a 5.5M-subscriber channel among them.
+        assert '"meets_subscriber_floor": meets' in src
 
     def test_it_is_reported_rather_than_silent(self):
         import inspect

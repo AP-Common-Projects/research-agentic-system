@@ -283,6 +283,19 @@ class HarnessConfig(BaseSettings):
     # cycles, not inside a node, so a long node in flight can overshoot it.
     run_deadline_seconds: int = 0
 
+    # Wall clock the completeness gate may spend after the graph finishes,
+    # 0 == the gate's own default.
+    #
+    # It runs after the deadline above by design -- filling what the run ran
+    # out of time for is the whole point of it -- so run_deadline_seconds
+    # cannot bound it, and nothing did. The cards quoted the research window
+    # alone while the client waited for both: two "1h" sample runs on
+    # 2026-09-07 took 82 and 91 minutes, the graph stopping on time at 57
+    # and 61 and the gate taking a further 25 and 30. The depth tier sets
+    # this from the same arithmetic that produces the quoted total, so the
+    # figure on the card is one the run is actually held to.
+    gate_budget_seconds: int = 0
+
     # Ceiling on how many channels one run carries into enrichment, 0 ==
     # uncapped (the default, and what a bare CLI run gets).
     #
