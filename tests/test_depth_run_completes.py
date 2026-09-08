@@ -140,37 +140,54 @@ class TestTheCapIsSpreadAcrossBranches:
     the workbook is built for", and delivered one sub-niche.
     """
 
-    def _room(self, cap, branches, already):
+    def _room(self, cap, branches, rounds_each, already):
         """The room the trim allows this round, as hydrate_metadata computes
-        it. Read from the source so the test cannot drift from the code."""
-        share = cap if branches <= 1 else max(1, cap // branches)
+        it. Mirrored here so the arithmetic can be exercised; the last test
+        in this class asserts the node still computes it the same way."""
+        rounds_total = max(1, branches * rounds_each)
+        share = -(-cap // rounds_total)
         return max(0, min(cap - already, share))
 
     def test_one_round_cannot_take_the_whole_cap(self):
-        assert self._room(cap=100, branches=4, already=0) == 25
+        assert self._room(cap=100, branches=4, rounds_each=4, already=0) == 7
 
-    def test_four_branches_together_fill_it(self):
-        got, already = [], 0
-        for _ in range(4):
-            room = self._room(100, 4, already)
-            got.append(room)
-            already += room
-        assert sum(got) == 100
-        assert got == [25, 25, 25, 25]
+    def test_a_single_branch_cannot_spend_the_whole_cap_either(self):
+        """Dividing by branches alone was not enough. A branch gets four
+        rounds, so at 25 a round the first one spent all 100 and the run
+        ended having visited only `root` -- observed live on
+        run-dd2dbdbc3080, four rounds of 25."""
+        already = 0
+        for _ in range(4):                      # one branch's whole allowance
+            already += self._room(100, 4, 4, already)
+        assert already < 100, "one branch must not consume the entire cap"
+        assert already == 28
+
+    def test_the_whole_run_can_still_fill_it(self):
+        """Rationing that cannot reach the cap would trade one failure for
+        another -- a Standard run delivering 40 channels of a promised 100."""
+        already = 0
+        for _ in range(16):                     # every round the tier budgets
+            already += self._room(100, 4, 4, already)
+        assert already == 100
+
+    def test_each_branch_gets_roughly_its_share(self):
+        per_branch = 4 * self._room(100, 4, 4, already=0)
+        assert 20 <= per_branch <= 35, per_branch
 
     def test_a_thin_branch_does_not_waste_the_capacity_it_left(self):
         """The share is only ever the smaller of itself and the room left,
-        so a branch that found three channels does not cost the run 22."""
-        already = 3           # a branch that only found three
-        assert self._room(100, 4, already) == 25
+        so a branch that found three channels does not cost the run the
+        rest of its allowance."""
+        assert self._room(100, 4, 4, already=3) == 7
 
-    def test_a_single_branch_tier_is_unchanged(self):
-        """Sample is one branch and worked; it must not start rationing."""
-        assert self._room(cap=21, branches=1, already=0) == 21
+    def test_a_single_round_tier_is_unchanged(self):
+        """Sample is one branch of one round and worked; it must not start
+        rationing against itself."""
+        assert self._room(cap=21, branches=1, rounds_each=1, already=0) == 21
 
     def test_it_never_exceeds_the_cap(self):
-        assert self._room(cap=100, branches=4, already=90) == 10
-        assert self._room(cap=100, branches=4, already=100) == 0
+        assert self._room(cap=100, branches=4, rounds_each=4, already=96) == 4
+        assert self._room(cap=100, branches=4, rounds_each=4, already=100) == 0
 
     def test_the_node_computes_it_the_same_way(self):
         import sys
@@ -180,13 +197,15 @@ class TestTheCapIsSpreadAcrossBranches:
         src = open(
             sys.modules["src.tools.hydrate_metadata"].__file__, encoding="utf-8"
         ).read()
-        assert "share = cap if branches <= 1 else max(1, cap // branches)" in src
+        assert "rounds_total = max(1, branches * rounds_each)" in src
+        assert "share = -(-cap // rounds_total)" in src
         assert "room = max(0, min(cap - len(hydrated), share))" in src
 
-    def test_max_branches_is_a_real_config_field(self):
+    def test_both_governors_it_divides_by_are_real_config_fields(self):
         from src.config import HarnessConfig
 
         assert "max_branches" in HarnessConfig.model_fields
+        assert "max_rounds_per_branch" in HarnessConfig.model_fields
 
 
 class TestTheProgressBarTracksRoundsNotPhases:
@@ -252,3 +271,45 @@ class TestTheProgressBarTracksRoundsNotPhases:
     def test_the_page_passes_it_through(self):
         src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
         assert "computeProgress(entries, run.status, run.rounds_total)" in src
+
+
+class TestTheConsoleNamesTheCeilingThatStopped:
+    """Every run-level ceiling exits through the same next_action, which is
+    called "budget_exhausted" -- the name of the graph edge, not a statement
+    about money. The activity row rendered that raw, beside spent_usd.
+
+    A Standard run that stopped because it had hydrated its hundredth
+    channel read "budget_exhausted · spent usd: 1.1617" against a $6
+    budget, which says the opposite of what happened. The log always
+    carried `governor`; the row simply never showed it.
+    """
+
+    def test_the_row_reads_the_governor(self):
+        src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
+        assert "GOVERNOR_REASON" in src
+        assert "input.governor" in src
+
+    def test_every_run_level_ceiling_has_a_phrase(self):
+        """A governor with no entry falls back to naming itself, but the
+        ones the tiers actually enforce should read as English."""
+        import re
+
+        src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
+        block = src[src.index("const GOVERNOR_REASON"):src.index("function summarise")]
+        named = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
+
+        sat = open("src/tools/saturation.py", encoding="utf-8").read()
+        enforced = set(re.findall(r'_budget_exhausted\(\s*\n?\s*state,\s*start,\s*"([a-z_]+)"', sat))
+        assert enforced, "could not find the ceilings saturation enforces"
+        assert enforced <= named, f"no phrase for: {sorted(enforced - named)}"
+
+    def test_the_channel_cap_does_not_read_as_a_money_verdict(self):
+        src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
+        block = src[src.index("const GOVERNOR_REASON"):src.index("function summarise")]
+        assert "max_channels_per_run: 'reached its channel limit'" in block
+
+    def test_it_says_the_research_finished_rather_than_failed(self):
+        """Hitting a ceiling is the run completing its remit, not an error,
+        and the row should not read like one."""
+        src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
+        assert "research complete —" in src

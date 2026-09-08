@@ -107,7 +107,36 @@ const INTERESTING_KEYS = new Set([
   'selected_niche', 'niche', 'node_id', 'rounds', 'spent_usd',
 ]);
 
+/** Which run-level ceiling ended the research, in the client's words.
+ *
+ *  The graph calls every one of them "budget_exhausted" -- it is the name
+ *  of the next_action, not a statement about money -- and the row rendered
+ *  that raw, next to spent_usd. A Standard run that stopped because it had
+ *  hydrated its hundredth channel therefore read "budget_exhausted · spent
+ *  usd: 1.1617" against a $6 budget, which says the opposite of what
+ *  happened. The `governor` field always said which ceiling it was; the
+ *  summary just never showed it. */
+const GOVERNOR_REASON: Record<string, string> = {
+  max_channels_per_run: 'reached its channel limit',
+  run_deadline_seconds: 'reached its time limit',
+  budget_limit_usd: 'reached its spending limit',
+  brightdata_record_budget: 'used its discovery allowance',
+  youtube_quota_budget_per_run: 'used its YouTube quota',
+};
+
 function summarise(input: Record<string, unknown>): string {
+  // Named before anything else, so the reason leads rather than competing
+  // with the running spend beside it.
+  if (input?.decision === 'budget_exhausted') {
+    const governor = String(input.governor ?? '');
+    const reason = GOVERNOR_REASON[governor] ?? `stopped on ${governor || 'a limit'}`;
+    const spent = input.spent;
+    const ceiling = input.ceiling;
+    const scale =
+      spent !== undefined && ceiling !== undefined ? ` (${spent} of ${ceiling})` : '';
+    return `research complete — ${reason}${scale}`;
+  }
+
   const parts: string[] = [];
   for (const [k, v] of Object.entries(input ?? {})) {
     if (!INTERESTING_KEYS.has(k)) continue;

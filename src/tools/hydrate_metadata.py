@@ -273,13 +273,28 @@ def hydrate_metadata(state: dict) -> dict:
         # promises "enough channels in each sub-niche for the comparisons
         # the workbook is built for", and delivered one sub-niche.
         #
-        # A share per round rather than a per-branch ledger: rounds already
-        # alternate between branches, so this spreads coverage without a
-        # second place to track which branch has spent what. Capacity a thin
-        # branch leaves unused stays available, because the share is only
-        # ever the smaller of it and the room actually left.
+        # Divided by the run's TOTAL rounds, not by its branches.
+        #
+        # Dividing by branches alone was not enough, and a live Standard run
+        # showed why: a branch gets max_rounds_per_branch rounds, so at
+        # cap/branches per round the first branch spent 4 x 25 = the whole
+        # hundred and the run ended, on the cap breaker, having visited only
+        # `root`. Fewer wasted rounds than before, and still one sub-niche.
+        #
+        # rounds_total is branches x rounds each, so the share is what one
+        # round may take for the cap to last the whole run: 7 at Standard,
+        # 4 at Deep, and the entire cap at Sample, which is a single round.
+        # Each branch then ends up with roughly cap/branches across its own
+        # rounds, which is the coverage the tier's description promises.
+        #
+        # Capacity a thin branch leaves unused stays available, because the
+        # share is only ever the smaller of it and the room actually left.
         branches = int(getattr(_harness, "max_branches", 1) or 1)
-        share = cap if branches <= 1 else max(1, cap // branches)
+        rounds_each = int(getattr(_harness, "max_rounds_per_branch", 1) or 1)
+        rounds_total = max(1, branches * rounds_each)
+        # Rounded up, so the cap can still be filled if every round takes
+        # its full share rather than leaving a remainder unspent.
+        share = -(-cap // rounds_total)
         room = max(0, min(cap - len(hydrated), share))
         if len(to_hydrate) > room:
             trimmed = len(to_hydrate) - room
