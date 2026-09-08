@@ -94,15 +94,21 @@ class TestTheWindowCanActuallyReachTheBand:
             budget = tier.hours * 3600 * depth_mod._SAFETY_MARGIN
             assert work <= budget, f"{tier.id}: {work:.0f}s in {budget:.0f}s"
 
-    def test_discovery_is_paid_for_at_the_pessimistic_yield_too(self):
-        """Records are what buys candidates. A budget sized on the good
-        yield would stop discovery before the band could be reached."""
+    def test_discovery_can_pay_for_the_whole_hydration_ceiling(self):
+        """Records buy candidates, and run-e4e794436210 stopped on this
+        ceiling at 4,111 of 4,302 -- four hours into a 7.75-hour window,
+        having spent $6.93 of $18.78. A record budget that binds before the
+        delivery target makes the band unreachable whatever else is right."""
         for tier in depth_mod.TIERS:
-            enriched = tier.min_channels / depth_mod._SCOPE_YIELD_PESSIMISTIC
-            needed_channels = enriched / depth_mod._FLOOR_YIELD_PESSIMISTIC
-            rounds = needed_channels / depth_mod._CHANNELS_PER_DISCOVERY_ROUND
-            budget = tier.governors["BRIGHTDATA_RECORD_BUDGET"]
-            assert budget >= rounds * depth_mod._RECORDS_PER_DISCOVERY_ROUND, tier.id
+            needed = (tier.hydration_ceiling
+                      * depth_mod._RECORDS_PER_DISCOVERED_CHANNEL)
+            assert tier.governors["BRIGHTDATA_RECORD_BUDGET"] >= needed, tier.id
+
+    def test_the_record_budget_is_above_what_a_standard_run_measured(self):
+        """4,111 records bought 2,186 discovered channels on the run that
+        ran out. Standard now has to be able to buy its whole ceiling."""
+        standard = depth_mod.TIERS_BY_ID["standard"]
+        assert standard.governors["BRIGHTDATA_RECORD_BUDGET"] > 4302
 
     def test_the_quota_budget_covers_the_hydration_ceiling(self):
         for tier in depth_mod.TIERS:

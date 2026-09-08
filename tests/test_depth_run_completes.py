@@ -157,66 +157,80 @@ class TestTheRecursionLimitFitsTheTierItGoverns:
         assert "graph_recursion_limit" in HarnessConfig.model_fields
 
 
-class TestTheCapIsSpreadAcrossBranches:
-    """The cap is what a tier can afford to enrich; the branches are what it
-    is supposed to cover. Taking whatever the first discovery round found
-    meant those two never met.
+class TestTheCeilingIsSpreadAcrossOneBranchsRounds:
+    """Rationed across the rounds a branch actually gets, not across every
+    round the tier could theoretically run.
+
+    Both failures this share has to sit between are real and observed.
 
     run-bc5226fb2e06 filled all 100 slots on its FIRST hydration and then
     visited four more branches -- online-learning, test-prep, k12-tutorials,
-    trivia-entertainment -- none of which could contribute a single channel.
-    Standard promises "enough channels in each sub-niche for the comparisons
-    the workbook is built for", and delivered one sub-niche.
+    trivia-entertainment -- none of which could contribute a channel. So a
+    round must not be able to take everything.
+
+    run-e4e794436210 divided a ceiling of 2,688 by sixteen rounds, took 168
+    a round, and never left `root`: a branch gets max_rounds_per_branch
+    rounds before the tree splits, and the record budget ran out after four
+    of them. It stopped with 1,512 channels discovered, paid for and never
+    hydrated, and shipped 167 rows against a band of 200-250. So the
+    rationing must be reachable within one branch's rounds.
     """
 
-    def _room(self, cap, branches, rounds_each, already):
+    def _room(self, cap, rounds_each, already):
         """The room the trim allows this round, as hydrate_metadata computes
         it. Mirrored here so the arithmetic can be exercised; the last test
         in this class asserts the node still computes it the same way."""
-        rounds_total = max(1, branches * rounds_each)
-        share = -(-cap // rounds_total)
+        share = -(-cap // max(1, rounds_each))
         return max(0, min(cap - already, share))
 
-    def test_one_round_cannot_take_the_whole_cap(self):
-        assert self._room(cap=100, branches=4, rounds_each=4, already=0) == 7
+    def test_one_round_cannot_take_the_whole_ceiling(self):
+        """The bug the share exists for. A quarter at Standard."""
+        room = self._room(cap=2688, rounds_each=4, already=0)
+        assert room == 672
+        assert room < 2688
 
-    def test_a_single_branch_cannot_spend_the_whole_cap_either(self):
-        """Dividing by branches alone was not enough. A branch gets four
-        rounds, so at 25 a round the first one spent all 100 and the run
-        ended having visited only `root` -- observed live on
-        run-dd2dbdbc3080, four rounds of 25."""
+    def test_one_branch_can_reach_the_ceiling_within_its_own_rounds(self):
+        """The bug the old denominator caused: a share sized for sixteen
+        rounds on a run that only ever gets four."""
         already = 0
-        for _ in range(4):                      # one branch's whole allowance
-            already += self._room(100, 4, 4, already)
-        assert already < 100, "one branch must not consume the entire cap"
-        assert already == 28
+        for _ in range(4):
+            already += self._room(2688, 4, already)
+        assert already == 2688
 
-    def test_the_whole_run_can_still_fill_it(self):
-        """Rationing that cannot reach the cap would trade one failure for
-        another -- a Standard run delivering 40 channels of a promised 100."""
-        already = 0
-        for _ in range(16):                     # every round the tier budgets
-            already += self._room(100, 4, 4, already)
-        assert already == 100
+    def test_the_education_run_would_have_reached_its_band(self):
+        """Measured availability, round by round, from run-e4e794436210 --
+        and the 25% of hydrated channels that run actually delivered."""
+        available, already, rows = [697, 445, 509, 533], 0, 0
+        backlog = 0
+        for new in available:
+            backlog += new
+            take = min(self._room(2688, 4, already), backlog)
+            backlog -= take
+            already += take
+            rows = int(already * 0.25)
+            if rows >= 250:
+                break
+        assert rows >= 250, rows
+        assert already <= 2688
 
-    def test_each_branch_gets_roughly_its_share(self):
-        per_branch = 4 * self._room(100, 4, 4, already=0)
-        assert 20 <= per_branch <= 35, per_branch
+    def test_the_old_denominator_could_not(self):
+        """The same four rounds at ceiling/(branches x rounds) -- what the
+        run actually did, and it shipped 167."""
+        already = sum(-(-2688 // 16) for _ in range(4))
+        assert int(already * 0.25) < 200
 
-    def test_a_thin_branch_does_not_waste_the_capacity_it_left(self):
-        """The share is only ever the smaller of itself and the room left,
-        so a branch that found three channels does not cost the run the
-        rest of its allowance."""
-        assert self._room(100, 4, 4, already=3) == 7
+    def test_a_thin_round_does_not_waste_the_capacity_it_left(self):
+        """The share is only ever the smaller of itself and the room left."""
+        assert self._room(2688, 4, already=3) == 672
 
     def test_a_single_round_tier_is_unchanged(self):
         """Sample is one branch of one round and worked; it must not start
         rationing against itself."""
-        assert self._room(cap=21, branches=1, rounds_each=1, already=0) == 21
+        assert self._room(cap=538, rounds_each=1, already=0) == 538
 
-    def test_it_never_exceeds_the_cap(self):
-        assert self._room(cap=100, branches=4, rounds_each=4, already=96) == 4
-        assert self._room(cap=100, branches=4, rounds_each=4, already=100) == 0
+    def test_it_never_exceeds_the_ceiling(self):
+        assert self._room(cap=2688, rounds_each=4, already=2680) == 8
+        assert self._room(cap=2688, rounds_each=4, already=2688) == 0
 
     def test_the_node_computes_it_the_same_way(self):
         import sys
@@ -226,8 +240,8 @@ class TestTheCapIsSpreadAcrossBranches:
         src = open(
             sys.modules["src.tools.hydrate_metadata"].__file__, encoding="utf-8"
         ).read()
-        assert "rounds_total = max(1, branches * rounds_each)" in src
-        assert "share = -(-cap // rounds_total)" in src
+        assert 'rounds_each = max(1, int(getattr(_harness, "max_rounds_per_branch", 1) or 1))' in src
+        assert "share = -(-cap // rounds_each)" in src
         assert "room = max(0, min(cap - len(hydrated), share))" in src
 
     def test_both_governors_it_divides_by_are_real_config_fields(self):

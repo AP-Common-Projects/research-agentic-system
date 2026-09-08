@@ -292,40 +292,43 @@ def hydrate_metadata(state: dict) -> dict:
             ],
         }
     if cap > 0:
-        # Spread the cap across branches instead of letting the first round
-        # spend all of it.
+        # Spread the ceiling across the rounds ONE BRANCH gets -- not
+        # across every round the tier could theoretically run.
         #
-        # The cap is what a tier can afford to enrich; the branches are what
-        # it is supposed to cover. Taking whatever the first discovery round
-        # found meant those two never met: a Standard education run filled
-        # all 100 slots on its FIRST hydration and then visited four more
-        # branches -- online-learning, test-prep, k12-tutorials,
-        # trivia-entertainment -- that could contribute nothing. Standard
-        # promises "enough channels in each sub-niche for the comparisons
-        # the workbook is built for", and delivered one sub-niche.
+        # The ceiling is what a tier may hydrate; the rounds are how many
+        # chances it has to do so. Dividing by branches x rounds assumed
+        # the run would visit all four branches, and run-e4e794436210, a
+        # Standard on "education", showed what that costs when it does not:
         #
-        # Divided by the run's TOTAL rounds, not by its branches.
+        #     round 1  hydrate 168 of 697 discovered   780 records
+        #     round 2  hydrate 168 of 445 more        1816
+        #     round 3  hydrate 167 of 509 more        2943
+        #     round 4  hydrate 167 of 533 more        4111  <- records out
         #
-        # Dividing by branches alone was not enough, and a live Standard run
-        # showed why: a branch gets max_rounds_per_branch rounds, so at
-        # cap/branches per round the first branch spent 4 x 25 = the whole
-        # hundred and the run ended, on the cap breaker, having visited only
-        # `root`. Fewer wasted rounds than before, and still one sub-niche.
+        # Every round was `root`. A branch gets max_rounds_per_branch
+        # rounds before the tree splits, so the run spent its whole record
+        # budget on four rounds of one branch while the share was rationing
+        # the ceiling as if sixteen were coming. It stopped with 1,512
+        # channels discovered, paid for, and never hydrated -- and shipped
+        # 167 rows against a band of 200-250.
         #
-        # rounds_total is branches x rounds each, so the share is what one
-        # round may take for the cap to last the whole run: 7 at Standard,
-        # 4 at Deep, and the entire cap at Sample, which is a single round.
-        # Each branch then ends up with roughly cap/branches across its own
-        # rounds, which is the coverage the tier's description promises.
+        # Records are the scarce thing; hydration is 3.3 seconds and 3.3
+        # quota units a channel. Rationing the cheap stage to protect a
+        # coverage the run never reaches is the wrong trade in both
+        # directions at once.
         #
-        # Capacity a thin branch leaves unused stays available, because the
-        # share is only ever the smaller of it and the room actually left.
-        branches = int(getattr(_harness, "max_branches", 1) or 1)
-        rounds_each = int(getattr(_harness, "max_rounds_per_branch", 1) or 1)
-        rounds_total = max(1, branches * rounds_each)
-        # Rounded up, so the cap can still be filled if every round takes
-        # its full share rather than leaving a remainder unspent.
-        share = -(-cap // rounds_total)
+        # Divided by max_rounds_per_branch, the same run reaches 250 rows
+        # on its second round for 1,816 records. The original bug this
+        # share exists to prevent -- one round swallowing the whole cap --
+        # still cannot happen: the share is a quarter of the ceiling at
+        # Standard and an eighth at Deep. It is the entire ceiling at
+        # Sample, which runs exactly one round and for which rationing was
+        # never anything but a throttle.
+        #
+        rounds_each = max(1, int(getattr(_harness, "max_rounds_per_branch", 1) or 1))
+        # Rounded up, so the ceiling can still be filled if every round
+        # takes its full share rather than leaving a remainder unspent.
+        share = -(-cap // rounds_each)
         room = max(0, min(cap - len(hydrated), share))
         if len(to_hydrate) > room:
             trimmed = len(to_hydrate) - room

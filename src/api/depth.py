@@ -107,10 +107,26 @@ _SECONDS_PER_HYDRATED_CHANNEL = 3.3
 #: poll one set of Bright Data snapshots together, so their latency is
 #: shared rather than additive.
 _SECONDS_PER_DISCOVERY_ROUND = 852.0
-_CHANNELS_PER_DISCOVERY_ROUND = 593
-_RECORDS_PER_DISCOVERY_ROUND = 717
+_CHANNELS_PER_DISCOVERY_ROUND = 550
 #: keyword_search + graph_walk LLM spend on that round: $0.2985 + $0.0855.
 _USD_PER_DISCOVERY_ROUND = 0.39
+
+#: Bright Data records one DISCOVERED channel costs.
+#:
+#: Budgeted per channel rather than per round, because a round's record
+#: cost is not a constant across tiers -- it scales with
+#: KEYWORD_QUERIES_PER_ROUND and GRAPH_WALK_FRONTIER_PER_ROUND, which is
+#: exactly what a per-round figure hides. Measured on run-dd2dbdbc3080
+#: (4 queries, frontier 5) a round cost 717 records for 593 channels, 1.21
+#: each. Measured on run-e4e794436210 (12 queries, frontier 20) four rounds
+#: cost 780, 1,036, 1,127 and 1,168 records -- 4,111 for 2,186 channels,
+#: 1.88 each.
+#:
+#: Two here, above both. The Standard run stopped on this ceiling with
+#: three and a half hours and twelve dollars unspent, which is the failure
+#: that matters: a record budget that binds before the delivery target
+#: makes the band unreachable no matter what else is right.
+_RECORDS_PER_DISCOVERED_CHANNEL = 2.0
 
 #: YouTube quota one hydrated channel costs: 333 units for 100 channels.
 #: Five keys are configured, each with its own 10,000-unit daily
@@ -327,7 +343,7 @@ class DepthTier:
         # And the ceiling on what may be spent reaching it. These were one
         # number; they are two populations.
         self.governors["MAX_HYDRATED_CHANNELS_PER_RUN"] = self.hydration_ceiling
-        self.governors["BRIGHTDATA_RECORD_BUDGET"] = rounds * _RECORDS_PER_DISCOVERY_ROUND
+        self.governors["BRIGHTDATA_RECORD_BUDGET"] = self.record_budget
         self.governors["YOUTUBE_QUOTA_BUDGET_PER_RUN"] = self.quota_budget
         # Bounded and stated, rather than a fixed 30 minutes bolted onto
         # whatever the run took. The client is told this time up front now.
@@ -390,17 +406,24 @@ class DepthTier:
         return hydration_ceiling(self.target_channels)
 
     @property
-    def record_rounds(self) -> int:
-        """Discovery rounds the record budget pays for.
+    def record_budget(self) -> int:
+        """Bright Data records this tier may spend.
 
-        Sized on the PESSIMISTIC yield and the band's minimum, plus one:
-        the run stops discovering as soon as it holds the target, so extra
-        rounds here cost nothing on a good topic and are the difference
-        between reaching the band and missing it on a poor one.
+        Enough to discover every channel the hydration ceiling allows.
+        Anything less and the run stops for want of candidates while its
+        clock and its wallet are still open -- which is what happened to
+        run-e4e794436210 at 4,111 records of 4,302, four hours into a
+        7.75-hour window, having spent $6.93 of $18.78.
+
+        A ceiling, not a plan: with the hydration share fixed, that same
+        run reaches 250 rows on 1,816 records.
         """
-        enriched = math.ceil(self.min_channels / _SCOPE_YIELD_PESSIMISTIC)
-        hydrated = math.ceil(enriched / _FLOOR_YIELD_PESSIMISTIC)
-        return _discovery_rounds(max(hydrated, self.hydration_ceiling)) + 1
+        return int(math.ceil(self.hydration_ceiling * _RECORDS_PER_DISCOVERED_CHANNEL))
+
+    @property
+    def record_rounds(self) -> int:
+        """Discovery rounds that budget pays for, for the cost model."""
+        return max(1, _discovery_rounds(self.hydration_ceiling))
 
     @property
     def quota_budget(self) -> int:
