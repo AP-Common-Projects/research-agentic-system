@@ -1,6 +1,6 @@
 """extract_success_failure_factors — structured factor extraction for classified channels.
 
-Gated by meets_subscriber_floor. Reads a channel's own computed signals,
+Gated by the deliverable floor. Reads a channel's own computed signals,
 expressed as percentile rank against every other floor-qualifying channel in
 the store, and the taxonomy IDs. Extracts which success/failure factors
 apply and how strong the evidence is.
@@ -33,6 +33,7 @@ import json
 import time
 from typing import Any
 
+from src.llm.concurrent import map_llm
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
@@ -40,6 +41,7 @@ from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You are a YouTube channel analyst. Given a channel's structured signals and a list of available factor codes, identify which factors apply and how strong the evidence is.
 
@@ -175,7 +177,7 @@ def extract_success_failure_factors(state: dict) -> dict:
         # would rank every one of them at the 50th percentile.
         cur.execute(
             "SELECT engagement_score, evergreen_score, upload_consistency_score, "
-            "uploads_per_week_avg FROM channels WHERE meets_subscriber_floor = TRUE"
+            "uploads_per_week_avg FROM channels WHERE " + eligible_sql(None)
         )
         cohort_rows = cur.fetchall()
         cur.close()
@@ -208,7 +210,7 @@ def extract_success_failure_factors(state: dict) -> dict:
             # regardless of what it found.
             cur.execute(
                 "SELECT c.channel_id FROM channels c "
-                "WHERE c.meets_subscriber_floor = TRUE AND c.classifier_model IS NOT NULL "
+                "WHERE " + eligible_sql() + " AND c.classifier_model IS NOT NULL "
                 "AND c.success_failure_factors_checked_at IS NULL "
                 + scope_sql +
                 "ORDER BY c.channel_id LIMIT 50",
@@ -239,6 +241,14 @@ def extract_success_failure_factors(state: dict) -> dict:
 
     while eligible:
         total_eligible_seen += len(eligible)
+
+        # Phase 1 -- every prompt is built first, from the database only.
+        #
+        # Splitting the loop is what lets phase 2 overlap the calls. This
+        # node measured 51 seconds a channel on run-dd2dbdbc3080, all of
+        # it socket wait for $0.0027 of tokens; at 250 channels that one
+        # stage is 3h30m, which no Standard window can hold.
+        prepared: list[tuple[str, dict[str, float], str]] = []
         for ch_id in eligible:
             # The write-up chain used to run to completion however long it
             # took; a one-hour crime run spent 1h45m in it. Checked per
@@ -299,33 +309,66 @@ def extract_success_failure_factors(state: dict) -> dict:
                     "available_success_codes": [c["code"] for c in success_codes],
                     "available_failure_codes": [c["code"] for c in failure_codes],
                 }, indent=2)
-
+                prepared.append((ch_id, percentiles, prompt))
+            except Exception as exc:
+                # A failed statement anywhere above leaves the connection's
+                # transaction aborted, poisoning every remaining channel in
+                # this loop with InFailedSqlTransaction unless rolled back.
+                conn.rollback()
+                errors.append(ErrorRecord(
+                    node_name="extract_success_failure_factors",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    recoverable=True,
+                ).model_dump())
+                # Marked anyway. A channel whose signals are simply
+                # malformed (a NULL where a float is expected, say) fails
+                # the same way on every future attempt too -- leaving it
+                # eligible would recreate exactly the loop this marker
+                # exists to prevent, just via a different failure mode. The
+                # `continue` below never reaches the mark above, so it is
+                # repeated here explicitly.
                 try:
-                    parsed, result = complete_json(
-                        complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
-                    )
-                    usage = result.get("usage", {})
-                    total_cost += result.get(
-                        "cost_usd",
-                        estimate_cost("mid", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
-                    )
+                    _mark_checked(conn, ch_id)
+                except Exception:
+                    pass
+                continue
 
-                except Exception as exc:
-                    # NOT marked checked: this is the LLM call itself
-                    # failing (network, malformed response, rate limit),
-                    # which is transient by nature and worth a later pass
-                    # retrying. Contrast with the outer except below, where
-                    # something about the channel's OWN data broke a local
-                    # step -- that fails the same way every time and marking
-                    # it is what stops the loop.
-                    errors.append(ErrorRecord(
-                        node_name="extract_success_failure_factors",
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                        recoverable=True,
-                    ).model_dump())
-                    continue
+        # Phase 2 -- the calls themselves, several in flight.
+        answers = map_llm(
+            prepared,
+            lambda item: complete_json(
+                complete_tier, "mid", item[2], SYSTEM_PROMPT, expect="object"
+            ),
+            should_stop=lambda: run_deadline.writeup_passed(state),
+            label="extract_success_failure_factors",
+        )
 
+        # Phase 3 -- the writes, serial and in input order, on the one
+        # connection this node owns.
+        for (ch_id, percentiles, _prompt), got, call_error in answers:
+            if call_error is not None:
+                # NOT marked checked: this is the LLM call itself
+                # failing (network, malformed response, rate limit),
+                # which is transient by nature and worth a later pass
+                # retrying. Contrast with the except below, where
+                # something about the channel's OWN data broke a local
+                # step -- that fails the same way every time and marking
+                # it is what stops the loop.
+                errors.append(ErrorRecord(
+                    node_name="extract_success_failure_factors",
+                    error_type=type(call_error).__name__,
+                    message=str(call_error),
+                    recoverable=True,
+                ).model_dump())
+                continue
+            parsed, result = got
+            usage = result.get("usage", {})
+            total_cost += result.get(
+                "cost_usd",
+                estimate_cost("mid", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
+            )
+            try:
                 # Write factor rows with evidence grading
                 classifier_model = "deepseek-v4-pro"
                 factor_count = 0
@@ -405,7 +448,6 @@ def extract_success_failure_factors(state: dict) -> dict:
 
                 extracted += 1
                 _mark_checked(conn, ch_id)
-
             except Exception as exc:
                 # A failed statement anywhere above leaves the connection's
                 # transaction aborted, poisoning every remaining channel in

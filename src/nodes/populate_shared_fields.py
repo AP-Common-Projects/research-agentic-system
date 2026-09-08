@@ -5,7 +5,7 @@ commercial_intent on channels/videos/niche_taxonomy. All fields were added
 to the schema in Phase 1; this node populates them using deterministic
 signals + LLM classification where text-based inference is needed.
 
-Gated by meets_subscriber_floor for LLM calls; cheap signals (sponsor
+Gated by the deliverable floor for LLM calls; cheap signals (sponsor
 regex matching, search_browse estimate from evergreen/news signals)
 applied to every channel.
 """
@@ -17,6 +17,7 @@ import re
 import time
 from typing import Any
 
+from src.llm.concurrent import map_llm
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
@@ -24,6 +25,7 @@ from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You analyze a YouTube channel to determine creator authority and search-vs-browse intent.
 
@@ -183,13 +185,15 @@ def populate_shared_fields(state: dict) -> dict:
             # answer". A dedicated marker can.
             "SELECT channel_id, title, description, subscriber_count, engagement_score, is_likely_news, "
             "evergreen_score FROM channels WHERE creator_authority_checked_at IS NULL "
-            "AND (meets_subscriber_floor = TRUE OR subscriber_count >= 10000) "
+            "AND " + eligible_sql(None) + " "
             + scope_sql + "LIMIT 50",
             scope_params,
         )
         eligible = cur.fetchall()
         cur.close()
 
+        # Phase 1 -- the prompts, which need no LLM and no further reads.
+        prepared: list[tuple[str, str, str]] = []
         for ch_id, title, desc, subs, eng, news, eg in eligible:
             # The write-up chain used to run to completion however long it
             # took; a one-hour crime run spent 1h45m in it. Checked per
@@ -197,50 +201,56 @@ def populate_shared_fields(state: dict) -> dict:
             # Healing bypasses this -- see deadline.writeup_passed.
             if run_deadline.writeup_passed(state):
                 break
+            # Search/browse estimate from deterministic signals first
+            sb_est = "mixed"
+            if news:
+                sb_est = "news_driven"
+            elif eng and float(eng or 0) > 60:
+                sb_est = "browse_driven"
+            elif eg and float(eg or 0) > 70:
+                sb_est = "search_driven"
+
+            # engagement_score is a NUMERIC column, so psycopg hands
+            # back Decimal, which json.dumps cannot serialize. Without
+            # the cast every channel raised TypeError and was skipped,
+            # which is why creator_authority read 'unknown' across the
+            # whole table. Same bug already fixed in classify_channel.py
+            # and extract_success_failure_factors.py.
+            prepared.append((ch_id, sb_est, json.dumps({
+                "channel_title": title or "",
+                "description": (desc or "")[:500],
+                "subscriber_count": int(subs or 0),
+                "engagement_score": float(eng or 0),
+                "is_likely_news": bool(news),
+            })))
+
+        # Phase 2 -- the calls, several in flight.
+        answers = map_llm(
+            prepared,
+            lambda item: complete_json(
+                complete_tier, "mid", item[2], SYSTEM_PROMPT, expect="object"
+            ),
+            should_stop=lambda: run_deadline.writeup_passed(state),
+            label="populate_shared_fields",
+        )
+
+        # Phase 3 -- the writes, serial and in input order.
+        for (ch_id, sb_est, _prompt), got, call_error in answers:
+            # A network fault or a malformed response is transient -- not a
+            # property of the channel -- so it must NOT mark the channel
+            # checked; a later pass should retry. Kept separate from the
+            # persist failures below, which ARE a property of the channel's
+            # own data and would fail identically on every retry.
+            if call_error is not None:
+                errors.append(ErrorRecord(
+                    node_name="populate_shared_fields",
+                    error_type=type(call_error).__name__,
+                    message=str(call_error),
+                    recoverable=True,
+                ).model_dump())
+                continue
+            parsed, result = got
             try:
-                # Search/browse estimate from deterministic signals first
-                sb_est = "mixed"
-                if news:
-                    sb_est = "news_driven"
-                elif eng and float(eng or 0) > 60:
-                    sb_est = "browse_driven"
-                elif eg and float(eg or 0) > 70:
-                    sb_est = "search_driven"
-
-                # engagement_score is a NUMERIC column, so psycopg hands
-                # back Decimal, which json.dumps cannot serialize. Without
-                # the cast every channel raised TypeError and was skipped,
-                # which is why creator_authority read 'unknown' across the
-                # whole table. Same bug already fixed in classify_channel.py
-                # and extract_success_failure_factors.py.
-                prompt = json.dumps({
-                    "channel_title": title or "",
-                    "description": (desc or "")[:500],
-                    "subscriber_count": int(subs or 0),
-                    "engagement_score": float(eng or 0),
-                    "is_likely_news": bool(news),
-                })
-
-                # A network fault or a malformed response here is
-                # transient -- not a property of the channel -- so it must
-                # NOT mark the channel checked; a later pass should retry.
-                # This is its own try/except, split from the one below, so
-                # a persist failure (which IS a property of the channel's
-                # own data and would fail identically on every retry) can
-                # be marked without also marking a plain network blip.
-                try:
-                    parsed, result = complete_json(
-                        complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
-                    )
-                except Exception as exc:
-                    errors.append(ErrorRecord(
-                        node_name="populate_shared_fields",
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                        recoverable=True,
-                    ).model_dump())
-                    continue
-
                 ch_fields = {
                     "creator_authority": str(parsed.get("creator_authority", "unknown")),
                     "creator_authority_evidence": str(parsed.get("creator_authority_evidence", "")),

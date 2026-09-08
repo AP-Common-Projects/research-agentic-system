@@ -114,13 +114,29 @@ def check_saturation(state: dict) -> dict:
     # 1,251 quota units, until LangGraph's recursion limit ended the run with
     # no export at all. Exactly the shape the record ceiling comment above
     # describes: no node can contribute, and nothing calls it finished.
-    cap = int(cfg.max_channels_per_run or 0)
-    if cap > 0:
-        hydrated = len(state.get("hydrated_channel_ids") or ())
-        if hydrated >= cap:
+    #
+    # Two ceilings, because there are two populations. The target counts
+    # channels that clear the subscriber floor -- the ones the workbook can
+    # carry, and the number the depth card quotes. The hydration ceiling
+    # bounds what the run may spend reaching it. Measuring the target
+    # against hydrated channels is why a Standard run that had "reached its
+    # channel limit (100 of 100)" delivered a 17-row file.
+    from src.tools.deliverable import run_ceilings
+
+    target, ceiling = run_ceilings(cfg)
+    if target > 0:
+        qualified = len(state.get("qualified_channel_ids") or ())
+        if qualified >= target:
             return _budget_exhausted(
                 state, start, "max_channels_per_run",
-                spent=hydrated, ceiling=cap,
+                spent=qualified, ceiling=target,
+            )
+    if ceiling > 0:
+        hydrated = len(state.get("hydrated_channel_ids") or ())
+        if hydrated >= ceiling:
+            return _budget_exhausted(
+                state, start, "max_hydrated_channels_per_run",
+                spent=hydrated, ceiling=ceiling,
             )
 
     tree = state.get("tree", {})

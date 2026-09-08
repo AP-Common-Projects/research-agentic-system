@@ -111,7 +111,15 @@ class TestThresholdsReachTheRun:
         assert env["MAX_CHANNELS_PER_RUN"] == "200", "the override must beat the tier"
         assert env["SUBSCRIBER_FLOOR"] == "20000"
         # Untouched governors still come from the tier.
-        assert env["RUN_DEADLINE_SECONDS"] == "14400"
+        from src.api.depth import get_tier
+
+        standard = get_tier("standard")
+        assert env["RUN_DEADLINE_SECONDS"] == str(int(standard.hours * 3600))
+        # And the hydration ceiling travels with it: raising the delivery
+        # target alone would promise rows the run may not hydrate for.
+        assert env["MAX_HYDRATED_CHANNELS_PER_RUN"] == str(
+            standard.hydration_ceiling
+        )
 
     def test_an_invalid_threshold_stops_the_launch(self, tmp_path, monkeypatch):
         monkeypatch.setattr(runs_mod, "log_dir", lambda: tmp_path)

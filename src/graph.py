@@ -124,13 +124,26 @@ def _deadline_aware(fn, name: str):
 
 
 def _channel_cap() -> int:
-    """How many channels this run may carry into enrichment, 0 == uncapped."""
-    try:
-        from src.config import get_config
+    """How many channels discovery may find before it stops, 0 == uncapped.
 
-        return int(get_config().harness.max_channels_per_run or 0)
+    The HYDRATION ceiling, not the delivery target. Discovery was admitted
+    against max_channels_per_run, which is the number of channels the
+    workbook is meant to CARRY -- and roughly one discovered channel in
+    five clears the subscriber floor the workbook is scoped to. So a run
+    asked for 250 delivered rows stopped discovering at 250 found, and
+    could never have delivered more than about fifty.
+    """
+    return _ceilings()[1]
+
+
+def _ceilings() -> tuple[int, int]:
+    """(delivery target, hydration ceiling); 0s if config is unreadable."""
+    try:
+        from src.tools.deliverable import run_ceilings
+
+        return run_ceilings()
     except Exception:
-        return 0
+        return 0, 0
 
 
 def _guarded(fn, name: str):
@@ -157,10 +170,18 @@ def _guarded(fn, name: str):
             # Discovering past this point produces rows the pipeline cannot
             # describe: the automotive run found 273 and classified 50 at
             # most, so 95% of its classification columns shipped empty.
-            cap = _channel_cap()
+            #
+            # Stopping ALSO when the delivery target is already met, which
+            # is the point of the whole funnel: once the run holds the
+            # floor-passing channels it promised, more discovery is spend
+            # with nowhere to land.
+            target, ceiling = _ceilings()
             found = len(state.get("discovered_channel_ids", []) or [])
-            if cap and found >= cap:
+            qualified = len(state.get("qualified_channel_ids") or ())
+            if target and qualified >= target:
                 skip_reason = "max_channels_per_run"
+            elif ceiling and found >= ceiling:
+                skip_reason = "max_hydrated_channels_per_run"
 
         if skip_reason:
             return {

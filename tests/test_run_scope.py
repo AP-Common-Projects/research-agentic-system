@@ -293,7 +293,10 @@ class TestHydrationEnforcesTheChannelCap:
         import src.tools.hydrate_metadata  # noqa: F401
 
         src = open(sys.modules["src.tools.hydrate_metadata"].__file__).read()
-        assert "max_channels_per_run" in src
+        # The hydration ceiling, not the delivery target: this node's cost
+        # is per hydrated channel, and only about a fifth of them clear the
+        # subscriber floor the workbook is scoped to.
+        assert "run_ceilings" in src
         assert "trimmed_to_cap" in src, (
             "a trimmed run must say so in its log, not silently drop channels"
         )

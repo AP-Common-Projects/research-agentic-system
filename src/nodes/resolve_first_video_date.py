@@ -1,6 +1,6 @@
 """resolve_first_video_date — the channel's TRUE first-ever upload date.
 
-Gated by meets_subscriber_floor, same as classify_channel/
+Gated by the deliverable floor, same as classify_channel/
 score_thumbnail_signals — this is a real network cost (potentially many
 paginated API calls for a prolific channel) worth spending only on
 channels that already cleared the floor.
@@ -21,6 +21,7 @@ import time
 from src.tools.run_scope import scope_clause
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 
 def resolve_first_video_date(state: dict) -> dict:
@@ -52,7 +53,7 @@ def resolve_first_video_date(state: dict) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT channel_id FROM channels WHERE meets_subscriber_floor = TRUE "
+            "SELECT channel_id FROM channels WHERE " + eligible_sql(None) + " "
             "AND first_video_published_at IS NULL " + scope_sql + "LIMIT 50",
             scope_params,
         )

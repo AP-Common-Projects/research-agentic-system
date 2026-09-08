@@ -89,12 +89,15 @@ THRESHOLDS: list[Threshold] = [
     Threshold(
         id="max_channels_per_run",
         env="MAX_CHANNELS_PER_RUN",
-        label="Channel cap",
+        label="Channels in the workbook",
         help=(
-            "The most channels this run will carry through to enrichment. "
-            "Defaults to what the chosen depth can finish; raising it past "
-            "that trades completeness for breadth, and columns the run runs "
-            "out of time to fill arrive empty."
+            "How many channels over the subscriber floor this run aims to "
+            "put in the finished file. It used to count channels the run "
+            "HYDRATED, about one in five of which clears that floor -- so a "
+            "cap of 100 delivered 17 rows. Defaults to what the chosen "
+            "depth can finish; raising it past that trades completeness for "
+            "breadth, and columns the run runs out of time to fill arrive "
+            "empty."
         ),
         kind="int",
         minimum=5,

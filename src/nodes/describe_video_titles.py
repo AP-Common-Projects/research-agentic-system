@@ -8,7 +8,7 @@ comparing what successful vs. failing channels are titling their videos —
 raw titles alone are hard to pattern-match at that scale; a normalized
 one-sentence gloss is not.
 
-Gated by meets_subscriber_floor, same as classify_channel/
+Gated by the deliverable floor, same as classify_channel/
 score_thumbnail_signals/extract_success_failure_factors — this reasons over
 the same floor-qualifying channels' content, batched to keep the ratio of
 LLM calls to videos small (titles are short; dozens fit in one prompt).
@@ -19,12 +19,14 @@ from __future__ import annotations
 import json
 import time
 
+from src.llm.concurrent import map_llm, worker_count
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import channel_scope
 from src.tools import deadline as run_deadline
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You are given a numbered list of YouTube video titles. For each one, write a ONE-sentence, plain-language description of what the video is likely about, based solely on the title.
 
@@ -40,7 +42,9 @@ Respond with ONLY a JSON array of strings, one per title, in the same order:
 _BATCH_SIZE = 30
 
 
-def _fetch_batch(conn, scope: list[str] | None = None) -> list[tuple[str, str]]:
+def _fetch_batch(
+    conn, scope: list[str] | None = None, limit: int = _BATCH_SIZE
+) -> list[tuple[str, str]]:
     """Titles still lacking a description.
 
     `scope is not None` restricts to a channel set -- absent means the
@@ -51,12 +55,12 @@ def _fetch_batch(conn, scope: list[str] | None = None) -> list[tuple[str, str]]:
     cur = conn.cursor()
     try:
         scope_sql = "AND v.channel_id = ANY(%s) " if scope is not None else ""
-        params: tuple = ((scope, _BATCH_SIZE) if scope is not None
-                         else (_BATCH_SIZE,))
+        params: tuple = ((scope, limit) if scope is not None
+                         else (limit,))
         cur.execute(
             "SELECT v.video_id, v.title FROM videos v "
             "JOIN channels c ON c.channel_id = v.channel_id "
-            "WHERE c.meets_subscriber_floor = TRUE AND v.video_description IS NULL "
+            "WHERE " + eligible_sql() + " AND v.video_description IS NULL "
             "AND v.title IS NOT NULL AND v.title <> '' "
             + scope_sql +
             "ORDER BY v.video_id LIMIT %s",
@@ -100,72 +104,89 @@ def describe_video_titles(state: dict) -> dict:
     # stays cheap, but a ceiling still bounds worst-case cost per invocation.
     max_videos = 3000
 
+    # One fetch feeds every worker. Eligibility here is
+    # "video_description IS NULL", so a batch cannot be re-fetched until the
+    # previous one is written -- which is why this was strictly sequential
+    # at 23s a batch, 1,329s for 1,710 titles on run-dd2dbdbc3080.
+    workers = worker_count()
+
+    def _next_chunk() -> list[tuple[str, str]]:
+        return _fetch_batch(conn, scope, limit=_BATCH_SIZE * workers)
+
     try:
-        batch = _fetch_batch(conn, scope)
+        chunk = _next_chunk()
     except Exception:
         put_connection(conn)
         return {"node_logs": _log({"reason": "query failed", "described": 0})}
 
-    while batch:
+    from src.tools.dedup import persist_video_v3
+
+    while chunk:
         # The write-up chain used to run to completion however long it
         # took; a one-hour crime run spent 1h45m in it. Checked per
-        # batch so overshoot is one batch, not one whole node.
+        # chunk so overshoot is one chunk, not one whole node.
         # Healing bypasses this -- see deadline.writeup_passed.
         if run_deadline.writeup_passed(state):
             break
-        total_seen += len(batch)
-        video_ids = [v[0] for v in batch]
-        titles = [v[1] for v in batch]
-        prompt = json.dumps(
-            {"titles": [f"{i + 1}. {t}" for i, t in enumerate(titles)]}, indent=2
-        )
-        try:
+        total_seen += len(chunk)
+        batches = [
+            chunk[i:i + _BATCH_SIZE] for i in range(0, len(chunk), _BATCH_SIZE)
+        ]
+
+        def _describe(batch: list[tuple[str, str]]):
+            prompt = json.dumps(
+                {"titles": [f"{i + 1}. {t}" for i, (_, t) in enumerate(batch)]},
+                indent=2,
+            )
             descriptions, result = complete_json(
                 complete_tier, "cheap", prompt, SYSTEM_PROMPT, expect="array"
             )
+            if not isinstance(descriptions, list):
+                raise ValueError("response was not a JSON array")
+            return descriptions, result
+
+        answers = map_llm(
+            batches,
+            _describe,
+            workers=workers,
+            should_stop=lambda: run_deadline.writeup_passed(state),
+            label="describe_video_titles",
+        )
+
+        for batch, got, call_error in answers:
+            if call_error is not None:
+                errors.append(ErrorRecord(
+                    node_name="describe_video_titles",
+                    error_type=type(call_error).__name__,
+                    message=str(call_error),
+                    recoverable=True,
+                ).model_dump())
+                continue
+            descriptions, result = got
             usage = result.get("usage", {})
             total_cost += result.get(
                 "cost_usd",
                 estimate_cost("cheap", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)),
             )
-            if not isinstance(descriptions, list):
-                raise ValueError("response was not a JSON array")
-        except Exception as exc:
-            errors.append(ErrorRecord(
-                node_name="describe_video_titles",
-                error_type=type(exc).__name__,
-                message=str(exc),
-                recoverable=True,
-            ).model_dump())
-            if total_seen >= max_videos:
-                break
-            try:
-                batch = _fetch_batch(conn, scope)
-            except Exception:
-                break
-            continue
-
-        from src.tools.dedup import persist_video_v3
-
-        for vid_id, desc in zip(video_ids, descriptions):
-            if not isinstance(desc, str) or not desc.strip():
-                continue
-            try:
-                persist_video_v3(conn, vid_id, {"video_description": desc.strip()[:500]})
-                described += 1
-            except Exception as exc:
-                conn.rollback()
-                errors.append(ErrorRecord(
-                    node_name="describe_video_titles",
-                    error_type=type(exc).__name__,
-                    message=f"persist failed for {vid_id}: {exc}",
-                    recoverable=True,
-                ).model_dump())
+            for (vid_id, _title), desc in zip(batch, descriptions):
+                if not isinstance(desc, str) or not desc.strip():
+                    continue
+                try:
+                    persist_video_v3(conn, vid_id, {"video_description": desc.strip()[:500]})
+                    described += 1
+                except Exception as exc:
+                    conn.rollback()
+                    errors.append(ErrorRecord(
+                        node_name="describe_video_titles",
+                        error_type=type(exc).__name__,
+                        message=f"persist failed for {vid_id}: {exc}",
+                        recoverable=True,
+                    ).model_dump())
 
         if total_seen >= max_videos:
             break
         try:
-            batch = _fetch_batch(conn, scope)
+            chunk = _next_chunk()
         except Exception as exc:
             errors.append(ErrorRecord(
                 node_name="describe_video_titles",

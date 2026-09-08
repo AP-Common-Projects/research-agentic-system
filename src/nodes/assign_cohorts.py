@@ -19,6 +19,7 @@ from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 
 
@@ -46,7 +47,7 @@ def _peer_engagement_floors(conn) -> dict[tuple[str, str], float]:
                JOIN channel_niches cn ON cn.channel_id = c.channel_id
                     AND cn.is_primary = TRUE
                JOIN niche_taxonomy nt ON nt.niche_id = cn.niche_id
-               WHERE c.meets_subscriber_floor = TRUE
+               WHERE """ + eligible_sql() + """
                  AND c.engagement_score IS NOT NULL
                  AND c.channel_size_bucket IS NOT NULL
                GROUP BY 1, 2"""
@@ -111,7 +112,7 @@ def assign_cohorts(state: dict) -> dict:
             "FROM channels c "
             "LEFT JOIN channel_niches cn ON c.channel_id = cn.channel_id AND cn.is_primary = TRUE "
             "LEFT JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
-            "WHERE c.meets_subscriber_floor = TRUE "
+            "WHERE " + eligible_sql() + " "
             # The vertical was hardcoded to 'crime', so a Finance channel
             # never counted as already-assigned and was re-examined every
             # round forever. Match the cohort against the channel's OWN

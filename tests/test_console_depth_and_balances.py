@@ -33,12 +33,26 @@ class TestTierShape:
         per-channel model, so when it proved four times optimistic they were
         all wrong together. Three, each sized from measured throughput."""
         assert [t.id for t in depth_mod.TIERS] == ["sample", "standard", "deep"]
-        assert [t.hours for t in depth_mod.TIERS] == [1, 4, 10]
+        hours = [t.hours for t in depth_mod.TIERS]
+        # Derived from each tier's channel band now, not hand-written -- so
+        # the assertion is on the shape (a real ladder, and a plausible
+        # working day at the top) rather than on three magic numbers that
+        # would need editing every time a measurement lands.
+        assert hours == sorted(hours) and len(set(hours)) == 3, hours
+        assert 0.5 <= hours[0] <= 3, hours
+        assert hours[-1] <= 12, hours
 
-    def test_duration_label_never_renders_a_fraction_of_an_hour(self):
-        """The UI prints this string verbatim, so "0.5h" must not reach it."""
-        labels = [t.duration_label for t in depth_mod.TIERS]
-        assert labels == ["1h", "4h", "10h"]
+    def test_duration_label_never_renders_a_bare_decimal_of_an_hour(self):
+        """The UI prints this string verbatim, so "0.5h" must not reach it.
+
+        Durations are derived and land on the quarter hour, so "1.25h" is
+        a legitimate label; what must never appear is a sub-hour value
+        written as a decimal."""
+        for tier in depth_mod.TIERS:
+            label = tier.duration_label
+            assert label.endswith("h") or label.endswith("m"), label
+            if tier.hours < 1:
+                assert label.endswith("m"), label
 
     def test_availability_rows_carry_every_derived_field(self):
         """asdict() serialises dataclass FIELDS only. est_channels and
@@ -57,7 +71,9 @@ class TestTierShape:
         rows = depth_mod.tiers_with_availability(
             _balances(openrouter=500.0, brightdata=500.0)
         )
-        assert next(r for r in rows if r["id"] == "sample")["duration_label"] == "1h"
+        sample = depth_mod.TIERS[0]
+        assert (next(r for r in rows if r["id"] == "sample")["duration_label"]
+                == sample.duration_label)
 
     def test_shortest_tier_is_the_cheapest_and_is_affordable_on_pocket_change(self):
         sample = depth_mod.TIERS[0]
@@ -305,19 +321,25 @@ class TestRunDeadline:
         for tier in depth_mod.TIERS:
             assert tier.governors["RUN_DEADLINE_SECONDS"] == int(tier.hours * 3600), tier.id
 
-    def test_the_shortest_tier_really_is_one_hour(self):
-        assert depth_mod.get_tier("sample").governors["RUN_DEADLINE_SECONDS"] == 3600
+    def test_the_shortest_tier_really_runs_for_what_it_says(self):
+        """The label and the ceiling are the same number, whatever that
+        number turns out to be -- a tier whose deadline disagreed with its
+        own label is the bug this pins."""
+        sample = depth_mod.get_tier("sample")
+        assert (sample.governors["RUN_DEADLINE_SECONDS"]
+                == int(sample.hours * 3600))
 
     def test_deadline_is_derived_not_hand_written(self):
         """A tier constructed with a contradictory deadline must be corrected
         rather than trusted -- hand-written values are how a label and its
         ceiling drift apart."""
         tier = depth_mod.DepthTier(
-            id="t", label="T", hours=2, tagline="", description="",
-            est_brightdata_usd=0.0, est_openrouter_usd=0.0,
+            id="t", label="T", tagline="", description="",
+            target_channels=50, min_channels=40,
             governors={"RUN_DEADLINE_SECONDS": 99},
         )
-        assert tier.governors["RUN_DEADLINE_SECONDS"] == 7200
+        assert tier.governors["RUN_DEADLINE_SECONDS"] == int(tier.hours * 3600)
+        assert tier.governors["RUN_DEADLINE_SECONDS"] != 99
 
     def test_saturation_stops_the_run_once_the_deadline_passes(self, monkeypatch):
         from src.config import HarnessConfig
@@ -531,9 +553,24 @@ class TestCrimeIsSizedDifferently:
         looks respectable -- a tier that cannot finish is the bug."""
         for tier in depth_mod.TIERS:
             crime = tier.for_topic("crime")
-            work = crime.max_channels * depth_mod._seconds_per_channel(True)
-            budget = crime.hours * 3600 - depth_mod._FIXED_OVERHEAD_SECONDS
+            work = depth_mod._research_seconds(
+                crime.max_channels, depth_mod.DISCOVERY_YIELD, True
+            )
+            budget = crime.hours * 3600 * depth_mod._SAFETY_MARGIN
             assert work <= budget, f"{tier.id}: {work:.0f}s of work in {budget:.0f}s"
+
+    def test_crime_delivers_fewer_channels_in_the_same_window(self):
+        """The case-file stage is 273 extra serial seconds a channel, so the
+        same hours cannot buy the same band."""
+        for tier in depth_mod.TIERS:
+            crime = tier.for_topic("crime")
+            assert crime.hours == tier.hours, tier.id
+            assert crime.max_channels < tier.max_channels, tier.id
+
+    def test_asking_twice_does_not_shrink_it_twice(self):
+        once = depth_mod.get_tier("standard", "crime")
+        twice = once.for_topic("crime")
+        assert twice.max_channels == once.max_channels
 
     def test_a_non_crime_topic_is_untouched(self):
         for tier in depth_mod.TIERS:
@@ -632,7 +669,12 @@ class TestTheCardQuotesTheWholeWait:
         rather than repeat the 60 that was wrong."""
         sample = next(t for t in depth_mod.TIERS if t.id == "sample")
         minutes = (sample.hours * 3600 + sample.gate_budget_seconds) / 60
-        assert 80 <= minutes <= 95, minutes
+        # The two runs that produced 82 and 91 minutes delivered 21
+        # channels; this tier now delivers 40-50, so the figure to hold is
+        # the RATIO -- the quoted total still has to carry the gate rather
+        # than quoting the research window alone.
+        assert minutes > sample.hours * 60, minutes
+        assert minutes / (sample.hours * 60) == pytest.approx(1.45, abs=0.01)
 
     def test_the_gate_budget_is_handed_to_the_run(self):
         """Quoting a time the gate is not held to would be the same bug in

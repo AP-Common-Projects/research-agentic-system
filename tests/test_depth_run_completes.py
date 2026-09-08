@@ -27,13 +27,27 @@ from src.tools import saturation as sat
 
 
 class TestAFullChannelCapEndsTheResearch:
-    def _check(self, cap, hydrated, **overrides):
+    """Two ceilings, because there are two populations.
+
+    max_channels_per_run is the promise about the FILE -- channels that
+    clear the subscriber floor and can be written into it. The hydration
+    ceiling bounds what the run may spend reaching that promise. They were
+    one number, and only about a fifth of hydrated channels clear the
+    floor, so the Standard education run of 2026-09-08 stopped on "reached
+    its channel limit (100 of 100)" and delivered a 17-row workbook.
+    """
+
+    def _check(self, cap, hydrated, qualified=0, ceiling=0, **overrides):
         cfg = MagicMock()
         cfg.harness.run_deadline_seconds = 0
         cfg.harness.budget_limit_usd = 0
         cfg.harness.brightdata_record_budget = 0
         cfg.harness.youtube_quota_budget_per_run = 0
         cfg.harness.max_channels_per_run = cap
+        # Real ints, not the MagicMock default: run_ceilings reads this and
+        # a mock attribute is truthy, which would pin every run to a
+        # ceiling of 1.
+        cfg.harness.max_hydrated_channels_per_run = ceiling
         cfg.harness.saturation_novelty_threshold = 0.1
         cfg.harness.saturation_consecutive_window = 2
         # Set as real numbers so the checks BELOW the breakers can run --
@@ -46,6 +60,7 @@ class TestAFullChannelCapEndsTheResearch:
 
         state = {
             "hydrated_channel_ids": {f"c{i}" for i in range(hydrated)},
+            "qualified_channel_ids": {f"c{i}" for i in range(qualified)},
             "tree": {"n1": {"status": "active"}},
             "active_node_id": "n1",
         }
@@ -53,31 +68,45 @@ class TestAFullChannelCapEndsTheResearch:
              patch.object(sat, "run_elapsed_seconds", return_value=0):
             return sat.check_saturation(state)
 
-    def test_a_full_cap_stops_the_run(self):
-        """Nineteen rounds of discovery ran after the cap was full. Not one
-        of them could hydrate a channel."""
-        out = self._check(cap=100, hydrated=100)
+    def test_a_full_delivery_target_stops_the_run(self):
+        """The promise is kept -- there is nothing left for a further round
+        of discovery to contribute."""
+        out = self._check(cap=100, hydrated=400, qualified=100)
         node = out["node_logs"][0]["input_summary"]
         assert node.get("governor") == "max_channels_per_run", node
+        assert node.get("spent") == 100
 
-    def test_it_stops_when_the_cap_is_exceeded_too(self):
-        out = self._check(cap=100, hydrated=140)
+    def test_hydrating_the_target_is_not_delivering_it(self):
+        """The bug itself: 100 hydrated is not 100 in the workbook, and
+        stopping there is what shipped 17 rows against a promise of 100."""
+        out = self._check(cap=100, hydrated=100, qualified=24)
+        assert out.get("next_action") != "budget_exhausted"
+
+    def test_the_hydration_ceiling_still_stops_a_run_that_cannot_qualify(self):
+        """A topic where nothing clears the floor must not hydrate forever
+        chasing a target it will never reach."""
+        out = self._check(cap=100, hydrated=1200, qualified=3)
+        gov = out["node_logs"][0]["input_summary"]["governor"]
+        assert gov == "max_hydrated_channels_per_run"
+
+    def test_it_stops_when_the_target_is_exceeded_too(self):
+        out = self._check(cap=100, hydrated=600, qualified=140)
         assert out["node_logs"][0]["input_summary"]["governor"] == "max_channels_per_run"
 
     def test_a_run_with_room_left_carries_on(self):
-        out = self._check(cap=100, hydrated=40)
+        out = self._check(cap=100, hydrated=40, qualified=8)
         assert out.get("next_action") != "budget_exhausted"
 
     def test_an_uncapped_run_is_unaffected(self):
         """A bare CLI run sets no cap, and used to work exactly because of
         that -- it must not start stopping now."""
-        out = self._check(cap=0, hydrated=5000)
+        out = self._check(cap=0, hydrated=5000, qualified=5000)
         assert out.get("next_action") != "budget_exhausted"
 
     def test_it_exits_the_same_way_the_other_ceilings_do(self):
         """force-saturate, compact, finalize, export what the run reached --
         not an abort, which is what the recursion limit gave instead."""
-        out = self._check(cap=10, hydrated=10)
+        out = self._check(cap=10, hydrated=50, qualified=10)
         assert out.get("next_action") == "budget_exhausted"
         assert out["tree"]["n1"]["saturation_reason"] == "governor:max_channels_per_run"
 
@@ -304,9 +333,29 @@ class TestTheConsoleNamesTheCeilingThatStopped:
         assert enforced <= named, f"no phrase for: {sorted(enforced - named)}"
 
     def test_the_channel_cap_does_not_read_as_a_money_verdict(self):
+        """It rendered as "spent usd: 1.1617" and read as "out of money" on
+        a run that had spent $1.18 of a $9 allowance."""
+        import re
+
         src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
         block = src[src.index("const GOVERNOR_REASON"):src.index("function summarise")]
-        assert "max_channels_per_run: 'reached its channel limit'" in block
+        phrase = re.search(r"max_channels_per_run: '([^']+)'", block)
+        assert phrase, block
+        said = phrase.group(1)
+        assert "channel" in said, said
+        for money in ("spend", "spent", "cost", "budget", "$"):
+            assert money not in said.lower(), said
+
+    def test_the_two_ceilings_do_not_read_the_same(self):
+        """One is the promise kept, the other is a thin topic. A client
+        reading "found all the channels this depth covers" on a run that
+        delivered a quarter of them is the bug this pair exists to end."""
+        import re
+
+        src = open("web/src/pages/LiveRunsPage.tsx", encoding="utf-8").read()
+        block = src[src.index("const GOVERNOR_REASON"):src.index("function summarise")]
+        said = dict(re.findall(r"([a-z_]+): '([^']+)'", block))
+        assert said["max_channels_per_run"] != said["max_hydrated_channels_per_run"]
 
     def test_it_says_the_research_finished_rather_than_failed(self):
         """Hitting a ceiling is the run completing its remit, not an error,

@@ -3,7 +3,7 @@
 Extends classify_channel's work: instead of reducing a channel to one niche_name,
 extracts 5 independent dimensions plus records the raw pre-canonicalized label.
 
-Gated by meets_subscriber_floor. Writes via persist_channel_v3.
+Gated by the deliverable floor. Writes via persist_channel_v3.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 import time
 from typing import Any
 
+from src.llm.concurrent import map_llm
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
@@ -19,6 +20,7 @@ from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You classify a YouTube channel into independent taxonomy dimensions.
 
@@ -129,7 +131,7 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
             "FROM channels c "
             "LEFT JOIN channel_niches cn ON c.channel_id = cn.channel_id AND cn.is_primary = TRUE "
             "LEFT JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
-            "WHERE c.meets_subscriber_floor = TRUE "
+            "WHERE " + eligible_sql() + " "
             "AND c.primary_topic IS NULL "
             + scope_sql + "LIMIT 50",
             scope_params,
@@ -143,7 +145,12 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
     populated = 0
     from src.tools.dedup import persist_channel_v3, persist_channel_niche_membership
 
-    for ch_id, title, desc, fmt, nid, nname, category in eligible:
+    # Phase 1 -- prompts first, from the database alone, so phase 2 can
+    # overlap the calls. Measured serial at 14s a channel; a 250-channel
+    # tier would spend an hour here on $0 of tokens.
+    prepared: list[tuple[tuple, str]] = []
+    for row in eligible:
+        ch_id, title, desc, fmt, nid, nname, category = row
         # The write-up chain used to run to completion however long it
         # took; a one-hour crime run spent 1h45m in it. Checked per
         # channel so overshoot is one channel, not one whole node.
@@ -160,19 +167,46 @@ def populate_taxonomy_dimensions(state: dict) -> dict:
             sample_titles = [r[0] for r in cur2.fetchall()]
             cur2.close()
 
-            prompt = json.dumps({
+            prepared.append((row, json.dumps({
                 "channel_title": title or "",
                 "description": (desc or "")[:300],
                 "niche": nname or "",
                 "vertical": category or "",
                 "dominant_format": fmt or "",
                 "sample_video_titles": sample_titles,
-            }, indent=2)
+            }, indent=2)))
+        except Exception as exc:
+            conn.rollback()
+            errors.append(ErrorRecord(
+                node_name="populate_taxonomy_dimensions",
+                error_type=type(exc).__name__,
+                message=str(exc),
+                recoverable=True,
+            ).model_dump())
 
-            parsed, result = complete_json(
-                complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
-            )
+    # Phase 2 -- the calls, several in flight.
+    answers = map_llm(
+        prepared,
+        lambda item: complete_json(
+            complete_tier, "mid", item[1], SYSTEM_PROMPT, expect="object"
+        ),
+        should_stop=lambda: run_deadline.writeup_passed(state),
+        label="populate_taxonomy_dimensions",
+    )
 
+    # Phase 3 -- the writes, serial and in input order.
+    for (row, _prompt), got, call_error in answers:
+        ch_id, title, desc, fmt, nid, nname, category = row
+        if call_error is not None:
+            errors.append(ErrorRecord(
+                node_name="populate_taxonomy_dimensions",
+                error_type=type(call_error).__name__,
+                message=str(call_error),
+                recoverable=True,
+            ).model_dump())
+            continue
+        parsed, result = got
+        try:
             fields = {
                 "primary_topic": str(parsed.get("primary_topic", "")),
                 "secondary_topic": str(parsed.get("secondary_topic", "")),

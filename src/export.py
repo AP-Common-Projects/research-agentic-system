@@ -65,8 +65,14 @@ def _floor() -> int:
     workbook whose stated rule is "only channels over 50k subs". The
     client's rule is about the real count, so the export reads the real
     count.
+
+    Delegated so the export and the enrichment nodes cannot answer this
+    differently -- they did, and the run spent most of its latency on
+    channels this function then excluded.
     """
-    return int(get_config().harness.subscriber_floor)
+    from src.tools.deliverable import deliverable_floor
+
+    return deliverable_floor()
 
 
 def fetch_run_channels(

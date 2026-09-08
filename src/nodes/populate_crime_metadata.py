@@ -4,7 +4,7 @@ Extracts case_metadata, reveal_mechanisms, and comment samples for
 qualifying Crime channels. Uses LLM for structured extraction with
 controlled-vocabulary matching via match_or_create_controlled_term.
 
-Gated by meets_subscriber_floor AND vertical='crime'.
+Gated by the deliverable floor AND vertical='crime'.
 Idempotent: skips channels where crime_case_metadata.classified_at is set.
 """
 
@@ -15,6 +15,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any
 
+from src.llm.concurrent import map_llm
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.tools import deadline as run_deadline
@@ -24,6 +25,7 @@ from src.llm.cascade import complete_tier, estimate_cost
 import structlog
 
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You analyze true-crime videos to extract structured case metadata.
 
@@ -207,7 +209,7 @@ def populate_crime_metadata(state: dict) -> dict:
             "JOIN channel_niches cn ON c.channel_id = cn.channel_id AND cn.is_primary = TRUE "
             "JOIN niche_taxonomy nt ON cn.niche_id = nt.niche_id "
             "WHERE nt.parent_category = 'crime' "
-            "AND c.meets_subscriber_floor = TRUE "
+            "AND " + eligible_sql() + " "
             "AND ccm.video_id IS NULL "
             + scope_sql
             # Either source of text will do; a bare title is too thin to
@@ -284,8 +286,17 @@ def populate_crime_metadata(state: dict) -> dict:
                     cur3.close()
         return True
 
-    def _classify(rows) -> int:
+    def _ask(rows) -> list[tuple[Any, Any]]:
         """One LLM call for a batch of videos, splitting on parse failure.
+
+        Returns (row, answer) pairs for the caller to persist. The call and
+        the write are separated so the calls can overlap: this node is one
+        mid-tier completion per eight videos, measured at 4.7s a video, and
+        a crime run at 250 channels is ~14,500 videos -- nineteen hours if
+        the batches go one at a time.
+
+        Persisting from a worker thread would mean sharing this node's
+        single connection across threads, so the writes stay on the caller.
 
         A batch whose JSON comes back malformed is halved and retried, down
         to single items, so one bad response costs its own item rather than
@@ -294,7 +305,7 @@ def populate_crime_metadata(state: dict) -> dict:
         split a single failure would silently drop a whole batch.
         """
         if not rows:
-            return 0
+            return []
         payload = [
             {
                 "video_title": _safe_str(r[1]),
@@ -335,25 +346,39 @@ def populate_crime_metadata(state: dict) -> dict:
                     message=f"unrecoverable for {rows[0][0]}: {exc}",
                     recoverable=True,
                 ).model_dump())
-                return 0
+                return []
             mid = len(rows) // 2
-            return _classify(rows[:mid]) + _classify(rows[mid:])
+            return _ask(rows[:mid]) + _ask(rows[mid:])
 
-        done = 0
-        for row, obj in zip(rows, parsed):
-            if isinstance(obj, dict) and _persist(row, obj):
-                done += 1
-        return done
+        return list(zip(rows, parsed))
 
     populated = 0
-    for i in range(0, len(eligible), CRIME_METADATA_BATCH_SIZE):
-        # The write-up chain used to run to completion however long it
-        # took; a one-hour crime run spent 1h45m in it. Checked per
-        # batch so overshoot is one batch, not one whole node.
-        # Healing bypasses this -- see deadline.writeup_passed.
-        if run_deadline.writeup_passed(state):
-            break
-        populated += _classify(eligible[i : i + CRIME_METADATA_BATCH_SIZE])
+    batches = [
+        eligible[i : i + CRIME_METADATA_BATCH_SIZE]
+        for i in range(0, len(eligible), CRIME_METADATA_BATCH_SIZE)
+    ]
+    # The write-up chain used to run to completion however long it took; a
+    # one-hour crime run spent 1h45m in it. should_stop is checked before
+    # each batch is STARTED, so overshoot is one batch per worker rather
+    # than one whole node. Healing bypasses this -- see writeup_passed.
+    answers = map_llm(
+        batches,
+        _ask,
+        should_stop=lambda: run_deadline.writeup_passed(state),
+        label="populate_crime_metadata",
+    )
+    for batch, pairs, call_error in answers:
+        if call_error is not None:
+            errors.append(ErrorRecord(
+                node_name="populate_crime_metadata",
+                error_type=type(call_error).__name__,
+                message=f"batch of {len(batch)} failed: {call_error}",
+                recoverable=True,
+            ).model_dump())
+            continue
+        for row, obj in pairs:
+            if isinstance(obj, dict) and _persist(row, obj):
+                populated += 1
 
     # The five footage-availability flags, derived from what was just
     # written. They had no producer in the pipeline at all: a one-off

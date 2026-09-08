@@ -313,6 +313,18 @@ class HarnessConfig(BaseSettings):
     # populated, beats many channels mostly empty.
     max_channels_per_run: int = 0
 
+    # Channels one run may HYDRATE, 0 == derived from the target above.
+    #
+    # These were one number, and they are two populations. Only ~15-25% of
+    # hydrated channels clear the subscriber floor the workbook is scoped
+    # to, so a cap of 100 bought 100 hydrations and shipped 17 rows while
+    # the card promised 100. max_channels_per_run is the promise about the
+    # FILE; this is the ceiling on what the run may spend reaching it.
+    #
+    # Left at 0, src.tools.deliverable.run_ceilings derives it from the
+    # measured discovery yield. Set it to pin the spend directly.
+    max_hydrated_channels_per_run: int = 0
+
     # $1.50 per 1,000 records, Bright Data pay-as-you-go list rate.
     brightdata_cost_per_record_usd: float = 0.0015
 
@@ -393,6 +405,19 @@ class HarnessConfig(BaseSettings):
 
     # Thumbnail-vision: how many recent thumbnails to sample per channel (§5.2)
     thumbnail_sample_count: int = 5
+
+    # How many per-channel LLM calls may be in flight at once.
+    #
+    # These nodes are latency-bound, not cost-bound: a 4-hour Standard run
+    # spent 6,584 of its 8,217 seconds waiting on serial completions worth
+    # $1.30 of tokens. One at a time is what made a 250-channel tier
+    # arithmetically impossible -- extract_success_failure_factors alone
+    # measured 51s a channel, which is 3h30m before any other stage runs.
+    #
+    # 1 restores the old serial behaviour exactly, for debugging or for a
+    # provider that objects. 429s are already retried with backoff in
+    # llm.client, so the ceiling here is throughput, not correctness.
+    llm_concurrency: int = 8
 
     model_config = {"env_prefix": "", "extra": "allow"}
 

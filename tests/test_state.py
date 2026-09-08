@@ -142,6 +142,12 @@ class TestMergeLineageSpend:
 # Initial state
 # ---------------------------------------------------------------------------
 
+#: Read from create_initial_state rather than written out eight times:
+#: every schema bump used to mean editing eight literals, and a test that
+#: has to be edited to pass is a test that stops catching anything.
+CURRENT_SCHEMA_VERSION = create_initial_state("r", "t", [])["schema_version"]
+
+
 class TestCreateInitialState:
     def test_all_defaults_present(self):
         state = create_initial_state(
@@ -168,7 +174,7 @@ class TestCreateInitialState:
         assert state["messages"] == []
         assert state["errors"] == []
         assert state["node_logs"] == []
-        assert state["schema_version"] == 8
+        assert state["schema_version"] == CURRENT_SCHEMA_VERSION
         assert state["final_report"] is None
         assert state["keyword_search_done"] is False
         assert state["graph_walk_done"] is False
@@ -188,7 +194,7 @@ class TestMigrateState:
     def test_migrates_v0_to_current(self):
         state = {"schema_version": 0}
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["run_id"] == ""
         assert result["thread_id"] == ""
         assert result["errors"] == []
@@ -204,23 +210,28 @@ class TestMigrateState:
     def test_migrates_v1_to_current(self):
         state = {"schema_version": 1, "run_id": "r1", "thread_id": "t1"}
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["run_id"] == "r1"
         assert result["saturated_branches"] == []
         assert result["niche_scanner_evidence"] == {}
         assert result["hydrated_channel_ids"] == set()
+        # v9: the delivery target counts floor-passing channels, so the run
+        # has to carry that set. A pre-v9 checkpoint cannot know it, and
+        # starting empty costs one round at worst -- where guessing would
+        # stop a resumed run early.
+        assert result["qualified_channel_ids"] == set()
 
     def test_migrates_v2_to_current(self):
         state = {"schema_version": 2, "saturated_branches": ["n1"]}
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["saturated_branches"] == ["n1"]
         assert result["hydrated_channel_ids"] == set()
 
     def test_migrates_v3_adds_discovery_attribution(self):
         state = {"schema_version": 3, "hydrated_channel_ids": {"UC1"}}
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["hydrated_channel_ids"] == {"UC1"}
         # Pre-v4 checkpoints cannot be retro-attributed — they must come back
         # empty rather than guessing which track found a channel.
@@ -245,7 +256,7 @@ class TestMigrateState:
             "niche_scanner_evidence": {"x": 1},
         }
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["saturated_branches"] == ["n1"]
         assert result["niche_scanner_evidence"] == {"x": 1}
 
@@ -274,7 +285,7 @@ class TestMigrateState:
             },
         }
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["branch_lineage_spend"] == {}
         assert result["tree"]["root"]["split_method"] == "llm_seed"
         assert result["tree"]["root"]["cluster_distinctness_score"] is None
@@ -287,5 +298,5 @@ class TestMigrateState:
     def test_migrates_v5_no_tree(self):
         state = {"schema_version": 5, "tree": {}}
         result = migrate_state(state)
-        assert result["schema_version"] == 8
+        assert result["schema_version"] == CURRENT_SCHEMA_VERSION
         assert result["branch_lineage_spend"] == {}

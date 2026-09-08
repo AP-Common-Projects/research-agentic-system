@@ -65,8 +65,13 @@ function DepthCard({
       )}
 
       <dl className="mt-3 space-y-1 text-xs">
+        {/* "in the workbook", not just "channels". The cap behind this
+            number used to count channels the run HYDRATED, about one in
+            five of which clears the 50k floor the file is scoped to — so a
+            card reading "up to 100" shipped 17 rows. Naming the population
+            is half of not making that mistake again. */}
         <div className="flex justify-between gap-2">
-          <dt className="text-ink-3">Channels</dt>
+          <dt className="text-ink-3">Channels in the workbook</dt>
           <dd className="tabular-nums text-ink-2">{tier.est_channels}</dd>
         </div>
         <div className="flex justify-between gap-2">

@@ -105,6 +105,12 @@ const INTERESTING_KEYS = new Set([
   'video_count', 'resolved', 'total', 'processed', 'decision', 'reason',
   'breakout_channels_found', 'new_discoveries', 'results', 'discovered',
   'selected_niche', 'niche', 'node_id', 'rounds', 'spent_usd',
+  // The funnel's outlet, beside its mouth. channels_hydrated alone was
+  // what every surface showed, and about one in five of those clears the
+  // subscriber floor the workbook is scoped to -- so a run reading
+  // "channels hydrated: 25" was on course for five rows, and nothing on
+  // the page said so.
+  'channels_hydrated', 'channels_over_floor', 'qualified', 'target',
 ]);
 
 /** Which run-level ceiling ended the research, in the client's words.
@@ -117,7 +123,12 @@ const INTERESTING_KEYS = new Set([
  *  happened. The `governor` field always said which ceiling it was; the
  *  summary just never showed it. */
 const GOVERNOR_REASON: Record<string, string> = {
-  max_channels_per_run: 'reached its channel limit',
+  // Two ceilings, two different sentences. The first is the promise being
+  // KEPT -- the run has the channels the depth card quoted. The second is
+  // the run having spent its search allowance without finding enough of
+  // them, which reads as a thin topic, not a finished job.
+  max_channels_per_run: 'found all the channels this depth covers',
+  max_hydrated_channels_per_run: 'searched as widely as this depth allows',
   run_deadline_seconds: 'reached its time limit',
   budget_limit_usd: 'reached its spending limit',
   brightdata_record_budget: 'used its discovery allowance',

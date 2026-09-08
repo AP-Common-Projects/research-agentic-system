@@ -266,6 +266,16 @@ class HarnessState(TypedDict, total=False):
     visited_channel_ids: Annotated[set[str], _merge_set_union]
     expanded_channel_ids: Annotated[set[str], _merge_set_union]
     hydrated_channel_ids: Annotated[set[str], _merge_set_union]
+    #: Hydrated channels whose real subscriber_count clears the client's
+    #: floor -- the ones that can actually reach the workbook.
+    #:
+    #: hydrated_channel_ids is not that set and never was. Measured across
+    #: the organic runs in the store, 15% of hydrated channels clear the
+    #: floor; on the Standard education run of 2026-09-08, 100 hydrated
+    #: became 24 over the floor and 17 rows in the file, against a tier
+    #: that had promised 100. The cap was counting the funnel's mouth and
+    #: the card was quoting its outlet.
+    qualified_channel_ids: Annotated[set[str], _merge_set_union]
 
     # Graph traversal is keyed on channel *refs* (handle/URL), not UC ids:
     # featured_channels edges and taxonomy seeds both arrive as handles, and
@@ -362,6 +372,7 @@ def create_initial_state(
         "expanded_channel_ids": set(),
         "expanded_channel_refs": set(),
         "hydrated_channel_ids": set(),
+        "qualified_channel_ids": set(),
         "keyword_channel_ids": set(),
         "graph_walk_channel_ids": set(),
         "branch_compactions": [],
@@ -382,7 +393,7 @@ def create_initial_state(
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 8,
+        "schema_version": 9,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -408,6 +419,7 @@ def create_augmented_state(
     base["run_mode"] = "augment"
     try:
         from src.db.connection import get_connection, put_connection
+        from src.tools.deliverable import eligible_sql
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -426,6 +438,16 @@ def create_augmented_state(
             base["expanded_channel_refs"] = refs
             base["visited_channel_ids"] = channel_ids
             base["hydrated_channel_ids"] = channel_ids
+            # Same pre-seed, same rule as hydrate_metadata applies live:
+            # an augment run must not re-count channels it already holds
+            # towards the delivery target it is being measured against.
+            cur2 = conn.cursor()
+            cur2.execute(
+                "SELECT channel_id FROM channels WHERE "
+                + eligible_sql(None)
+            )
+            base["qualified_channel_ids"] = {r[0] for r in cur2.fetchall() if r[0]}
+            cur2.close()
             base["channel_refs_by_id"] = id_to_ref
         finally:
             put_connection(conn)
@@ -547,6 +569,15 @@ def migrate_state(state: dict) -> dict:
         state.setdefault("niche_cluster_roles", {})
         state.setdefault("niche_cluster_scores", {})
         version = 8
+
+    if version < 9:
+        # The delivery target counts floor-passing channels now, so the run
+        # has to carry that set. A pre-v9 checkpoint cannot know it without
+        # re-reading the store, and check_saturation recomputes it there on
+        # its next pass -- starting empty means one extra round at worst,
+        # where guessing would mean stopping a resumed run early.
+        state.setdefault("qualified_channel_ids", set())
+        version = 9
 
     state["schema_version"] = version
     return state

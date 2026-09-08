@@ -1,6 +1,6 @@
 """classify_channel — LLM classification of face/faceless, format, and niche.
 
-Gated by meets_subscriber_floor (§6.4). Input is structured signals plus the
+Gated by the deliverable floor (§6.4, src/tools/deliverable.py). Input is structured signals plus the
 channel's own title/description and a handful of recent video titles —
 never raw images or full transcripts. Output: face_status, dominant_format,
 and a proposed niche_name that gets canonicalized against niche_taxonomy
@@ -29,12 +29,14 @@ import json
 import time
 from difflib import SequenceMatcher
 
+from src.llm.concurrent import map_llm
 from src.llm.json_parse import complete_json
 from src.tools.run_scope import scope_clause
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.llm.cascade import complete_tier, estimate_cost
 from src.state import NodeLog, ErrorRecord
+from src.tools.deliverable import eligible_sql
 
 SYSTEM_PROMPT = """You are a YouTube channel classifier. Given a channel's own title/description, a sample of its recent video titles, and structured signals, produce a classification.
 
@@ -197,7 +199,7 @@ def classify_channel(state: dict) -> dict:
             # re-classification is silently never selected -- and if its
             # niche rows were deleted first, it ends up with no
             # classification at all and disappears from the deliverable.
-            "SELECT channel_id FROM channels WHERE meets_subscriber_floor = TRUE "
+            "SELECT channel_id FROM channels WHERE " + eligible_sql(None) + " "
             "AND (classifier_model IS DISTINCT FROM 'deepseek-v4-pro' "
             "OR classifier_version IS DISTINCT FROM 'v3.0') "
             + scope_sql + "LIMIT 50",
@@ -216,12 +218,15 @@ def classify_channel(state: dict) -> dict:
     from src.tools import deadline as run_deadline
 
     stopped_on_deadline = False
+
+    # Phase 1 -- read and build every prompt, touching only the database.
+    prepared: list[tuple[str, tuple, str]] = []
     for ch_id in eligible:
-        # One LLM call per channel, measured at ~21 minutes per batch of 50.
-        # Checked per channel rather than per batch so the run yields within
-        # ~25 seconds of its deadline instead of finishing the whole batch
-        # -- the difference between a duration that is stated and one that
-        # is merely intended.
+        # One LLM call per channel, measured at ~16s each. Checked per
+        # channel rather than per batch so the run yields close to its
+        # deadline instead of finishing the whole batch -- the difference
+        # between a duration that is stated and one that is merely
+        # intended.
         # `state`, so a heal is not stopped by the run's own deadline. The
         # gate only ever calls this node after that deadline has passed.
         if run_deadline.research_passed(state):
@@ -279,25 +284,52 @@ def classify_channel(state: dict) -> dict:
                     "membership": bool(ch_row[9]),
                 },
             }, indent=2)
+            prepared.append((ch_id, ch_row, prompt))
+        except Exception as exc:
+            # Same reasoning: a failed SELECT/execute above leaves the
+            # connection's transaction aborted, poisoning every subsequent
+            # channel in this loop with InFailedSqlTransaction unless it's
+            # rolled back before moving on.
+            conn.rollback()
+            errors.append(ErrorRecord(
+                node_name="classify_channel",
+                error_type=type(exc).__name__,
+                message=str(exc),
+                recoverable=True,
+            ).model_dump())
+            continue
 
-            # LLM classification
-            try:
-                # complete_json, not complete_tier + parse: a reply that
-                # is prose rather than JSON is a failed call, and this node
-                # cannot retry for itself -- the `continue` below moves to
-                # the next channel and the refused one is simply lost.
-                parsed, result = complete_json(
-                    complete_tier, "mid", prompt, SYSTEM_PROMPT, expect="object"
-                )
-            except Exception as exc:
-                errors.append(ErrorRecord(
-                    node_name="classify_channel",
-                    error_type=type(exc).__name__,
-                    message=str(exc),
-                    recoverable=True,
-                ).model_dump())
-                continue
+    # Phase 2 -- the classifications, several in flight. Serial, this
+    # stage measured ~21 minutes per batch of 50, which a 250-channel
+    # tier cannot afford five times over.
+    #
+    # complete_json, not complete_tier + parse: a reply that is prose
+    # rather than JSON is a failed call, and this node cannot retry for
+    # itself -- the channel would simply be lost.
+    answers = map_llm(
+        prepared,
+        lambda item: complete_json(
+            complete_tier, "mid", item[2], SYSTEM_PROMPT, expect="object"
+        ),
+        should_stop=lambda: run_deadline.research_passed(state),
+        label="classify_channel",
+    )
+    if len(answers) < len(prepared):
+        stopped_on_deadline = True
 
+    # Phase 3 -- taxonomy matching and the writes, serial and in order.
+    # _match_niche INSERTs into the shared taxonomy, so it stays here.
+    for (ch_id, ch_row, _prompt), got, call_error in answers:
+        if call_error is not None:
+            errors.append(ErrorRecord(
+                node_name="classify_channel",
+                error_type=type(call_error).__name__,
+                message=str(call_error),
+                recoverable=True,
+            ).model_dump())
+            continue
+        parsed, result = got
+        try:
             face_status = str(parsed.get("face_status", "unknown"))
             dominant_format = str(parsed.get("dominant_format", ""))
             niche_name = str(parsed.get("niche_name", ""))
@@ -372,7 +404,6 @@ def classify_channel(state: dict) -> dict:
                     recoverable=True,
                 ).model_dump())
                 continue
-
         except Exception as exc:
             # Same reasoning: a failed SELECT/execute above leaves the
             # connection's transaction aborted, poisoning every subsequent
@@ -386,7 +417,6 @@ def classify_channel(state: dict) -> dict:
                 recoverable=True,
             ).model_dump())
             continue
-
     put_connection(conn)
     summary = {
         "classified": classified,

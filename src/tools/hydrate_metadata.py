@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.tools.deliverable import deliverable_floor
 from src.tools import deadline as run_deadline
 from src.tools.youtube_api import YouTubeAPIClient
 from src.tools.outlier_score import score_channel_videos
@@ -258,8 +259,33 @@ def hydrate_metadata(state: dict) -> dict:
     from src.config import get_config as _cfg_for_cap
 
     _harness = _cfg_for_cap().harness
-    cap = int(_harness.max_channels_per_run or 0)
+    # The HYDRATION ceiling, not the delivery target. This node's cost is
+    # per hydrated channel; the target is a promise about how many of them
+    # will clear the subscriber floor and reach the file. Trimming to the
+    # target here is what capped a 100-channel Standard run at 24
+    # floor-passing channels and a 17-row workbook.
+    from src.tools.deliverable import run_ceilings as _ceilings_for_cap
+
+    target, cap = _ceilings_for_cap(_harness)
     trimmed = 0
+    # Once the run holds the floor-passing channels it promised, hydrating
+    # more buys nothing the deliverable can use.
+    already_qualified = len(state.get("qualified_channel_ids") or ())
+    if target > 0 and already_qualified >= target:
+        return {
+            "next_action": "continue",
+            "node_logs": [
+                NodeLog(
+                    node_name="hydrate_metadata",
+                    thread_id=thread_id,
+                    input_summary={
+                        "reason": "delivery target met",
+                        "qualified": already_qualified,
+                        "target": target,
+                    },
+                ).model_dump()
+            ],
+        }
     if cap > 0:
         # Spread the cap across branches instead of letting the first round
         # spend all of it.
@@ -331,9 +357,10 @@ def hydrate_metadata(state: dict) -> dict:
 
     all_video_ids: list[str] = []
     errors: list[dict] = []
-    # The client's 50k rule, read once rather than per channel.
-    from src.config import get_config as _get_config
-    floor = int(_get_config().harness.subscriber_floor)
+    # The client's 50k rule, read once rather than per channel -- and read
+    # from the one place that defines it, so the deep scan is spent on
+    # exactly the channels the workbook will carry.
+    floor = deliverable_floor()
     stopped_on_deadline = False
     for ch in channels:
         # Per-channel video fetching, measured at ~16 minutes for 285
@@ -644,6 +671,16 @@ def hydrate_metadata(state: dict) -> dict:
         )
 
     newly_hydrated = set(ch["channel_id"] for ch in channels)
+    # persisted_ids, not `channels`: a channel whose row was rolled back
+    # cannot be in the workbook, so counting it towards the delivery target
+    # would promise a row that does not exist.
+    _kept = set(persisted_ids)
+    newly_qualified = {
+        ch["channel_id"]
+        for ch in channels
+        if ch["channel_id"] in _kept
+        and int(ch.get("subscriber_count") or 0) >= floor
+    }
     quota_spent = client.quota_consumed_this_call(quota_baseline)
 
     hydration_summary = {
@@ -665,6 +702,8 @@ def hydrate_metadata(state: dict) -> dict:
         hydration_summary["stopped_on"] = "run_deadline_seconds"
     if trimmed:
         hydration_summary["trimmed_to_cap"] = trimmed
+    # What the run has towards its promise, not just what it paid for.
+    hydration_summary["channels_over_floor"] = len(newly_qualified)
 
     node_log = NodeLog(
         node_name="hydrate_metadata",
@@ -677,6 +716,10 @@ def hydrate_metadata(state: dict) -> dict:
     return {
         "discovered_video_ids": all_video_ids,
         "hydrated_channel_ids": newly_hydrated,
+        # The subset that can actually reach the workbook, decided by the
+        # same rule the export applies -- read straight off the API's own
+        # subscriber_count, which this node already has in hand.
+        "qualified_channel_ids": newly_qualified,
         "youtube_quota_used": quota_spent,
         "node_logs": [node_log.model_dump()],
         "errors": errors,

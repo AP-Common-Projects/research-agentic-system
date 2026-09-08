@@ -82,9 +82,14 @@ def _within_cap(scope: set[str], hydrated) -> list[str]:
     work, the gate makes the file complete.
     """
     try:
-        from src.config import get_config
+        from src.tools.deliverable import run_ceilings
 
-        cap = int(get_config().harness.max_channels_per_run or 0)
+        # The hydration ceiling, not the delivery target. The enrichment
+        # nodes select on the subscriber floor themselves, so trimming to
+        # the target here would drop qualifying channels before they could
+        # be reached -- the same confusion of the funnel's mouth with its
+        # outlet that this whole change removes.
+        cap = run_ceilings()[1]
     except Exception:
         # An unreadable config must not narrow a run that would have worked.
         return sorted(scope)

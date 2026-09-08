@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from src.config import get_config
 from src.db.connection import get_connection, put_connection
 from src.state import NodeLog
+from src.tools.deliverable import eligible_sql
 
 
 def _run_channel_clause(state: dict, run_id: str) -> tuple[str, tuple]:
@@ -68,7 +69,7 @@ def finalize_dataset(state: dict) -> dict:
         channels_discovered = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM channels WHERE meets_subscriber_floor = TRUE "
+            "SELECT COUNT(*) FROM channels WHERE " + eligible_sql(None) + " "
             "AND first_discovered_run_id = %s", (run_id,)
         )
         channels_enriched = cur.fetchone()[0]

@@ -285,7 +285,11 @@ class TestChannelCapMatchesEnrichmentCapacity:
         sample = get_tier("sample")
         assert sample.governors["MAX_CHANNELS_PER_RUN"] <= 50
 
-    def test_discovery_stops_once_the_cap_is_reached(self):
+    def test_discovery_stops_once_the_delivery_target_is_met(self):
+        """Not when it has FOUND the target -- when it holds that many
+        channels over the subscriber floor. Roughly one in five discovered
+        channels clears it, so admitting on the raw count meant a run asked
+        for 40 delivered rows stopped searching at 40 found."""
         from src.graph import _guarded
 
         calls = []
@@ -301,11 +305,63 @@ class TestChannelCapMatchesEnrichmentCapacity:
              patch("src.config.get_config", lambda: cfg):
             out = asyncio.run(node({
                 "thread_id": "t",
-                "discovered_channel_ids": [f"c{i}" for i in range(40)],
+                "discovered_channel_ids": [f"c{i}" for i in range(400)],
+                "qualified_channel_ids": {f"c{i}" for i in range(40)},
             }))
 
         assert calls == []
         assert out["node_logs"][0]["input_summary"]["skipped"] == "max_channels_per_run"
+
+    def test_discovery_keeps_going_while_the_target_is_short(self):
+        """The bug: 40 discovered is not 40 delivered, and stopping there
+        is what shipped a 17-row workbook against a promise of 100."""
+        from src.graph import _guarded
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        node = _guarded(_node, "keyword_search")
+        cfg = type("C", (), {"harness": HarnessConfig(max_channels_per_run=40)})()
+
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch("src.config.get_config", lambda: cfg):
+            asyncio.run(node({
+                "thread_id": "t",
+                "discovered_channel_ids": [f"c{i}" for i in range(40)],
+                "qualified_channel_ids": {"c1", "c2"},
+            }))
+
+        assert len(calls) == 1
+
+    def test_discovery_stops_at_the_hydration_ceiling(self):
+        """A topic where nothing clears the floor must still stop."""
+        from src.graph import _guarded
+        from src.tools.deliverable import hydration_ceiling
+
+        calls = []
+
+        async def _node(state):
+            calls.append(state)
+            return {"keyword_search_done": True}
+
+        node = _guarded(_node, "keyword_search")
+        cfg = type("C", (), {"harness": HarnessConfig(max_channels_per_run=40)})()
+        found = hydration_ceiling(40)
+
+        with patch.object(dl, "get_config", lambda: _cfg(0)), \
+             patch("src.config.get_config", lambda: cfg):
+            out = asyncio.run(node({
+                "thread_id": "t",
+                "discovered_channel_ids": [f"c{i}" for i in range(found)],
+                "qualified_channel_ids": {"c1"},
+            }))
+
+        assert calls == []
+        assert (out["node_logs"][0]["input_summary"]["skipped"]
+                == "max_hydrated_channels_per_run")
 
     def test_discovery_continues_below_the_cap(self):
         from src.graph import _guarded
@@ -494,8 +550,12 @@ class TestTheWriteUpChainIsBoundedToo:
         code = pathlib.Path(
             "src/nodes/populate_taxonomy_dimensions.py"
         ).read_text(encoding="utf-8")
-        loop_at = code.index("for ch_id, title, desc, fmt, nid, nname, category in eligible:")
+        loop_at = code.index("for row in eligible:")
         assert code.index("run_deadline.writeup_passed(state)") > loop_at
+        # And again around the calls themselves, which now overlap: the
+        # fan-out consults it before each SUBMIT, so overshoot is one batch
+        # per worker rather than the whole node.
+        assert "should_stop=lambda: run_deadline.writeup_passed(state)" in code
 
 
 class TestTheTierCapReachesEnrichment:
@@ -510,6 +570,9 @@ class TestTheTierCapReachesEnrichment:
 
         cfg = MagicMock()
         cfg.harness.max_channels_per_run = cap
+        # A real int: run_ceilings reads this, and a bare MagicMock
+        # attribute is truthy and ints to 1.
+        cfg.harness.max_hydrated_channels_per_run = cap
         with patch("src.config.get_config", return_value=cfg):
             return run_scope.channel_scope({
                 "discovered_channel_ids": list(discovered),
