@@ -96,21 +96,30 @@ def _run_niches(conn, state: dict) -> list[dict[str, Any]]:
         cur.execute(
             "SELECT nt.niche_id, nt.niche_name, nt.parent_category, "
             "       nt.description, png.group_label, "
+            "       COALESCE(rnf.group_id, nt.primary_niche_group_id) AS gid, "
             "       COUNT(DISTINCT c.channel_id) AS n "
             "FROM niche_taxonomy nt "
+            # This run's own assignment first, the store-wide default
+            # second. A family is a reading of one deliverable's material,
+            # and two runs over the same vertical need not agree.
+            "LEFT JOIN run_niche_families rnf "
+            "       ON rnf.niche_id = nt.niche_id AND rnf.run_id = %s "
             "LEFT JOIN primary_niche_groups png "
-            "       ON png.group_id = nt.primary_niche_group_id "
+            "       ON png.group_id = COALESCE(rnf.group_id, "
+            "                                  nt.primary_niche_group_id) "
             "JOIN channels c ON c.primary_niche_id = nt.niche_id "
             "WHERE " + eligible_sql() + " "
             + scope_sql +
             "GROUP BY nt.niche_id, nt.niche_name, nt.parent_category, "
-            "         nt.description, png.group_label "
+            "         nt.description, png.group_label, "
+            "         COALESCE(rnf.group_id, nt.primary_niche_group_id) "
             "ORDER BY n DESC, nt.niche_name",
-            scope_params,
+            (state.get("run_id", ""),) + tuple(scope_params),
         )
         return [
             {"niche_id": r[0], "niche_name": r[1], "parent_category": r[2],
-             "description": r[3], "current_family": r[4], "channel_count": r[5]}
+             "description": r[3], "current_family": r[4],
+             "current_group_id": r[5], "channel_count": r[6]}
             for r in cur.fetchall()
         ]
     finally:
@@ -370,9 +379,21 @@ def _enforce_minimum(
     return placed
 
 
-def _persist(conn, placed: dict[int, str], families: list[dict],
+def _persist(conn, run_id: str, placed: dict[int, str], families: list[dict],
              niches: list[dict]) -> int:
-    """Write the groups and point the niches at them."""
+    """Write the groups, and record this run's answer against this run.
+
+    Every niche the run reports on gets a row, not only the ones whose
+    family changed. A run that inherited its families and moved nothing
+    still has to own them: otherwise its workbook depends on no later run
+    ever touching the shared taxonomy column, which is a promise nothing
+    enforces and exactly the one that broke.
+
+    A niche keeping the label it already had keeps its group ID too, rather
+    than being resolved afresh from (vertical, label) -- re-deriving the
+    vertical from this run's members could mint a second group row with the
+    same label under a different vertical.
+    """
     by_id = {n["niche_id"]: n for n in niches}
     described = {f["label"]: f.get("description", "") for f in families}
     # A family's vertical is whichever parent_category most of its members
@@ -403,23 +424,36 @@ def _persist(conn, placed: dict[int, str], families: list[dict],
                 group_ids[label] = row[0]
         conn.commit()
 
-        updated = 0
+        recorded = 0
         for nid, label in placed.items():
-            gid = group_ids.get(label)
+            niche = by_id.get(nid) or {}
+            if label == niche.get("current_family") and niche.get("current_group_id"):
+                gid = niche["current_group_id"]
+            else:
+                gid = group_ids.get(label)
             if gid is None:
                 continue
-            # No IS NULL guard. _split_kept_and_loose has already decided
-            # which niches keep the family they have; everything reaching
-            # here is either unfiled or sitting in a family too small to
-            # ship, and re-pointing it is the whole job.
+            # This run's answer, recorded against this run. Re-running the
+            # node for the same run overwrites its own row and nobody
+            # else's.
+            cur.execute(
+                "INSERT INTO run_niche_families (run_id, niche_id, group_id) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (run_id, niche_id) DO UPDATE "
+                "SET group_id = EXCLUDED.group_id, assigned_at = now()",
+                (run_id, nid, gid),
+            )
+            recorded += 1
+            # And the store-wide default, only where there is none. Never
+            # an overwrite: assigning families on one run used to rewrite
+            # an already-delivered workbook belonging to another.
             cur.execute(
                 "UPDATE niche_taxonomy SET primary_niche_group_id = %s "
-                "WHERE niche_id = %s",
+                "WHERE niche_id = %s AND primary_niche_group_id IS NULL",
                 (gid, nid),
             )
-            updated += cur.rowcount
         conn.commit()
-        return updated
+        return recorded
     finally:
         cur.close()
 
@@ -463,10 +497,17 @@ def assign_niche_families(state: dict) -> dict:
             sizes: dict[str, int] = {}
             for label in kept.values():
                 sizes[label] = sizes.get(label, 0) + 1
+            # Recorded even though nothing moved -- see _persist.
+            try:
+                recorded = _persist(conn, state.get("run_id", ""), dict(kept),
+                                    [], niches)
+            except Exception:
+                conn.rollback()
+                recorded = 0
             return {"node_logs": _log({
                 "reason": "every family already meets the minimum",
                 "sub_niches": len(niches), "families": len(sizes),
-                "niches_grouped": 0,
+                "niches_grouped": 0, "niches_recorded": recorded,
                 "smallest_family": min(sizes.values()) if sizes else 0,
                 "minimum_required": MIN_SUB_NICHES_PER_FAMILY,
             })}
@@ -519,13 +560,10 @@ def assign_niche_families(state: dict) -> dict:
         families = destinations
         niches_for_rule = niches
         placed = _enforce_minimum(placed, niches_for_rule, families)
-        loose_ids = {n["niche_id"] for n in loose}
-        rewritten = {
-            nid: label for nid, label in placed.items()
-            if nid in loose_ids or placed[nid] != kept.get(nid)
-        }
         try:
-            updated = _persist(conn, rewritten, families, niches)
+            # Every niche, not only the ones that moved.
+            updated = _persist(conn, state.get("run_id", ""), placed,
+                               families, niches)
         except Exception as exc:
             conn.rollback()
             errors.append(ErrorRecord(

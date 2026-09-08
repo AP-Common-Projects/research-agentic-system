@@ -189,11 +189,16 @@ def fetch_run_channels(
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         LEFT JOIN niche_taxonomy nt ON nt.niche_id = c.primary_niche_id
-        LEFT JOIN primary_niche_groups png ON png.group_id = nt.primary_niche_group_id
+        LEFT JOIN run_niche_families rnf
+               ON rnf.niche_id = nt.niche_id AND rnf.run_id = %s
+        LEFT JOIN primary_niche_groups png
+               ON png.group_id = COALESCE(rnf.group_id, nt.primary_niche_group_id)
         WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
-    params: tuple = (run_id,)
+    # The join's run_id comes first: psycopg binds %s positionally, so the
+    # order here is the order they appear in the statement.
+    params: tuple = (run_id, run_id)
     if own_only:
         sql += " AND c.first_discovered_run_id = %s"
         params = params + (run_id,)
@@ -312,15 +317,17 @@ def fetch_run_niche_breakdown(
                nt.description, nt.is_evergreen_prone,
                COUNT(DISTINCT c.channel_id) AS channel_count
         FROM niche_taxonomy nt
+        LEFT JOIN run_niche_families rnf
+               ON rnf.niche_id = nt.niche_id AND rnf.run_id = %s
         LEFT JOIN primary_niche_groups png
-               ON png.group_id = nt.primary_niche_group_id
+               ON png.group_id = COALESCE(rnf.group_id, nt.primary_niche_group_id)
         JOIN channels c ON c.primary_niche_id = nt.niche_id
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
-    params: tuple = (run_id,)
+    params: tuple = (run_id, run_id)
     if own_only:
         sql += " AND c.first_discovered_run_id = %s"
         params = params + (run_id,)
@@ -359,15 +366,17 @@ def fetch_run_niche_families(
                STRING_AGG(DISTINCT nt.parent_category, ', ')  AS categories,
                STRING_AGG(DISTINCT nt.niche_name, ', ')       AS sub_niches
         FROM niche_taxonomy nt
+        LEFT JOIN run_niche_families rnf
+               ON rnf.niche_id = nt.niche_id AND rnf.run_id = %s
         LEFT JOIN primary_niche_groups png
-               ON png.group_id = nt.primary_niche_group_id
+               ON png.group_id = COALESCE(rnf.group_id, nt.primary_niche_group_id)
         JOIN channels c ON c.primary_niche_id = nt.niche_id
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
         WHERE t.run_id = %s
           AND c.subscriber_count >= {floor}
     """
-    params: tuple = (run_id,)
+    params: tuple = (run_id, run_id)
     if own_only:
         sql += " AND c.first_discovered_run_id = %s"
         params = params + (run_id,)

@@ -348,6 +348,33 @@ MIGRATIONS: list[str] = [
     """COMMENT ON TABLE primary_niche_groups IS 'Crime brief Primary_Niche tier. Multiple niche_taxonomy rows share one group — the merge-semantically-overlapping-categories mechanism.'""",
     """ALTER TABLE niche_taxonomy ADD COLUMN IF NOT EXISTS primary_niche_group_id INT""",
 
+    # === niche families, per run (2026-09-08) ===
+    #
+    # primary_niche_group_id is a column on the shared taxonomy, so a niche
+    # belongs to one family for the whole store and the last run to assign
+    # one wins. Two runs over the same vertical do not agree about how it
+    # divides up, and they should not have to: a family is a reading of one
+    # deliverable's material.
+    #
+    # Measured, not feared. Assigning families on run-bc5226fb2e06 rewrote
+    # run-e4e794436210's ALREADY DELIVERED workbook from five families with
+    # a smallest of 16 to seven, two of them holding 5 and 2 sub-niches --
+    # breaking, retroactively, the >=10 rule the client had asked for on a
+    # file they already had.
+    #
+    # The taxonomy column stays as the store-wide default for anything
+    # asking outside a run's context, and is only ever filled where NULL.
+    # This table is what a run's own surfaces read.
+    """CREATE TABLE IF NOT EXISTS run_niche_families (
+        run_id      TEXT NOT NULL,
+        niche_id    INT  NOT NULL,
+        group_id    INT  NOT NULL,
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (run_id, niche_id)
+    )""",
+    """COMMENT ON TABLE run_niche_families IS 'Which niche family each niche belonged to IN ONE RUN. A later run cannot change an earlier run''s workbook.'""",
+    """CREATE INDEX IF NOT EXISTS idx_run_niche_families_run ON run_niche_families(run_id)""",
+
     # === v4 raw label preservation (plan §5.2) ===
     """ALTER TABLE channel_niches ADD COLUMN IF NOT EXISTS raw_niche_label TEXT""",
     """COMMENT ON COLUMN channel_niches.raw_niche_label IS 'What classify_channel proposed before _match_niche fuzzy-matched or canonicalized it. Never overwritten once set.'""",

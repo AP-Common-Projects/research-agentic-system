@@ -15,6 +15,7 @@ in as many words: "a real limitation, but not one a run can close".
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pytest
 
@@ -362,3 +363,107 @@ class TestFutureRunsGetThisWithoutBeingAsked:
 
         names = list(_nodes())
         assert names.index("assign_niche_families") < names.index("assign_cohorts")
+
+
+class TestARunsFamiliesAreItsOwn:
+    """primary_niche_group_id is a column on the shared taxonomy, so a niche
+    belonged to one family for the whole store and the last run to assign
+    won. Measured, not feared: assigning families on run-bc5226fb2e06
+    rewrote run-e4e794436210's ALREADY DELIVERED workbook from five
+    families with a smallest of 16 to seven, two of them holding 5 and 2
+    sub-niches -- retroactively breaking the rule the client asked for on a
+    file they already had.
+    """
+
+    READERS = [
+        ("src/export.py", "fetch_run_channels"),
+        ("src/export.py", "fetch_run_niche_breakdown"),
+        ("src/export.py", "fetch_run_niche_families"),
+        ("src/api/deliverables.py", "workbook_tree"),
+    ]
+
+    @staticmethod
+    def _body(path: str, func: str) -> str:
+        """One function's source, bounded by the next top-level def --
+        fetch_run_channels is longer than any fixed window."""
+        src = pathlib.Path(path).read_text(encoding="utf-8")
+        start = src.index(f"def {func}(")
+        nxt = re.search(r"\n(?:def |@dataclass|class )", src[start + 1:])
+        return src[start:start + 1 + nxt.start()] if nxt else src[start:]
+
+    @pytest.mark.parametrize("path,func", READERS)
+    def test_every_reader_resolves_the_family_through_the_run(self, path, func):
+        body = self._body(path, func)
+        assert "run_niche_families rnf" in body, func
+        assert "COALESCE(rnf.group_id" in body, func
+
+    def test_the_shared_column_survives_as_the_fallback(self):
+        """A workbook exported before the per-run table existed, and any
+        view that spans runs rather than being one, still resolve."""
+        for path, func in self.READERS:
+            body = self._body(path, func)
+            assert "nt.primary_niche_group_id" in body, func
+
+    def test_the_node_never_overwrites_the_shared_column(self):
+        src = pathlib.Path("src/nodes/assign_niche_families.py").read_text(
+            encoding="utf-8")
+        body = src[src.index("def _persist("):]
+        assert "UPDATE niche_taxonomy SET primary_niche_group_id" in body
+        assert "AND primary_niche_group_id IS NULL" in body
+
+    def test_it_records_a_row_for_every_niche_not_only_moved_ones(self):
+        """A run that inherited its families and moved nothing still has to
+        own them, or its workbook depends on nobody ever touching the
+        shared column -- a promise nothing enforces."""
+        src = pathlib.Path("src/nodes/assign_niche_families.py").read_text(
+            encoding="utf-8")
+        assert "INSERT INTO run_niche_families" in src
+        assert "ON CONFLICT (run_id, niche_id) DO UPDATE" in src
+
+    def test_a_kept_family_keeps_its_group_id(self):
+        """Re-resolving by (vertical, label) could mint a second group row
+        with the same label under a different vertical."""
+        src = pathlib.Path("src/nodes/assign_niche_families.py").read_text(
+            encoding="utf-8")
+        body = src[src.index("def _persist("):]
+        assert 'niche.get("current_group_id")' in body
+
+    def test_the_table_is_keyed_on_the_pair(self):
+        src = pathlib.Path("src/db/schema.py").read_text(encoding="utf-8")
+        assert "CREATE TABLE IF NOT EXISTS run_niche_families" in src
+        assert "PRIMARY KEY (run_id, niche_id)" in src
+
+
+class TestTheDeliveredRunIsStillIntact:
+    """Live, against the store: the run the client has."""
+
+    def test_its_families_all_meet_the_minimum(self):
+        from src.export import fetch_run_niche_families, workbook_scope
+
+        s = workbook_scope("run-e4e794436210")
+        fams = fetch_run_niche_families(
+            "run-e4e794436210", s.category, s.min_subscribers, s.own_only)
+        assert fams
+        for f in fams:
+            assert int(f["distinct_sub_niches"]) >= MIN_SUB_NICHES_PER_FAMILY, f
+
+    def test_it_owns_a_row_for_every_niche_it_reports(self):
+        from src.db.connection import get_connection, put_connection
+
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT count(*) FROM run_niche_families WHERE run_id = %s",
+                ("run-e4e794436210",),
+            )
+            assert cur.fetchone()[0] >= 135
+        finally:
+            put_connection(conn)
+
+    def test_other_runs_families_do_not_leak_into_it(self):
+        from src.api.deliverables import workbook_tree
+
+        names = {f["name"] for f in workbook_tree("run-e4e794436210")["children"]}
+        assert "Academic & Early Learning" not in names
+        assert "Content Creation Niches" not in names

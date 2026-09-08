@@ -238,11 +238,18 @@ def workbook_tree(workbook_id: str) -> dict[str, Any]:
                LEFT JOIN channel_niches cn
                       ON cn.channel_id = c.channel_id AND cn.is_primary
                LEFT JOIN niche_taxonomy nt ON nt.niche_id = cn.niche_id
+               -- This workbook's own assignment where it has one. For a
+               -- category workbook rather than a run, nothing matches and
+               -- COALESCE falls through to the store-wide default, which
+               -- is the right answer for a view spanning many runs.
+               LEFT JOIN run_niche_families rnf
+                      ON rnf.niche_id = nt.niche_id AND rnf.run_id = %s
                LEFT JOIN primary_niche_groups png
-                      ON png.group_id = nt.primary_niche_group_id
+                      ON png.group_id = COALESCE(rnf.group_id,
+                                                 nt.primary_niche_group_id)
                WHERE c.channel_id = ANY(%s)
                ORDER BY c.channel_id""",
-            (ids,),
+            (workbook_id, ids),
         )
         rows = cur.fetchall()
         cur.close()
