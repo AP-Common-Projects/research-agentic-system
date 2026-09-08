@@ -37,7 +37,7 @@ class TestAFullChannelCapEndsTheResearch:
     its channel limit (100 of 100)" and delivered a 17-row workbook.
     """
 
-    def _check(self, cap, hydrated, qualified=0, ceiling=0, **overrides):
+    def _check(self, cap, hydrated, delivered=0, ceiling=0, **overrides):
         cfg = MagicMock()
         cfg.harness.run_deadline_seconds = 0
         cfg.harness.budget_limit_usd = 0
@@ -60,7 +60,7 @@ class TestAFullChannelCapEndsTheResearch:
 
         state = {
             "hydrated_channel_ids": {f"c{i}" for i in range(hydrated)},
-            "qualified_channel_ids": {f"c{i}" for i in range(qualified)},
+            "qualified_channel_ids": {f"c{i}" for i in range(delivered)},
             "tree": {"n1": {"status": "active"}},
             "active_node_id": "n1",
         }
@@ -71,7 +71,7 @@ class TestAFullChannelCapEndsTheResearch:
     def test_a_full_delivery_target_stops_the_run(self):
         """The promise is kept -- there is nothing left for a further round
         of discovery to contribute."""
-        out = self._check(cap=100, hydrated=400, qualified=100)
+        out = self._check(cap=100, hydrated=400, delivered=100)
         node = out["node_logs"][0]["input_summary"]
         assert node.get("governor") == "max_channels_per_run", node
         assert node.get("spent") == 100
@@ -79,34 +79,34 @@ class TestAFullChannelCapEndsTheResearch:
     def test_hydrating_the_target_is_not_delivering_it(self):
         """The bug itself: 100 hydrated is not 100 in the workbook, and
         stopping there is what shipped 17 rows against a promise of 100."""
-        out = self._check(cap=100, hydrated=100, qualified=24)
+        out = self._check(cap=100, hydrated=100, delivered=24)
         assert out.get("next_action") != "budget_exhausted"
 
     def test_the_hydration_ceiling_still_stops_a_run_that_cannot_qualify(self):
         """A topic where nothing clears the floor must not hydrate forever
         chasing a target it will never reach."""
-        out = self._check(cap=100, hydrated=1200, qualified=3)
+        out = self._check(cap=100, hydrated=1200, delivered=3)
         gov = out["node_logs"][0]["input_summary"]["governor"]
         assert gov == "max_hydrated_channels_per_run"
 
     def test_it_stops_when_the_target_is_exceeded_too(self):
-        out = self._check(cap=100, hydrated=600, qualified=140)
+        out = self._check(cap=100, hydrated=600, delivered=140)
         assert out["node_logs"][0]["input_summary"]["governor"] == "max_channels_per_run"
 
     def test_a_run_with_room_left_carries_on(self):
-        out = self._check(cap=100, hydrated=40, qualified=8)
+        out = self._check(cap=100, hydrated=40, delivered=8)
         assert out.get("next_action") != "budget_exhausted"
 
     def test_an_uncapped_run_is_unaffected(self):
         """A bare CLI run sets no cap, and used to work exactly because of
         that -- it must not start stopping now."""
-        out = self._check(cap=0, hydrated=5000, qualified=5000)
+        out = self._check(cap=0, hydrated=5000, delivered=5000)
         assert out.get("next_action") != "budget_exhausted"
 
     def test_it_exits_the_same_way_the_other_ceilings_do(self):
         """force-saturate, compact, finalize, export what the run reached --
         not an abort, which is what the recursion limit gave instead."""
-        out = self._check(cap=10, hydrated=50, qualified=10)
+        out = self._check(cap=10, hydrated=50, delivered=10)
         assert out.get("next_action") == "budget_exhausted"
         assert out["tree"]["n1"]["saturation_reason"] == "governor:max_channels_per_run"
 

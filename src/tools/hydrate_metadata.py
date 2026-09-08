@@ -268,10 +268,15 @@ def hydrate_metadata(state: dict) -> dict:
 
     target, cap = _ceilings_for_cap(_harness)
     trimmed = 0
-    # Once the run holds the floor-passing channels it promised, hydrating
-    # more buys nothing the deliverable can use.
-    already_qualified = len(state.get("qualified_channel_ids") or ())
-    if target > 0 and already_qualified >= target:
+    # Once the run holds the rows it promised, hydrating more buys nothing
+    # the deliverable can use.
+    #
+    # The count check_saturation measured off the export, not this node's
+    # own floor-passing set: the export also scopes to the run's dominant
+    # category, which drops a further quarter of floor-passing channels on
+    # average. Stopping on the wider figure would stop short of the band.
+    already_delivered = int(state.get("delivered_channel_count") or 0)
+    if target > 0 and already_delivered >= target:
         return {
             "next_action": "continue",
             "node_logs": [
@@ -280,7 +285,7 @@ def hydrate_metadata(state: dict) -> dict:
                     thread_id=thread_id,
                     input_summary={
                         "reason": "delivery target met",
-                        "qualified": already_qualified,
+                        "delivered": already_delivered,
                         "target": target,
                     },
                 ).model_dump()

@@ -33,7 +33,14 @@ import math
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from src.tools.deliverable import DISCOVERY_YIELD, hydration_ceiling
+from src.tools.deliverable import (
+    DISCOVERY_YIELD,
+    _FLOOR_YIELD,
+    _FLOOR_YIELD_PESSIMISTIC,
+    _SCOPE_YIELD,
+    _SCOPE_YIELD_PESSIMISTIC,
+    hydration_ceiling,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,16 +69,28 @@ _SECONDS_PER_DELIVERED_CHANNEL_SERIAL = 140.0
 #: batch of every stage runs at less than full width, and a 429 costs a
 #: backoff.
 #:
-#: Measured against the live provider on 2026-09-08 rather than assumed:
-#: four serial mid-tier calls took 8.7s (2.2s each), so eight would have
-#: taken 17.3s; the same eight through map_llm took 3.5s, all succeeding.
-#: That is 5.0x, which is what the tiers are sized on.
+#: Measured against the live provider on 2026-09-08, and the SUSTAINED
+#: figure is the one that matters. Short bursts look much better than the
+#: pipeline will ever see:
 #:
-#: Two whole nodes then ran against the live store at the same width:
+#:     8 calls,   8 workers, burst        5.0x
+#:    16 calls,   8 workers, burst        5.7x
+#:    32 calls,  16 workers, burst        8.7x
+#:    48 calls,  24 workers, burst       13.8x
+#:    48 calls,  16 workers, sustained    6.0x then 3.1x
+#:
+#: The provider throttles under load, so sixteen workers is not better
+#: than eight once a stage runs for minutes rather than seconds -- the
+#: second sustained trial was worse than eight workers had been. Four is
+#: below the sustained floor observed, which is where a tier's arithmetic
+#: has to sit. Raising llm_concurrency will not move this number; only a
+#: new sustained measurement should.
+#:
+#: Two whole nodes ran against the live store at width eight:
 #: describe_video_titles wrote 232 descriptions in 19.4s (0.08s a title
 #: against 0.78s serial) and populate_taxonomy_dimensions filled 12
 #: channels in 63.5s (5.3s each against 14.3s), both with zero errors.
-_EFFECTIVE_CONCURRENCY = 5.0
+_EFFECTIVE_CONCURRENCY = 4.0
 
 #: Wall clock hydrate_metadata spends per channel: 325s for 100 channels
 #: across four rounds on run-dd2dbdbc3080. This is the cost paid for every
@@ -115,13 +134,13 @@ _FIXED_OVERHEAD_SECONDS = 600.0
 #: channels in the store that clear 50k subscribers.
 _VIDEOS_PER_CHANNEL = 58
 
-#: Channels that clear the floor, at the worst rate a tier is sized to
-#: survive. DISCOVERY_YIELD (0.20) is what the tier is sized to DELIVER at;
-#: this pooled 15.5% -- every organic run in the store, including the two
-#: wide augment runs that passed at 9-11% -- is the rate its window still
-#: has to cover its stated MINIMUM at. A tier that only holds its band on a
-#: good topic is a tier that does not hold its band.
-_YIELD_PESSIMISTIC = 0.155
+#: The funnel's two narrowings, at the worst rates a tier is sized to
+#: survive. DISCOVERY_YIELD is what a tier is sized to DELIVER at; these
+#: are the rates its window still has to cover its stated MINIMUM at. A
+#: tier that only holds its band on a good topic does not hold its band.
+#:
+#: Both live in src/tools/deliverable.py with the measurements behind
+#: them, so the governor and the estimate cannot use different numbers.
 
 #: Durations carry this margin: a tier that fits only if every stage hits
 #: its average is a tier that overruns whenever one does not.
@@ -137,12 +156,18 @@ _COST_MARGIN = 1.5
 #: gate then took a further 25 and 30 -- so a card saying "1h" described 82
 #: and 91 minutes of waiting.
 #:
-#: Expressed as a share of the research window because that is what it
-#: scales with: the gate heals the channels the run collected. Kept at the
-#: pre-concurrency figure even though the gate drives the same nodes and
-#: should now be faster -- quoting a wait longer than it turns out to be is
-#: the safe direction, and there is no measurement of a concurrent gate yet.
-_GATE_SHARE_OF_RESEARCH = 0.45
+#: Expressed as a share of ONE ENRICHMENT PASS, not of the research window.
+#: A share of the window was defensible while the window was mostly
+#: enrichment; it is not now that a Deep tier spends five hours hydrating,
+#: because the gate does not discover and does not hydrate -- it heals
+#: columns on channels the run already holds. At 45% of the window a Deep
+#: run quoted 7h48m of checking, which describes nothing.
+#:
+#: Half a pass is what the measurement supports: those 21-channel sample
+#: runs spent 25-30 minutes against a full serial pass of ~2,940s, so the
+#: gate redid roughly 50-60% of one. Charged against the CONCURRENT
+#: per-channel cost, since the gate drives the same nodes.
+_GATE_SHARE_OF_ENRICHMENT = 0.5
 
 #: Crime carries a per-VIDEO stage no other vertical runs:
 #: populate_crime_metadata classifies each video into the fifteen case-file
@@ -195,19 +220,33 @@ def _discovery_rounds(hydrated: int) -> int:
     return max(1, math.ceil(hydrated / _CHANNELS_PER_DISCOVERY_ROUND))
 
 
-def _research_seconds(delivered: int, yield_rate: float, crime: bool) -> float:
-    """Wall clock to deliver `delivered` floor-passing channels.
+def _research_seconds(
+    delivered: int,
+    floor_yield: float = _FLOOR_YIELD,
+    scope_yield: float = _SCOPE_YIELD,
+    crime: bool = False,
+) -> float:
+    """Wall clock to put `delivered` rows in the workbook.
 
-    Three populations, three rates, which is the whole correction: the run
-    DISCOVERS in rounds, HYDRATES everything a round hands over, and
-    ENRICHES only the fraction that clears the floor.
+    THREE populations, three rates, which is the whole correction. The run
+    DISCOVERS in rounds; HYDRATES everything a round hands over, at 3.3
+    seconds each; ENRICHES the fraction that clears the subscriber floor,
+    at 35 seconds each; and DELIVERS the fraction of those the export's
+    category scope keeps.
+
+    Enrichment is charged against the floor-passing count, not the
+    delivered count, because that is what the nodes actually run on -- a
+    channel dropped by the scope was still classified, described and
+    factored first. Charging it at the delivered count is how a model
+    under-quotes by a third.
     """
-    hydrated = math.ceil(delivered / max(1e-6, yield_rate))
+    enriched = math.ceil(delivered / max(1e-6, scope_yield))
+    hydrated = math.ceil(enriched / max(1e-6, floor_yield))
     return (
         _FIXED_OVERHEAD_SECONDS
         + _discovery_rounds(hydrated) * _SECONDS_PER_DISCOVERY_ROUND
         + hydrated * _SECONDS_PER_HYDRATED_CHANNEL
-        + delivered * _seconds_per_delivered_channel(crime)
+        + enriched * _seconds_per_delivered_channel(crime)
     )
 
 
@@ -225,15 +264,16 @@ def _channels_in(seconds: float, crime: bool) -> int:
     disagree with it.
     """
     budget = seconds * _SAFETY_MARGIN
+    fits = lambda n: _research_seconds(n, crime=crime) <= budget
     lo, hi = 5, 5
-    while _research_seconds(hi * 2, DISCOVERY_YIELD, crime) <= budget:
+    while fits(hi * 2):
         hi *= 2
         if hi > 100_000:
             break
     hi *= 2
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if _research_seconds(mid, DISCOVERY_YIELD, crime) <= budget:
+        if fits(mid):
             lo = mid
         else:
             hi = mid - 1
@@ -299,10 +339,14 @@ class DepthTier:
             * _brightdata_cost_per_record(),
             2,
         )
+        # Charged on the ENRICHED count: a channel the export's scope later
+        # drops was still classified, described and factored, and its
+        # tokens were still bought.
+        enriched = math.ceil(self.target_channels / _SCOPE_YIELD)
         self.est_openrouter_usd = round(
             (
                 rounds * _USD_PER_DISCOVERY_ROUND
-                + self.target_channels * self._usd_per_delivered_channel()
+                + enriched * self._usd_per_delivered_channel()
             )
             * _COST_MARGIN,
             2,
@@ -315,8 +359,13 @@ class DepthTier:
         """Long enough for the top of the band, and for the bottom of it
         on a topic that yields badly. Rounded up to the quarter hour."""
         seconds = max(
-            _research_seconds(self.target_channels, DISCOVERY_YIELD, self.crime),
-            _research_seconds(self.min_channels, _YIELD_PESSIMISTIC, self.crime),
+            _research_seconds(self.target_channels, crime=self.crime),
+            _research_seconds(
+                self.min_channels,
+                _FLOOR_YIELD_PESSIMISTIC,
+                _SCOPE_YIELD_PESSIMISTIC,
+                self.crime,
+            ),
         )
         return math.ceil(seconds / _SAFETY_MARGIN / 900) * 900 / 3600
 
@@ -349,7 +398,8 @@ class DepthTier:
         rounds here cost nothing on a good topic and are the difference
         between reaching the band and missing it on a poor one.
         """
-        hydrated = math.ceil(self.min_channels / _YIELD_PESSIMISTIC)
+        enriched = math.ceil(self.min_channels / _SCOPE_YIELD_PESSIMISTIC)
+        hydrated = math.ceil(enriched / _FLOOR_YIELD_PESSIMISTIC)
         return _discovery_rounds(max(hydrated, self.hydration_ceiling)) + 1
 
     @property
@@ -415,8 +465,18 @@ class DepthTier:
 
     @property
     def gate_budget_seconds(self) -> int:
-        """Wall clock the completeness gate may spend after the graph."""
-        return int(self.hours * 3600 * _GATE_SHARE_OF_RESEARCH)
+        """Wall clock the completeness gate may spend after the graph.
+
+        A ceiling, not a plan: a run whose columns are already full leaves
+        the gate nothing to do and it finishes in minutes. The card says
+        "up to" for that reason.
+        """
+        enriched = math.ceil(self.target_channels / _SCOPE_YIELD)
+        return int(
+            enriched
+            * _seconds_per_delivered_channel(self.crime)
+            * _GATE_SHARE_OF_ENRICHMENT
+        )
 
     @property
     def total_duration_label(self) -> str:

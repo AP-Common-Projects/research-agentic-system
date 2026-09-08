@@ -2182,6 +2182,42 @@ def workbook_scope(
     return scope
 
 
+def workbook_channel_count(run_id: str) -> int | None:
+    """How many channel rows the workbook would carry if written now.
+
+    None means the store could not answer, which is not the same as zero
+    and must never be treated as one.
+
+    This exists because the subscriber floor is not the last filter. The
+    export also scopes to the run's dominant category, and falls back to
+    own_only when no category resolves -- and those drop a further 26% of
+    floor-passing channels on average across the runs in the store, 54% on
+    run-019f20e21145 (192 over the floor, 89 in the file). A run that
+    stopped on "I hold 250 channels over the floor" would still ship 185.
+
+    So the governor asks the export itself, through the same two functions
+    that write the file. "What was counted" and "what was written" cannot
+    disagree, which is the same reason workbook_scope exists at all.
+
+    Early in a run this deliberately UNDER-counts: nothing is classified
+    yet, so no category resolves, own_only bites, and the figure is small.
+    That errs towards more work rather than less, and it self-corrects as
+    classification lands. A count that drifts DOWN when the category
+    resolves is the run reporting that its discovery went off-topic --
+    which is a reason to keep looking, not a reason to stop.
+    """
+    try:
+        scope = workbook_scope(run_id)
+        return len(
+            fetch_run_channels(
+                run_id, scope.category, scope.min_subscribers, scope.own_only
+            )
+        )
+    except Exception:
+        logger.warning("workbook_channel_count_unavailable", run_id=run_id)
+        return None
+
+
 def workbook_rows(
     run_id: str, scope: WorkbookScope | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

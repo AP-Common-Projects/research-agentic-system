@@ -136,6 +136,22 @@ def _channel_cap() -> int:
     return _ceilings()[1]
 
 
+def _delivered(state: dict) -> int:
+    """Rows the workbook holds, as check_saturation last measured them.
+
+    Read from state rather than re-measured: this runs before each of the
+    five discovery nodes, so measuring here would query the store five
+    times a round to answer a question that changes once a round.
+
+    Stale-low is the safe direction and the only direction it can be
+    stale in -- the count only grows between rounds, so a discovery node
+    admitted on an old figure does more work, never less. Absent (a run
+    that has not reached its first saturation check, or a bare CLI
+    invocation) reads as zero, which admits everything.
+    """
+    return int(state.get("delivered_channel_count") or 0)
+
+
 def _ceilings() -> tuple[int, int]:
     """(delivery target, hydration ceiling); 0s if config is unreadable."""
     try:
@@ -177,8 +193,8 @@ def _guarded(fn, name: str):
             # with nowhere to land.
             target, ceiling = _ceilings()
             found = len(state.get("discovered_channel_ids", []) or [])
-            qualified = len(state.get("qualified_channel_ids") or ())
-            if target and qualified >= target:
+            delivered = _delivered(state)
+            if target and delivered >= target:
                 skip_reason = "max_channels_per_run"
             elif ceiling and found >= ceiling:
                 skip_reason = "max_hydrated_channels_per_run"

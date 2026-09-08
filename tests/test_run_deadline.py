@@ -286,10 +286,11 @@ class TestChannelCapMatchesEnrichmentCapacity:
         assert sample.governors["MAX_CHANNELS_PER_RUN"] <= 50
 
     def test_discovery_stops_once_the_delivery_target_is_met(self):
-        """Not when it has FOUND the target -- when it holds that many
-        channels over the subscriber floor. Roughly one in five discovered
-        channels clears it, so admitting on the raw count meant a run asked
-        for 40 delivered rows stopped searching at 40 found."""
+        """Not when it has FOUND the target -- when the WORKBOOK holds that
+        many rows. Roughly one in five discovered channels clears the
+        subscriber floor, and the export's category scope drops a quarter
+        of those again, so admitting on the raw count meant a run asked for
+        40 delivered rows stopped searching at 40 found."""
         from src.graph import _guarded
 
         calls = []
@@ -306,7 +307,7 @@ class TestChannelCapMatchesEnrichmentCapacity:
             out = asyncio.run(node({
                 "thread_id": "t",
                 "discovered_channel_ids": [f"c{i}" for i in range(400)],
-                "qualified_channel_ids": {f"c{i}" for i in range(40)},
+                "delivered_channel_count": 40,
             }))
 
         assert calls == []
@@ -331,7 +332,7 @@ class TestChannelCapMatchesEnrichmentCapacity:
             asyncio.run(node({
                 "thread_id": "t",
                 "discovered_channel_ids": [f"c{i}" for i in range(40)],
-                "qualified_channel_ids": {"c1", "c2"},
+                "delivered_channel_count": 2,
             }))
 
         assert len(calls) == 1
@@ -356,7 +357,7 @@ class TestChannelCapMatchesEnrichmentCapacity:
             out = asyncio.run(node({
                 "thread_id": "t",
                 "discovered_channel_ids": [f"c{i}" for i in range(found)],
-                "qualified_channel_ids": {"c1"},
+                "delivered_channel_count": 1,
             }))
 
         assert calls == []

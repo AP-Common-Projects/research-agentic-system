@@ -37,7 +37,51 @@ from src.tools.budget import lineage_share
 from src.tools.deadline import run_elapsed_seconds  # noqa: E402
 
 
+def _delivered_channel_count(state: dict) -> int | None:
+    """Channel rows the workbook would carry right now, or None.
+
+    Asked of the export rather than counted in state, because the export
+    applies filters state knows nothing about: the run's dominant category,
+    and own_only when no category resolves. Across the runs in the store
+    those drop 26% of floor-passing channels on average and 54% at worst,
+    so a run stopping on its own floor-passing count would ship well under
+    the band its card quotes. This is the number the client counts.
+
+    Falls back to the floor-passing set when there is no run_id or the
+    store cannot answer. That over-counts, so the run stops slightly early
+    rather than running past every other ceiling -- and the run deadline,
+    record budget and hydration ceiling all still bind either way.
+    """
+    run_id = state.get("run_id") or ""
+    if run_id:
+        try:
+            from src.export import workbook_channel_count
+
+            measured = workbook_channel_count(run_id)
+            if measured is not None:
+                return measured
+        except Exception:
+            pass
+    qualified = state.get("qualified_channel_ids")
+    return len(qualified) if qualified is not None else None
+
+
 def check_saturation(state: dict) -> dict:
+    """The run's stop conditions, plus the one measurement they turn on.
+
+    A thin wrapper over _check_saturation so the delivered-channel figure
+    reaches state on EVERY exit path, not just the ones that were
+    remembered. There are eleven of them, and a governor that is present on
+    ten is a governor with a hole in it.
+    """
+    delivered = _delivered_channel_count(state)
+    out = _check_saturation(state, delivered)
+    if delivered is not None:
+        out["delivered_channel_count"] = delivered
+    return out
+
+
+def _check_saturation(state: dict, delivered: int | None) -> dict:
     start = time.monotonic()
     cfg = get_config().harness
     threshold = cfg.saturation_novelty_threshold
@@ -124,12 +168,11 @@ def check_saturation(state: dict) -> dict:
     from src.tools.deliverable import run_ceilings
 
     target, ceiling = run_ceilings(cfg)
-    if target > 0:
-        qualified = len(state.get("qualified_channel_ids") or ())
-        if qualified >= target:
+    if target > 0 and delivered is not None:
+        if delivered >= target:
             return _budget_exhausted(
                 state, start, "max_channels_per_run",
-                spent=qualified, ceiling=target,
+                spent=delivered, ceiling=target,
             )
     if ceiling > 0:
         hydrated = len(state.get("hydrated_channel_ids") or ())

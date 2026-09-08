@@ -25,6 +25,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+from unittest.mock import patch
+
 import pytest
 
 from src.api import depth as depth_mod
@@ -75,9 +77,7 @@ class TestTheBandsAreWhatWasAskedFor:
 class TestTheWindowCanActuallyReachTheBand:
     def test_the_top_of_the_band_fits_at_the_expected_yield(self):
         for tier in depth_mod.TIERS:
-            work = depth_mod._research_seconds(
-                tier.target_channels, DISCOVERY_YIELD, False
-            )
+            work = depth_mod._research_seconds(tier.target_channels)
             budget = tier.hours * 3600 * depth_mod._SAFETY_MARGIN
             assert work <= budget, f"{tier.id}: {work:.0f}s in {budget:.0f}s"
 
@@ -87,7 +87,9 @@ class TestTheWindowCanActuallyReachTheBand:
         minimum on a good topic does not hold its minimum."""
         for tier in depth_mod.TIERS:
             work = depth_mod._research_seconds(
-                tier.min_channels, depth_mod._YIELD_PESSIMISTIC, False
+                tier.min_channels,
+                depth_mod._FLOOR_YIELD_PESSIMISTIC,
+                depth_mod._SCOPE_YIELD_PESSIMISTIC,
             )
             budget = tier.hours * 3600 * depth_mod._SAFETY_MARGIN
             assert work <= budget, f"{tier.id}: {work:.0f}s in {budget:.0f}s"
@@ -96,7 +98,8 @@ class TestTheWindowCanActuallyReachTheBand:
         """Records are what buys candidates. A budget sized on the good
         yield would stop discovery before the band could be reached."""
         for tier in depth_mod.TIERS:
-            needed_channels = tier.min_channels / depth_mod._YIELD_PESSIMISTIC
+            enriched = tier.min_channels / depth_mod._SCOPE_YIELD_PESSIMISTIC
+            needed_channels = enriched / depth_mod._FLOOR_YIELD_PESSIMISTIC
             rounds = needed_channels / depth_mod._CHANNELS_PER_DISCOVERY_ROUND
             budget = tier.governors["BRIGHTDATA_RECORD_BUDGET"]
             assert budget >= rounds * depth_mod._RECORDS_PER_DISCOVERY_ROUND, tier.id
@@ -137,10 +140,11 @@ class TestTheCapCountsTheRightPopulation:
             assert tier.hydration_ceiling == hydration_ceiling(tier.target_channels)
 
     def test_a_hundred_hydrated_would_not_have_satisfied_a_hundred_promised(self):
-        """The education run, as arithmetic: at the yield the store
-        actually shows, 100 hydrated channels cannot deliver 100 rows."""
+        """The education run, as arithmetic: at the rates the store
+        actually shows, 100 hydrated channels cannot deliver 100 rows --
+        they delivered 17, and the model says 15."""
         assert hydration_ceiling(100) > 100
-        assert int(100 * DISCOVERY_YIELD) == 20
+        assert 12 <= int(100 * DISCOVERY_YIELD) <= 20
 
 
 class TestTheEnrichmentGateAsksTheExportsQuestion:
@@ -208,3 +212,95 @@ class TestCrimeKeepsItsWindowAndGivesUpChannels:
         depth_mod.get_tier("deep", "true crime")
         after = [t.governors["MAX_CHANNELS_PER_RUN"] for t in depth_mod.TIERS]
         assert before == after == [50, 250, 500]
+
+
+class TestTheTargetIsMeasuredAgainstTheFileItself:
+    """The floor is not the last filter, and counting it as if it were is
+    the same bug one layer down.
+
+    The export also scopes to the run's dominant category, and falls back
+    to own_only when no category resolves. Across the runs in the store
+    those drop a further 26% of floor-passing channels on average -- 54%
+    on run-019f20e21145, which held 192 over the floor and shipped 89.
+    """
+
+    def test_the_count_comes_from_the_functions_that_write_the_file(self):
+        """Not a re-derived query beside them. "What was counted" and "what
+        was written" cannot disagree if they are the same call."""
+        src = pathlib.Path("src/export.py").read_text(encoding="utf-8")
+        body = src[src.index("def workbook_channel_count"):
+                   src.index("def workbook_rows")]
+        assert "workbook_scope(" in body
+        assert "fetch_run_channels(" in body
+
+    def test_an_unreachable_store_is_none_not_zero(self):
+        """Zero would read as "this run has delivered nothing" and stop
+        nothing; None says the question could not be answered."""
+        from src.export import workbook_channel_count
+
+        with patch("src.export.workbook_scope", side_effect=RuntimeError("down")):
+            assert workbook_channel_count("run-x") is None
+
+    def test_saturation_stops_on_the_measured_figure(self):
+        from src.tools import saturation as sat
+
+        out = _saturation(cap=100, delivered=100)
+        assert out["node_logs"][0]["input_summary"]["governor"] == "max_channels_per_run"
+        assert out["node_logs"][0]["input_summary"]["spent"] == 100
+
+    def test_holding_the_floor_passing_set_is_not_holding_the_file(self):
+        """The gap this closes: 250 channels over the floor is about 185
+        rows once the export has scoped them."""
+        out = _saturation(cap=250, delivered=185)
+        assert out.get("next_action") != "budget_exhausted"
+
+    def test_the_figure_reaches_state_on_every_exit(self):
+        """Eleven exit paths; a governor present on ten has a hole in it."""
+        for delivered, cap in ((3, 100), (100, 100), (0, 0)):
+            out = _saturation(cap=cap, delivered=delivered)
+            assert out.get("delivered_channel_count") == delivered, (delivered, cap)
+
+    def test_discovery_admission_reads_the_same_figure(self):
+        code = pathlib.Path("src/graph.py").read_text(encoding="utf-8")
+        assert 'state.get("delivered_channel_count")' in code
+
+    def test_hydration_reads_it_too(self):
+        code = pathlib.Path("src/tools/hydrate_metadata.py").read_text(encoding="utf-8")
+        assert 'state.get("delivered_channel_count")' in code
+
+    def test_the_education_runs_funnel_end_to_end(self):
+        """The run the client reported, as arithmetic. 100 hydrated became
+        24 over the floor became 17 rows; the old cap saw only the first
+        number and called the promise kept."""
+        from src.export import workbook_channel_count
+
+        assert workbook_channel_count("run-dd2dbdbc3080") == 17
+
+
+def _saturation(cap, delivered):
+    """check_saturation with every other ceiling switched off."""
+    from unittest.mock import MagicMock
+    from src.tools import saturation as sat
+
+    cfg = MagicMock()
+    cfg.harness.run_deadline_seconds = 0
+    cfg.harness.budget_limit_usd = 0
+    cfg.harness.brightdata_record_budget = 0
+    cfg.harness.youtube_quota_budget_per_run = 0
+    cfg.harness.max_channels_per_run = cap
+    cfg.harness.max_hydrated_channels_per_run = 0
+    cfg.harness.saturation_novelty_threshold = 0.1
+    cfg.harness.saturation_consecutive_window = 2
+    cfg.harness.max_rounds_per_branch = 4
+    cfg.harness.max_tree_depth = 2
+    cfg.harness.branch_lineage_budget_enabled = False
+    state = {
+        "run_id": "run-under-test",
+        "hydrated_channel_ids": set(),
+        "tree": {"n1": {"status": "active"}},
+        "active_node_id": "n1",
+    }
+    with patch.object(sat, "get_config", return_value=cfg), \
+         patch.object(sat, "run_elapsed_seconds", return_value=0), \
+         patch("src.export.workbook_channel_count", return_value=delivered):
+        return sat.check_saturation(state)

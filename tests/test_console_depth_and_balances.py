@@ -40,7 +40,10 @@ class TestTierShape:
         # would need editing every time a measurement lands.
         assert hours == sorted(hours) and len(set(hours)) == 3, hours
         assert 0.5 <= hours[0] <= 3, hours
-        assert hours[-1] <= 12, hours
+        # A Deep run delivering 450-500 on-topic channels is a long job:
+        # ~5h of hydration and ~7h of enrichment before anything else. The
+        # bar is that it stays inside a day, not that it stays short.
+        assert hours[-1] <= 24, hours
 
     def test_duration_label_never_renders_a_bare_decimal_of_an_hour(self):
         """The UI prints this string verbatim, so "0.5h" must not reach it.
@@ -670,11 +673,13 @@ class TestTheCardQuotesTheWholeWait:
         sample = next(t for t in depth_mod.TIERS if t.id == "sample")
         minutes = (sample.hours * 3600 + sample.gate_budget_seconds) / 60
         # The two runs that produced 82 and 91 minutes delivered 21
-        # channels; this tier now delivers 40-50, so the figure to hold is
-        # the RATIO -- the quoted total still has to carry the gate rather
-        # than quoting the research window alone.
+        # channels against this tier's 40-50, and the gate no longer scales
+        # with a window that is mostly hydration. What must hold is that
+        # the quoted total carries the gate at all, rather than quoting the
+        # research window alone -- which is the bug this pins.
         assert minutes > sample.hours * 60, minutes
-        assert minutes / (sample.hours * 60) == pytest.approx(1.45, abs=0.01)
+        assert sample.gate_budget_seconds > 0
+        assert sample.gate_label.startswith("up to")
 
     def test_the_gate_budget_is_handed_to_the_run(self):
         """Quoting a time the gate is not held to would be the same bug in

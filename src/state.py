@@ -277,6 +277,17 @@ class HarnessState(TypedDict, total=False):
     #: the card was quoting its outlet.
     qualified_channel_ids: Annotated[set[str], _merge_set_union]
 
+    #: Channel rows the workbook would carry if it were written now, as
+    #: measured by export.workbook_channel_count.
+    #:
+    #: The floor is not the last filter -- the export also scopes to the
+    #: run's dominant category -- so even qualified_channel_ids overstates
+    #: the deliverable by about a quarter. Single writer (check_saturation,
+    #: once a round), so the default overwrite reducer is the right one:
+    #: two rounds' measurements must not be merged, the later one replaces
+    #: the earlier.
+    delivered_channel_count: int
+
     # Graph traversal is keyed on channel *refs* (handle/URL), not UC ids:
     # featured_channels edges and taxonomy seeds both arrive as handles, and
     # the UC id only exists once the channel record has been fetched. This is
@@ -373,6 +384,7 @@ def create_initial_state(
         "expanded_channel_refs": set(),
         "hydrated_channel_ids": set(),
         "qualified_channel_ids": set(),
+        "delivered_channel_count": 0,
         "keyword_channel_ids": set(),
         "graph_walk_channel_ids": set(),
         "branch_compactions": [],
@@ -393,7 +405,7 @@ def create_initial_state(
         "messages": [],
         "errors": [],
         "node_logs": [],
-        "schema_version": 9,
+        "schema_version": 10,
         "final_report": None,
         "keyword_search_done": False,
         "graph_walk_done": False,
@@ -578,6 +590,13 @@ def migrate_state(state: dict) -> dict:
         # where guessing would mean stopping a resumed run early.
         state.setdefault("qualified_channel_ids", set())
         version = 9
+
+    if version < 10:
+        # Measured, not carried: check_saturation re-reads it from the
+        # export on its next pass, so zero here costs a resumed run
+        # nothing.
+        state.setdefault("delivered_channel_count", 0)
+        version = 10
 
     state["schema_version"] = version
     return state
