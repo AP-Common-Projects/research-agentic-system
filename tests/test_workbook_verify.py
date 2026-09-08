@@ -50,6 +50,8 @@ def _full(tmp_path: Path, **overrides) -> Path:
     sheets = {
         "Channels": (["channel_id", "primary_topic"], [["c1", "gaming"]]),
         "Videos": (["video_id", "video_description"], [["v1", "about it"]]),
+        "Niche Families": (["niche_family", "distinct_sub_niches"],
+                           [["Exam Prep", 12]]),
         "Niches": (["niche_id"], [["n1"]]),
         "Success Factors": (["factor_code"], [["f1"]]),
         "Failure Factors": (["factor_code"], [["f2"]]),
@@ -92,6 +94,40 @@ class TestItReadsTheFileNotTheDatabase:
         answer rather than a gap."""
         report = wv.verify_workbook(_full(tmp_path))
         assert "Shorts" not in report.missing_sheets
+
+    def test_a_workbook_with_niches_and_no_families_is_a_gap(self, tmp_path):
+        """The family tier never ran. Absent, not blank -- which no fill
+        rate can see."""
+        sheets = {
+            "Channels": (["channel_id"], [["c1"]]),
+            "Videos": (["video_id"], [["v1"]]),
+            "Niches": (["niche_id"], [["n1"]]),
+            "Success Factors": (["factor_code"], [["f1"]]),
+            "Failure Factors": (["factor_code"], [["f2"]]),
+        }
+        report = wv.verify_workbook(_write(tmp_path, sheets))
+        assert "Niche Families" in report.missing_sheets
+        assert not report.ok
+
+    def test_a_workbook_with_no_niches_needs_no_families(self, tmp_path):
+        """Nothing to group. The sheet is correctly absent."""
+        sheets = {
+            "Channels": (["channel_id"], [["c1"]]),
+            "Videos": (["video_id"], [["v1"]]),
+            "Niches": (["niche_id"], []),
+            "Success Factors": (["factor_code"], [["f1"]]),
+            "Failure Factors": (["factor_code"], [["f2"]]),
+        }
+        report = wv.verify_workbook(_write(tmp_path, sheets))
+        assert "Niche Families" not in report.missing_sheets
+
+    def test_a_short_family_in_the_written_file_fails(self, tmp_path):
+        report = wv.verify_workbook(_full(tmp_path, **{
+            "Niche Families": (["niche_family", "distinct_sub_niches"],
+                               [["Big", 30], ["Tiny", 2]]),
+        }))
+        assert report.short_families == [("Tiny", 2)]
+        assert not report.ok
 
     def test_an_unpopulated_column_fails(self, tmp_path):
         path = _full(tmp_path, Channels=(

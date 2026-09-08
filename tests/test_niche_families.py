@@ -182,3 +182,183 @@ class TestTheWorkbookCarriesIt:
         assert fams, "no families assigned"
         for f in fams:
             assert int(f["distinct_sub_niches"]) >= MIN_SUB_NICHES_PER_FAMILY, f
+
+
+class TestTheOverviewSummaryShowsFamilies:
+    """The Overview sheet had a table headed "Niche family" that listed all
+    135 SUB-niches, one per row, 115 of them holding a single channel.
+
+    It read `primary_topic`, `distinct_sub_niches`, `example_sub_niches` and
+    `pct_of_vertical` -- four keys the niche breakdown has never produced --
+    so three of its columns shipped blank and its label fell through to the
+    sub-niche name. A heading that promises a rollup over a table that is
+    not one.
+    """
+
+    def test_the_summary_is_built_from_the_family_rows(self):
+        src = pathlib.Path("src/export.py").read_text(encoding="utf-8")
+        body = src[src.index("def build_excel_workbook_v3("):
+                   src.index('_write_excel_sheet(wb.create_sheet("Channels")')]
+        assert 'ws.append(["Niche family", "Channels", "Share of run",' in body
+
+    def test_it_no_longer_reads_keys_nothing_produces(self):
+        src = pathlib.Path("src/export.py").read_text(encoding="utf-8")
+        body = src[src.index("def build_excel_workbook_v3("):
+                   src.index('_write_excel_sheet(wb.create_sheet("Channels")')]
+        assert 'n.get("primary_topic")' not in body
+        assert 'n.get("pct_of_vertical")' not in body
+
+    def test_the_family_count_is_stated(self):
+        src = pathlib.Path("src/export.py").read_text(encoding="utf-8")
+        assert 'ws.append(["Niche families", len(families or ())])' in src
+
+    def test_the_delivered_workbook_summarises_five_rows_not_135(self):
+        from openpyxl import load_workbook
+
+        path = pathlib.Path("exports/run-e4e794436210/run-e4e794436210.xlsx")
+        if not path.exists():
+            pytest.skip("the reference workbook has not been exported here")
+        wb = load_workbook(path, read_only=True)
+        rows = [r for r in wb["Overview"].values]
+        wb.close()
+        header = next(i for i, r in enumerate(rows) if r and r[0] == "Niche family")
+        table = [r for r in rows[header + 1:] if r and r[0]]
+        assert len(table) <= 13, len(table)
+        for row in table:
+            assert int(row[3]) >= MIN_SUB_NICHES_PER_FAMILY, row
+
+
+class TestTheWrittenFileIsChecked:
+    """Enforced upstream is what every completeness failure in this project
+    was claiming when it shipped. The rule is about what the client opens."""
+
+    def test_the_families_sheet_is_verified(self):
+        from src.tools.workbook_verify import _DATA_SHEETS
+
+        assert "Niche Families" in _DATA_SHEETS
+
+    def test_a_short_family_on_the_sheet_fails_verification(self):
+        from src.tools.workbook_verify import _short_families
+
+        header = ["niche_family", "distinct_sub_niches"]
+        body = [("Big", 40), ("Also Big", 12), ("Tiny", 3)]
+        assert _short_families(header, body) == [("Tiny", 3)]
+
+    def test_families_meeting_the_rule_pass(self):
+        from src.tools.workbook_verify import _short_families
+
+        assert _short_families(
+            ["niche_family", "distinct_sub_niches"], [("A", 10), ("B", 40)]
+        ) == []
+
+    def test_a_workbook_too_small_for_one_family_is_exempt(self):
+        """The rule is unsatisfiable below ten sub-niches; one honest
+        family holding everything is the right answer, not a fault."""
+        from src.tools.workbook_verify import _short_families
+
+        assert _short_families(
+            ["niche_family", "distinct_sub_niches"], [("Only", 6)]
+        ) == []
+
+    def test_an_older_workbook_without_the_columns_is_not_failed(self):
+        from src.tools.workbook_verify import _short_families
+
+        assert _short_families(["category", "sub_niche"], [("a", "b")]) == []
+
+    def test_the_report_says_so_and_is_not_ok(self):
+        from src.tools.workbook_verify import VerifyReport
+
+        r = VerifyReport(path="x.xlsx", short_families=[("Tiny", 3)])
+        assert not r.ok
+        assert "SHORT FAMILY: Tiny holds 3 sub-niches, needs 10" in r.render()
+
+
+class TestEveryViewOfARunAgrees:
+    """Three surfaces were answering "what is a niche family" three
+    different ways: primary_niche_groups in the workbook, parent_category in
+    the export graph, and primary_topic in the console tree -- which showed
+    138 families for a run whose workbook had five."""
+
+    def test_the_console_tree_uses_the_family_tier(self):
+        src = pathlib.Path("src/api/deliverables.py").read_text(encoding="utf-8")
+        body = src[src.index("def workbook_tree("):]
+        assert "primary_niche_groups png" in body
+        assert "png.group_label" in body
+
+    def test_the_console_tree_still_falls_back_for_older_workbooks(self):
+        src = pathlib.Path("src/api/deliverables.py").read_text(encoding="utf-8")
+        body = src[src.index("def workbook_tree("):]
+        assert "NULLIF(c.primary_topic, '')" in body
+
+    def test_the_export_graph_carries_the_family(self):
+        from src.export import build_graph_payload
+
+        nodes = build_graph_payload(
+            [{"channel_id": "c1", "title": "One", "subscriber_count": 9,
+              "discovery_method": "keyword", "primary_niche": "Exam Prep",
+              "sub_niche": "maths"}],
+            [],
+        )["nodes"]
+        assert nodes[0]["family"] == "Exam Prep"
+        assert nodes[0]["sub_niche"] == "maths"
+
+    def test_the_graph_only_offers_families_the_workbook_has(self):
+        """A channel an earlier run found dragged "Personal Finance" into
+        an education run's family filter, one node in it, beside a workbook
+        promising ten sub-niches a family."""
+        from src.export import build_graph_payload
+
+        nodes = build_graph_payload(
+            [{"channel_id": "c1", "title": "One", "subscriber_count": 9,
+              "discovery_method": "keyword", "primary_niche": "Personal Finance"},
+             {"channel_id": "c2", "title": "Two", "subscriber_count": 9,
+              "discovery_method": "keyword", "primary_niche": "Exam Prep"}],
+            [], families={"Exam Prep"},
+        )["nodes"]
+        by_id = {n["id"]: n for n in nodes}
+        assert by_id["c1"]["family"] == ""
+        assert by_id["c2"]["family"] == "Exam Prep"
+
+    def test_no_vocabulary_given_means_no_filtering(self):
+        from src.export import build_graph_payload
+
+        nodes = build_graph_payload(
+            [{"channel_id": "c1", "title": "One", "subscriber_count": 9,
+              "discovery_method": "keyword", "primary_niche": "Anything"}],
+            [],
+        )["nodes"]
+        assert nodes[0]["family"] == "Anything"
+
+    def test_the_exported_page_filters_rather_than_recolours(self):
+        """A node-link layout is an all-pairs context and the palette only
+        clears its separation floor for three hues -- see _category."""
+        src = pathlib.Path("src/export.py").read_text(encoding="utf-8")
+        assert 'id="family-filter"' in src
+        assert "familyFilter.addEventListener" in src
+
+    def test_the_frontier_nodes_carry_no_family(self):
+        from src.export import build_graph_payload
+
+        payload = build_graph_payload(
+            [], [{"source_channel_id": "s1", "target_channel_ref": "@ref",
+                  "edge_type": "featured"}],
+        )
+        assert all(n["family"] == "" for n in payload["nodes"])
+
+
+class TestFutureRunsGetThisWithoutBeingAsked:
+    def test_the_node_runs_in_every_graph_run(self):
+        src = pathlib.Path("src/graph.py").read_text(encoding="utf-8")
+        assert 'graph.add_node("assign_niche_families"' in src
+        assert 'graph.add_edge("populate_shared_fields", "assign_niche_families")' in src
+
+    def test_the_gate_can_heal_it_if_the_run_could_not(self):
+        from src.tools.export_completeness import _nodes
+
+        assert "assign_niche_families" in _nodes()
+
+    def test_it_heals_in_the_order_the_graph_runs_it(self):
+        from src.tools.export_completeness import _nodes
+
+        names = list(_nodes())
+        assert names.index("assign_niche_families") < names.index("assign_cohorts")

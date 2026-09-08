@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.nodes.assign_niche_families import MIN_SUB_NICHES_PER_FAMILY
 from src.tools.export_completeness import (
     _DECLARED,
     _DEFAULT_MIN_FILL,
@@ -46,7 +47,7 @@ from src.tools.export_completeness import (
 #: Sheets that carry rows of data. Overview is a label/value summary, so it
 #: is checked for existence and not for column fill.
 _DATA_SHEETS = frozenset({
-    "Channels", "Videos", "Shorts", "Niches",
+    "Channels", "Videos", "Shorts", "Niche Families", "Niches",
     "Success Factors", "Failure Factors",
 })
 
@@ -78,6 +79,11 @@ class VerifyReport:
     empty_sheets: list[str] = field(default_factory=list)
     missing_sheets: list[str] = field(default_factory=list)
     missing_columns: list[str] = field(default_factory=list)
+    #: Families on the written sheet holding fewer sub-niches than the rule
+    #: allows, as (family, count). A value fault rather than a fill fault:
+    #: the cell is populated, and populated with something the client
+    #: specifically asked never to see.
+    short_families: list[tuple[str, int]] = field(default_factory=list)
     unreadable: str = ""
 
     @property
@@ -87,7 +93,8 @@ class VerifyReport:
     @property
     def ok(self) -> bool:
         return not (self.failures or self.empty_sheets or self.missing_sheets
-                    or self.missing_columns or self.unreadable)
+                    or self.missing_columns or self.short_families
+                    or self.unreadable)
 
     def render(self) -> str:
         name = Path(self.path).name
@@ -101,6 +108,11 @@ class VerifyReport:
             lines.append(f"  EMPTY SHEET: {sheet}")
         for col in self.missing_columns:
             lines.append(f"  MISSING COLUMN: {col}")
+        for family, held in self.short_families:
+            lines.append(
+                f"  SHORT FAMILY: {family} holds {held} sub-niches, "
+                f"needs {MIN_SUB_NICHES_PER_FAMILY}"
+            )
         for f in sorted(self.failures, key=lambda x: x.rate):
             lines.append(
                 f"  SHORT  {f.sheet}.{f.column:<28} {f.filled}/{f.total} "
@@ -114,6 +126,44 @@ class VerifyReport:
             f"{checked} columns read from the file"
         )
         return "\n".join(lines)
+
+
+def _short_families(
+    header: list[Any], body: list[tuple]
+) -> list[tuple[str, int]]:
+    """Families on the written sheet that break the minimum.
+
+    Read from the cells rather than trusted from the node that wrote them.
+    assign_niche_families enforces the rule on its own output, and that is
+    the right place for it -- but "enforced upstream" is exactly the claim
+    every other completeness failure in this project was making when it
+    shipped. The rule is about what the client opens, so it is checked
+    against what the client opens.
+
+    A workbook with fewer sub-niches in total than one family needs is
+    exempt: the rule is unsatisfiable there, and one honest family holding
+    everything is the correct answer rather than a fault.
+    """
+    try:
+        name_at = header.index("niche_family")
+        count_at = header.index("distinct_sub_niches")
+    except ValueError:
+        # An older workbook, or one whose columns were pruned as empty.
+        return []
+
+    counts: list[tuple[str, int]] = []
+    for row in body:
+        if count_at >= len(row) or name_at >= len(row):
+            continue
+        try:
+            held = int(row[count_at])
+        except (TypeError, ValueError):
+            continue
+        counts.append((str(row[name_at]), held))
+
+    if sum(n for _, n in counts) < MIN_SUB_NICHES_PER_FAMILY:
+        return []
+    return [(name, n) for name, n in counts if n < MIN_SUB_NICHES_PER_FAMILY]
 
 
 def _waivers_for(sheet: str, is_crime: bool) -> dict[str, str]:
@@ -149,11 +199,19 @@ def verify_workbook(
 
     try:
         present = set(wb.sheetnames)
+        # A workbook with no niches in it has no families either, and the
+        # sheet is correctly absent. One WITH niches and no families sheet
+        # is a run whose family tier never ran, which is a gap and says so.
+        # Read from the file, like everything else here.
+        has_niches = "Niches" in present and wb["Niches"].max_row > 1
         for sheet in sorted(_DATA_SHEETS):
             if sheet not in present:
                 # Shorts is legitimately absent when a run found none.
-                if sheet != "Shorts":
-                    report.missing_sheets.append(sheet)
+                if sheet == "Shorts":
+                    continue
+                if sheet == "Niche Families" and not has_niches:
+                    continue
+                report.missing_sheets.append(sheet)
                 continue
 
             rows = list(wb[sheet].iter_rows(values_only=True))
@@ -162,6 +220,9 @@ def verify_workbook(
             if not body:
                 report.empty_sheets.append(sheet)
                 continue
+
+            if sheet == "Niche Families":
+                report.short_families.extend(_short_families(header, body))
 
             if expect_crime and sheet in ("Videos", "Shorts"):
                 for check in CRIME_VIDEO_CHECKS:

@@ -665,6 +665,7 @@ def audit(run_id: str) -> Report:
 #: and the graph, and audit() must stay usable without either.
 def _nodes() -> dict[str, Callable[[dict], Any]]:
     from src.nodes.assign_cohorts import assign_cohorts
+    from src.nodes.assign_niche_families import assign_niche_families
     from src.nodes.finalize_dataset import finalize_dataset
     from src.nodes.populate_crime_metadata import populate_crime_metadata
     from src.nodes.classify_channel import classify_channel
@@ -687,6 +688,11 @@ def _nodes() -> dict[str, Callable[[dict], Any]]:
         "extract_metadata_signals": extract_metadata_signals,
         "extract_success_failure_factors": extract_success_failure_factors,
         "describe_video_titles": describe_video_titles,
+        # Before assign_cohorts, the same order the graph runs them in.
+        # Idempotent: a niche already in a family big enough for this
+        # workbook is left where it is, so a second pass over a healthy run
+        # changes nothing and says so.
+        "assign_niche_families": assign_niche_families,
         "assign_cohorts": assign_cohorts,
         # Absent until 2026-09-07, so the crime columns could not have been
         # healed even once they were checked.

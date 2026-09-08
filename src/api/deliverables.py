@@ -193,11 +193,23 @@ def workbook_tree(workbook_id: str) -> dict[str, Any]:
     """The workbook as a hierarchy: vertical -> family -> sub-niche -> channel.
 
     This is the shape the discovery actually has. A run starts from a
-    vertical, the taxonomy splits it into families (primary_topic), each
-    family holds sub-niches, and channels sit at the leaves. Rendering it as
-    a tree shows how a deliverable is composed in a way a force graph cannot
-    -- 236 of Crime's 240 channels have no edge to another channel in the
+    vertical, the taxonomy splits it into families, each family holds
+    sub-niches, and channels sit at the leaves. Rendering it as a tree
+    shows how a deliverable is composed in a way a force graph cannot --
+    236 of Crime's 240 channels have no edge to another channel in the
     set, so a link diagram of them is 240 dots.
+
+    "Family" here means the niche-family tier -- primary_niche_groups, the
+    same one the workbook's Niche Families sheet is written from -- and it
+    used to mean `primary_topic`, a free-text per-channel field written by
+    populate_taxonomy_dimensions. That was a third answer to a question the
+    workbook and the export graph were already answering two other ways:
+    on run-e4e794436210 this page showed 138 "families", most holding one
+    or two channels, beside a workbook whose five families each carried at
+    least sixteen sub-niches.
+
+    primary_topic remains the fallback, so a workbook exported before the
+    family tier existed still renders as it always did.
 
     Counts are carried on every branch so a collapsed node still says how
     much is underneath it.
@@ -217,14 +229,17 @@ def workbook_tree(workbook_id: str) -> dict[str, Any]:
                       c.title,
                       c.subscriber_count,
                       c.discovery_method,
-                      COALESCE(NULLIF(c.primary_topic, ''), 'Unclassified')
-                          AS family,
+                      COALESCE(NULLIF(png.group_label, ''),
+                               NULLIF(c.primary_topic, ''),
+                               'Unclassified') AS family,
                       COALESCE(NULLIF(nt.niche_name, ''), 'unspecified')
                           AS sub_niche
                FROM channels c
                LEFT JOIN channel_niches cn
                       ON cn.channel_id = c.channel_id AND cn.is_primary
                LEFT JOIN niche_taxonomy nt ON nt.niche_id = cn.niche_id
+               LEFT JOIN primary_niche_groups png
+                      ON png.group_id = nt.primary_niche_group_id
                WHERE c.channel_id = ANY(%s)
                ORDER BY c.channel_id""",
             (ids,),

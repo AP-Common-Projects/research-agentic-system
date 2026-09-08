@@ -608,10 +608,21 @@ def _category(discovery_method: str | None) -> str:
     return discovery_method if discovery_method in ("keyword", "graph_walk", "both") else "unresolved"
 
 
+def _in_vocabulary(family: Any, allowed: set[str] | None) -> str:
+    """A family label, but only one the workbook also uses."""
+    label = str(family or "")
+    if not label:
+        return ""
+    if allowed is not None and label not in allowed:
+        return ""
+    return label
+
+
 def build_graph_payload(
     channels: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     max_nodes: int = 0,
+    families: set[str] | None = None,
 ) -> dict[str, Any]:
     """Nodes + edges for the interactive graph, keyed consistently.
 
@@ -622,6 +633,16 @@ def build_graph_payload(
     discovered network that got hydrated and silently drop the rest, when
     the unhydrated majority is itself the finding: it's the frontier the
     record budget ran out before reaching.
+
+    `families` is the family vocabulary the WORKBOOK carries. The graph is
+    deliberately wider than the workbook -- it shows every channel the run
+    touched, including ones the export's scope excludes -- and those
+    channels drag in families of their own. On run-e4e794436210 that put
+    "Personal Finance" and "Emerging / Audience-Specific" in the graph's
+    family filter, one node each, from two channels an earlier run had
+    found, while the workbook guaranteed every family holds at least ten
+    sub-niches. Same run, two documents, two different answers. Passing
+    the set keeps the node set wide and the vocabulary identical.
     """
     nodes: dict[str, dict[str, Any]] = {}
     for ch in channels:
@@ -633,6 +654,13 @@ def build_graph_payload(
             "label": ch.get("title") or cid,
             "subscribers": ch.get("subscriber_count") or 0,
             "category": _category(ch.get("discovery_method")),
+            # The workbook's family tier, carried onto the graph so the two
+            # views of one run cannot say different things. Colour still
+            # encodes the discovery track -- see _category on why this
+            # chart form only clears three hues -- so the family is a
+            # FILTER and a tooltip row, never a fourth palette slot.
+            "family": _in_vocabulary(ch.get("primary_niche"), families),
+            "sub_niche": ch.get("sub_niche") or "",
             "resolved": True,
         }
 
@@ -648,7 +676,8 @@ def build_graph_payload(
             # dangling — represent it rather than dropping the edge.
             nodes[source] = {
                 "id": source, "label": source, "subscribers": 0,
-                "category": "unresolved", "resolved": False,
+                "category": "unresolved", "family": "", "sub_niche": "",
+                "resolved": False,
             }
 
         target_id = e.get("target_channel_id")
@@ -660,7 +689,8 @@ def build_graph_payload(
             if target not in nodes:
                 nodes[target] = {
                     "id": target, "label": _ref_label(target_ref),
-                    "subscribers": 0, "category": "unresolved", "resolved": False,
+                    "subscribers": 0, "category": "unresolved",
+                    "family": "", "sub_niche": "", "resolved": False,
                 }
         else:
             continue
@@ -1015,6 +1045,11 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
     <div class="controls">
       <div class="legend" id="legend"></div>
       <label class="field"><input type="checkbox" id="toggle-unresolved" checked> Show frontier nodes</label>
+      <label class="field">Niche family
+        <select id="family-filter" aria-label="Filter by niche family">
+          <option value="">All families</option>
+        </select>
+      </label>
       <input type="search" id="search" placeholder="Find a channel…" aria-label="Find a channel">
       <button id="btn-reset" type="button">Reset view</button>
       <button id="btn-table" type="button" aria-pressed="false">View as table</button>
@@ -1031,6 +1066,7 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
         <thead><tr>
           <th data-key="label">Channel</th>
           <th data-key="category">Found by</th>
+          <th data-key="family">Niche family</th>
           <th data-key="subscribers" class="n">Subscribers</th>
           <th data-key="resolved">Fetched</th>
         </tr></thead>
@@ -1435,6 +1471,8 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
       "<strong>" + escapeHtml(n.label) + "</strong>" +
       "<div class=\"tt-row\"><span>Subscribers</span><span>" + n.subscribers.toLocaleString() + "</span></div>" +
       "<div class=\"tt-row\"><span>Found by</span><span>" + CAT_LABEL[n.category] + "</span></div>" +
+      (n.family ? "<div class=\"tt-row\"><span>Niche family</span><span>" + escapeHtml(n.family) + "</span></div>" : "") +
+      (n.sub_niche ? "<div class=\"tt-row\"><span>Sub-niche</span><span>" + escapeHtml(n.sub_niche) + "</span></div>" : "") +
       "<div class=\"tt-row\"><span>Fetched</span><span>" + (n.resolved ? "yes" : "no — frontier only") + "</span></div>";
     tooltip.style.opacity = 1;
     positionTooltip(cx, cy);
@@ -1450,14 +1488,40 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
     });
   }
 
-  // ---- filters: hide frontier nodes ---------------------------------------
+  // ---- filters: frontier nodes, and one niche family at a time -------------
+  //
+  // The family is a filter rather than a colour on purpose. This is a
+  // node-link layout, so any two categories can end up adjacent anywhere on
+  // screen -- an all-pairs context, in which the reference palette only
+  // clears its separation floor for three hues (see _category). Five
+  // families would need five, so colour keeps encoding the discovery track
+  // and the family narrows the view instead.
   var toggleUnresolved = document.getElementById("toggle-unresolved");
+  var familyFilter = document.getElementById("family-filter");
   var emptyState = document.getElementById("empty-state");
+
+  (function populateFamilies() {
+    var seen = {};
+    payload.nodes.forEach(function (n) { if (n.family) seen[n.family] = true; });
+    var labels = Object.keys(seen).sort();
+    if (!labels.length) {
+      familyFilter.parentNode.style.display = "none";
+      return;
+    }
+    labels.forEach(function (label) {
+      var opt = document.createElement("option");
+      opt.value = label; opt.textContent = label;
+      familyFilter.appendChild(opt);
+    });
+  })();
+
   function applyVisibility() {
     var showUnresolved = toggleUnresolved.checked;
+    var family = familyFilter.value;
     var visibleCount = 0;
     nodes.forEach(function (n) {
-      n.hidden = (!showUnresolved && n.category === "unresolved");
+      n.hidden = (!showUnresolved && n.category === "unresolved")
+        || (family !== "" && n.family !== family);
       if (!n.hidden) visibleCount++;
     });
     emptyState.style.display = visibleCount === 0 ? "flex" : "none";
@@ -1465,6 +1529,7 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
     render();
   }
   toggleUnresolved.addEventListener("change", applyVisibility);
+  familyFilter.addEventListener("change", applyVisibility);
 
   // ---- search -----------------------------------------------------------
   var searchInput = document.getElementById("search");
@@ -1502,6 +1567,7 @@ _GRAPH_HTML_TEMPLATE = r"""<!doctype html>
     });
     tableBody.innerHTML = rows.map(function (n) {
       return "<tr><td>" + escapeHtml(n.label) + "</td><td>" + CAT_LABEL[n.category] +
+        "</td><td>" + escapeHtml(n.family || "—") +
         "</td><td class=\"n\">" + n.subscribers.toLocaleString() + "</td><td>" +
         (n.resolved ? "yes" : "no") + "</td></tr>";
     }).join("");
@@ -1634,7 +1700,30 @@ def export_run(run_id: str, thread_id: str | None = None) -> Path:
         "saturated_branches": state.get("saturated_branches", []),
     }
 
-    graph_payload = build_graph_payload(channels, edges, max_nodes=cfg.export_max_graph_nodes)
+    # The workbook's own family vocabulary, so the graph cannot offer a
+    # family the .xlsx has never heard of.
+    try:
+        # workbook_scope, not the bare run: unscoped, this returns every
+        # family any tagged channel belongs to -- which on this run was
+        # eight, two of them holding a single niche apiece from channels
+        # the export excludes. The vocabulary has to be the workbook's or
+        # it is not the workbook's vocabulary.
+        _wb_scope = workbook_scope(run_id)
+        workbook_families = {
+            f["niche_family"]
+            for f in fetch_run_niche_families(
+                run_id, _wb_scope.category, _wb_scope.min_subscribers,
+                _wb_scope.own_only,
+            )
+            if f.get("niche_family")
+        }
+    except Exception:
+        workbook_families = None
+
+    graph_payload = build_graph_payload(
+        channels, edges, max_nodes=cfg.export_max_graph_nodes,
+        families=workbook_families,
+    )
 
     # CSV wants a flat cell, not a Python list repr — join for the sheet,
     # keep the real list in research_bundle.json/discovery_graph.json.
@@ -2023,34 +2112,51 @@ def build_excel_workbook_v3(
     ws.append(["Shorts", len(shorts)])
     ws.append(["Videos + Shorts", manifest.get("videos", 0)])
     ws.append(["Niches covered", manifest.get("niches_covered", 0)])
+    ws.append(["Niche families", len(families or ())])
     ws.append(["Total cost (USD)", manifest.get("total_cost_usd", 0)])
     ws.append(["Generated", manifest.get("exported_at", "")[:19]])
     ws.append([])
-    if niches:
-        # The rollup is keyed on primary_topic (the family level), not
-        # sub_niche -- that changed when the Niches sheet was regrouped to
-        # answer the client's "too many sub-niches" complaint, and this
-        # summary was still reading the old key, so every label came out
-        # blank. Falls back through the older keys so an older rollup shape
-        # still renders.
-        ws.append(["Category", "Niche family", "Channels", "Share of vertical",
-                   "Distinct sub-niches", "Example sub-niches"])
+
+    # One row per FAMILY. This table was headed "Niche family" and filled
+    # from the per-niche breakdown, which is one row per SUB-NICHE: an
+    # education run rendered 135 of them, 115 holding a single channel,
+    # under a heading promising the opposite. Its "Distinct sub-niches" and
+    # "Example sub-niches" columns read `primary_topic`,
+    # `distinct_sub_niches` and `example_sub_niches`, none of which the
+    # niche breakdown has ever produced, so all three shipped blank and the
+    # label fell through to the sub-niche name.
+    #
+    # Now built from the same fetch_run_niche_families the Niche Families
+    # sheet uses, so the summary and the sheet cannot disagree, and every
+    # row carries at least MIN_SUB_NICHES_PER_FAMILY sub-niches by
+    # construction.
+    if families:
+        ws.append(["Niche family", "Channels", "Share of run",
+                   "Sub-niches", "Categories", "Example sub-niches"])
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+        for f in sorted(families, key=lambda r: -(r.get("channel_count") or 0)):
+            share = f.get("share_of_run_pct")
+            ws.append([
+                f.get("niche_family", ""),
+                f.get("channel_count", 0),
+                f"{share}%" if share is not None else "",
+                f.get("distinct_sub_niches", 0),
+                f.get("categories", ""),
+                f.get("example_sub_niches", ""),
+            ])
+    elif niches:
+        # A workbook rebuilt for a run that predates the family tier. Headed
+        # for what it actually is rather than borrowing the family's name.
+        ws.append(["Category", "Sub-niche", "Channels"])
         for cell in ws[ws.max_row]:
             cell.font = Font(bold=True)
         for n in sorted(niches, key=lambda r: -r.get("channel_count", 0)):
-            label = (n.get("primary_topic") or n.get("sub_niche")
-                     or n.get("niche_name") or "Unclassified")
-            pct = n.get("pct_of_vertical")
-            ws.append([
-                n.get("category", ""),
-                label,
-                n.get("channel_count", 0),
-                f"{pct}%" if pct is not None else "",
-                n.get("distinct_sub_niches", ""),
-                n.get("example_sub_niches", ""),
-            ])
-    for col, width in (("A", 22), ("B", 26), ("C", 12), ("D", 18),
-                       ("E", 20), ("F", 58)):
+            ws.append([n.get("category", ""),
+                       n.get("sub_niche") or n.get("niche_name") or "Unclassified",
+                       n.get("channel_count", 0)])
+    for col, width in (("A", 30), ("B", 12), ("C", 14), ("D", 12),
+                       ("E", 30), ("F", 58)):
         ws.column_dimensions[col].width = width
 
     _write_excel_sheet(wb.create_sheet("Channels"), channels)
