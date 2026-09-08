@@ -304,3 +304,23 @@ def _saturation(cap, delivered):
          patch.object(sat, "run_elapsed_seconds", return_value=0), \
          patch("src.export.workbook_channel_count", return_value=delivered):
         return sat.check_saturation(state)
+
+
+class TestTheStreamShowsTheNumberThatMatters:
+    """"channel count: 3003" was on the stream while the file it was
+    heading for held seventeen rows."""
+
+    def test_the_workbook_figure_is_logged_every_round(self):
+        out = _saturation(cap=250, delivered=61)
+        summary = out["node_logs"][0]["input_summary"]
+        assert summary["channels_in_workbook"] == 61
+
+    def test_it_is_logged_beside_its_target(self):
+        out = _saturation(cap=250, delivered=61)
+        assert out["node_logs"][0]["input_summary"]["workbook_target"] == 250
+
+    def test_the_console_renders_both(self):
+        src = pathlib.Path("web/src/pages/LiveRunsPage.tsx").read_text(encoding="utf-8")
+        keys = src[src.index("const INTERESTING_KEYS"):src.index("/** Which run-level")]
+        assert "'channels_in_workbook'" in keys
+        assert "'workbook_target'" in keys

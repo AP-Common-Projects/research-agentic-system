@@ -70,14 +70,36 @@ def check_saturation(state: dict) -> dict:
     """The run's stop conditions, plus the one measurement they turn on.
 
     A thin wrapper over _check_saturation so the delivered-channel figure
-    reaches state on EVERY exit path, not just the ones that were
-    remembered. There are eleven of them, and a governor that is present on
-    ten is a governor with a hole in it.
+    reaches state -- and the log -- on EVERY exit path, not just the ones
+    that were remembered. There are eleven of them, and a governor that is
+    present on ten is a governor with a hole in it.
+
+    It goes into the log because it is the only number on the page that
+    answers the client's actual question. The stream showed channels
+    hydrated and dollars spent; a run reading "channel count: 97" was on
+    course for a seventeen-row file and nothing said so. Now the row it is
+    heading for is visible every round, next to the target.
     """
     delivered = _delivered_channel_count(state)
     out = _check_saturation(state, delivered)
-    if delivered is not None:
-        out["delivered_channel_count"] = delivered
+    if delivered is None:
+        return out
+    out["delivered_channel_count"] = delivered
+    for entry in out.get("node_logs") or ():
+        summary = entry.get("input_summary")
+        if isinstance(summary, dict):
+            summary.setdefault("channels_in_workbook", delivered)
+            try:
+                from src.tools.deliverable import run_ceilings
+
+                # This module's get_config, not the one in deliverable:
+                # the run's governors come from here, and reaching around
+                # it would log a target the run is not being held to.
+                target = run_ceilings(get_config().harness)[0]
+            except Exception:
+                target = 0
+            if target:
+                summary.setdefault("workbook_target", target)
     return out
 
 

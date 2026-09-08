@@ -110,7 +110,11 @@ const INTERESTING_KEYS = new Set([
   // subscriber floor the workbook is scoped to -- so a run reading
   // "channels hydrated: 25" was on course for five rows, and nothing on
   // the page said so.
-  'channels_hydrated', 'channels_over_floor', 'qualified', 'target',
+  'channels_hydrated', 'channels_over_floor', 'delivered', 'target',
+  // The only number on this page that answers "how big will the file
+  // be". Measured off the export every round, so it is the row count
+  // the client will open, not a stage of the funnel above it.
+  'channels_in_workbook', 'workbook_target',
 ]);
 
 /** Which run-level ceiling ended the research, in the client's words.
