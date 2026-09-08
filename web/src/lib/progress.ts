@@ -19,8 +19,24 @@ import type { NodeLogEntry } from './api';
  * planning is three of the six nodes and none of the time.
  *
  * A run can revisit a phase -- the graph loops over branches -- so progress
- * is monotonic by construction: it takes the furthest phase reached, never
- * the current one, or the bar would slide backwards on the second branch.
+ * is monotonic by construction: it never goes backwards on a new branch.
+ *
+ * Phases alone are not enough, and assuming they were made the bar useless
+ * on the deeper tiers. Taking the furthest phase EVER reached, one single
+ * discovery round touches assess and puts the bar at 92%. Sample is one
+ * round, so that was near enough. Standard is sixteen and Deep is
+ * sixty-four: a Standard education run sat at 98% two hours into a
+ * five-hour budget, with fifteen of its sixteen rounds still to come.
+ *
+ * So the research phases share their weight across the rounds the tier
+ * budgets for, and the phase within the current round only says how far
+ * into THAT round the run is. `roundsTotal` comes from the run itself --
+ * branches x rounds, recorded at launch -- rather than being reconstructed
+ * here from governors the console would then have to keep in step.
+ *
+ * A run that saturates early is not at 40% forever: reaching the write-up
+ * chain means research is over however many rounds it used, and the bar
+ * says so.
  * ----------------------------------------------------------------------- */
 
 export type Phase = 'plan' | 'discover' | 'enrich' | 'assess' | 'finish';
@@ -95,9 +111,37 @@ export interface RunProgress {
   done: Phase[];
 }
 
+/** The research phases' combined share — everything before the write-up. */
+const RESEARCH_SHARE =
+  PHASE_WEIGHT.plan + PHASE_WEIGHT.discover + PHASE_WEIGHT.enrich + PHASE_WEIGHT.assess;
+
+/** How far through a single round each phase sits, by its own weight. */
+const WITHIN_ROUND: Record<Phase, number> = {
+  plan: 0,
+  discover: PHASE_WEIGHT.plan / RESEARCH_SHARE,
+  enrich: (PHASE_WEIGHT.plan + PHASE_WEIGHT.discover) / RESEARCH_SHARE,
+  assess:
+    (PHASE_WEIGHT.plan + PHASE_WEIGHT.discover + PHASE_WEIGHT.enrich) /
+    RESEARCH_SHARE,
+  finish: 1,
+};
+
+/** Nodes of the write-up chain, in the order they run. */
+const FINISH_NODES = [
+  'extract_success_failure_factors',
+  'describe_video_titles',
+  'populate_taxonomy_dimensions',
+  'populate_crime_metadata',
+  'populate_shared_fields',
+  'assign_cohorts',
+  'finalize_dataset',
+  'synthesize',
+];
+
 export function computeProgress(
   entries: NodeLogEntry[],
   status: string,
+  roundsTotal?: number | null,
 ): RunProgress {
   const finished = status === 'complete' || status === 'stopped';
 
@@ -119,11 +163,31 @@ export function computeProgress(
   }
   const phase = PHASE_ORDER[furthest];
 
-  // Everything before the current phase is complete; the current phase
-  // counts as half, since nothing here knows how far into it the run is.
-  let percent = 0;
-  for (let i = 0; i < furthest; i++) percent += PHASE_WEIGHT[PHASE_ORDER[i]];
-  percent += PHASE_WEIGHT[phase] / 2;
+  // One check_saturation per discovery round: it is the node that closes a
+  // round, so counting it counts rounds without inferring them from the
+  // shape of the loop.
+  const roundsDone = entries.filter(
+    (e) => e.node_name === 'check_saturation',
+  ).length;
+
+  // A run whose depth is unknown (a bare CLI run has no tier) falls back to
+  // one round, which is the old behaviour rather than a guess.
+  const total = Math.max(1, roundsTotal ?? 1);
+
+  const seen = new Set(entries.map((e) => e.node_name));
+  const finishDone = FINISH_NODES.filter((n) => seen.has(n)).length;
+  const inWriteUp = finishDone > 0;
+
+  let percent: number;
+  if (inWriteUp) {
+    // Research is over however many rounds it used -- an early saturation
+    // is a finished search, not an abandoned one.
+    percent =
+      RESEARCH_SHARE + PHASE_WEIGHT.finish * (finishDone / FINISH_NODES.length);
+  } else {
+    const within = WITHIN_ROUND[phase];
+    percent = RESEARCH_SHARE * Math.min(1, (roundsDone + within) / total);
+  }
 
   return {
     percent: finished ? 100 : Math.min(99, Math.round(percent * 100)),

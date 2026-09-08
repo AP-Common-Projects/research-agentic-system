@@ -309,7 +309,7 @@ function RunDetail({ run }: { run: Run }) {
   // connections to say the same thing would be wasteful and could disagree.
   const { entries, connection } = useRunEvents(run.run_id, isLive);
   const progress = useMemo(
-    () => computeProgress(entries, run.status),
+    () => computeProgress(entries, run.status, run.rounds_total),
     [entries, run.status],
   );
 

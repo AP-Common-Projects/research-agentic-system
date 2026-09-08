@@ -210,6 +210,9 @@ export interface Run {
   depth?: string | null;
   depth_label?: string | null;
   depth_hours?: number | null;
+  /** Discovery rounds this depth budgets for (branches x rounds each).
+   *  The progress bar divides the research phases across them. */
+  rounds_total?: number | null;
   thresholds?: Record<string, number> | null;
   status: RunStatus;
   last_node: string | null;

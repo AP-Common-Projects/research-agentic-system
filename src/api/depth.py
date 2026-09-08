@@ -116,6 +116,17 @@ _CRIME_SECONDS_PER_VIDEO = 4.7
 _CRIME_USD_PER_VIDEO = 0.0018
 
 
+#: LangGraph supersteps one discovery round costs, measured on
+#: run-bc5226fb2e06: twenty rounds consumed exactly the 200-superstep
+#: ceiling, so ten each. Twelve here for headroom.
+_SUPERSTEPS_PER_ROUND = 12
+#: Everything outside the discovery loop -- taxonomy, per-branch clustering
+#: and compaction, the write-up chain, finalize.
+_SUPERSTEPS_FIXED = 60
+#: A tier that fits in the old flat ceiling keeps it, so nothing shrinks.
+_MIN_RECURSION_LIMIT = 200
+
+
 def is_crime_topic(topic: str | None) -> bool:
     """Whether a topic runs the crime case-file stage.
 
@@ -160,6 +171,7 @@ class DepthTier:
         # whatever the run took. The client is told this time up front now,
         # so the run has to keep to it.
         self.governors["GATE_BUDGET_SECONDS"] = self.gate_budget_seconds
+        self.governors["GRAPH_RECURSION_LIMIT"] = self.recursion_limit
 
     @property
     def max_channels(self) -> int:
@@ -225,6 +237,30 @@ class DepthTier:
     @property
     def est_total_usd(self) -> float:
         return round(self.est_brightdata_usd + self.est_openrouter_usd, 2)
+
+    @property
+    def recursion_limit(self) -> int:
+        """Supersteps the graph may run, derived from this tier's own loop.
+
+        It was a flat 200 for every depth, and the deeper tiers are
+        configured to need more than that: Standard is 4 branches x 4
+        rounds and Deep is 8 x 8, against Sample's 1 x 1. A Standard
+        education run died on GraphRecursionError after 2h24m with no
+        export at all -- the ceiling was reached before any stop condition
+        could be.
+
+        A limit that does not follow the governors it has to accommodate is
+        a limit that only the smallest tier can satisfy.
+        """
+        rounds = (
+            int(self.governors.get("MAX_BRANCHES", 1))
+            * int(self.governors.get("MAX_ROUNDS_PER_BRANCH", 1))
+        )
+        needed = rounds * _SUPERSTEPS_PER_ROUND + _SUPERSTEPS_FIXED
+        # Half again, because a branch that saturates early and one that
+        # runs its full allowance cost different amounts, and the ceiling
+        # has to fit the unlucky arrangement rather than the average.
+        return max(_MIN_RECURSION_LIMIT, int(needed * 1.5))
 
     @property
     def gate_budget_seconds(self) -> int:
@@ -412,6 +448,7 @@ def tiers_with_availability(
         row["est_videos"] = tier.est_videos
         row["max_channels"] = tier.max_channels
         row["total_duration_label"] = tier.total_duration_label
+        row["recursion_limit"] = tier.recursion_limit
         row["gate_label"] = tier.gate_label
 
         blockers: list[str] = []

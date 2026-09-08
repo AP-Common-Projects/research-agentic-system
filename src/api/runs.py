@@ -205,6 +205,16 @@ def launch_run(
         "depth": tier.id if tier else None,
         "depth_label": tier.label if tier else None,
         "depth_hours": tier.hours if tier else None,
+        # Discovery rounds this depth budgets for -- branches x rounds each.
+        # The console's progress bar needs it: a run is a graph that loops,
+        # not a queue that drains, so "how far along" is rounds done over
+        # rounds budgeted. Recorded at launch rather than derived later, so
+        # a run keeps the shape it was actually started with even if the
+        # tier definitions move.
+        "rounds_total": (
+            int(tier.governors["MAX_BRANCHES"])
+            * int(tier.governors["MAX_ROUNDS_PER_BRANCH"])
+        ) if tier else None,
         # Recorded so a finished run can say what it was actually run with,
         # rather than the reader having to assume the defaults.
         "thresholds": dict(thresholds) if thresholds else None,

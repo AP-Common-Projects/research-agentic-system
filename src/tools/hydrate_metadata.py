@@ -257,10 +257,30 @@ def hydrate_metadata(state: dict) -> dict:
     # the tier's estimate true instead of aspirational.
     from src.config import get_config as _cfg_for_cap
 
-    cap = int(_cfg_for_cap().harness.max_channels_per_run or 0)
+    _harness = _cfg_for_cap().harness
+    cap = int(_harness.max_channels_per_run or 0)
     trimmed = 0
     if cap > 0:
-        room = max(0, cap - len(hydrated))
+        # Spread the cap across branches instead of letting the first round
+        # spend all of it.
+        #
+        # The cap is what a tier can afford to enrich; the branches are what
+        # it is supposed to cover. Taking whatever the first discovery round
+        # found meant those two never met: a Standard education run filled
+        # all 100 slots on its FIRST hydration and then visited four more
+        # branches -- online-learning, test-prep, k12-tutorials,
+        # trivia-entertainment -- that could contribute nothing. Standard
+        # promises "enough channels in each sub-niche for the comparisons
+        # the workbook is built for", and delivered one sub-niche.
+        #
+        # A share per round rather than a per-branch ledger: rounds already
+        # alternate between branches, so this spreads coverage without a
+        # second place to track which branch has spent what. Capacity a thin
+        # branch leaves unused stays available, because the share is only
+        # ever the smaller of it and the room actually left.
+        branches = int(getattr(_harness, "max_branches", 1) or 1)
+        share = cap if branches <= 1 else max(1, cap // branches)
+        room = max(0, min(cap - len(hydrated), share))
         if len(to_hydrate) > room:
             trimmed = len(to_hydrate) - room
             # Biggest first: if a run can only afford some of what it found,

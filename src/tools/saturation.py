@@ -100,6 +100,29 @@ def check_saturation(state: dict) -> dict:
             spent=quota_used, ceiling=cfg.youtube_quota_budget_per_run,
         )
 
+    # The channel cap, for the same reason as the record ceiling above.
+    #
+    # Hydration is the gate everything downstream depends on, and it trims to
+    # max_channels_per_run. Once that is full it returns "no new channels to
+    # hydrate" for the rest of the run -- so every further round of keyword
+    # search, graph walk and breakout scanning buys channels that can never
+    # be hydrated, classified or exported. Nothing recognised that as done.
+    #
+    # Observed on run-bc5226fb2e06, a Standard education run: the cap filled
+    # on the FIRST hydration (100 hydrated, 565 trimmed), then nineteen more
+    # rounds found nothing to do while spending 827 Bright Data records and
+    # 1,251 quota units, until LangGraph's recursion limit ended the run with
+    # no export at all. Exactly the shape the record ceiling comment above
+    # describes: no node can contribute, and nothing calls it finished.
+    cap = int(cfg.max_channels_per_run or 0)
+    if cap > 0:
+        hydrated = len(state.get("hydrated_channel_ids") or ())
+        if hydrated >= cap:
+            return _budget_exhausted(
+                state, start, "max_channels_per_run",
+                spent=hydrated, ceiling=cap,
+            )
+
     tree = state.get("tree", {})
     active_node_id = state.get("active_node_id")
     node = tree.get(active_node_id) if active_node_id else None
