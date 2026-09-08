@@ -306,10 +306,14 @@ def fetch_run_niche_breakdown(
     Overview sheet and the Niches sheet."""
     floor = _floor() if min_subscribers is None else min_subscribers
     sql = f"""
-        SELECT nt.niche_id, nt.parent_category AS category, nt.niche_name AS sub_niche,
+        SELECT nt.niche_id, nt.parent_category AS category,
+               png.group_label AS niche_family,
+               nt.niche_name AS sub_niche,
                nt.description, nt.is_evergreen_prone,
                COUNT(DISTINCT c.channel_id) AS channel_count
         FROM niche_taxonomy nt
+        LEFT JOIN primary_niche_groups png
+               ON png.group_id = nt.primary_niche_group_id
         JOIN channels c ON c.primary_niche_id = nt.niche_id
         JOIN category_tags t
           ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
@@ -324,10 +328,63 @@ def fetch_run_niche_breakdown(
         sql += " AND nt.parent_category = %s"
         params = params + (category,)
     sql += (
-        " GROUP BY nt.niche_id, nt.parent_category, nt.niche_name, nt.description, nt.is_evergreen_prone"
+        " GROUP BY nt.niche_id, nt.parent_category, png.group_label, nt.niche_name,"
+        " nt.description, nt.is_evergreen_prone"
         " ORDER BY channel_count DESC"
     )
     return _fetch(sql, params)
+
+
+def fetch_run_niche_families(
+    run_id: str,
+    category: str | None = None,
+    min_subscribers: int | None = None,
+    own_only: bool = False,
+) -> list[dict[str, Any]]:
+    """One row per niche FAMILY -- the level a researcher can compare across.
+
+    The Niches sheet answers "what did this run find"; at 135 sub-niches
+    for 167 channels, 115 of them holding one channel, it does not answer
+    "and how does this vertical divide up". This sheet does, and every row
+    on it carries at least MIN_SUB_NICHES_PER_FAMILY sub-niches by
+    construction -- see src/nodes/assign_niche_families.py.
+    """
+    floor = _floor() if min_subscribers is None else min_subscribers
+    sql = f"""
+        SELECT COALESCE(png.group_label, 'Unclassified') AS niche_family,
+               MIN(png.description)                      AS description,
+               COUNT(DISTINCT nt.niche_id)               AS distinct_sub_niches,
+               COUNT(DISTINCT c.channel_id)              AS channel_count,
+               COUNT(DISTINCT c.country_code)            AS countries,
+               STRING_AGG(DISTINCT nt.parent_category, ', ')  AS categories,
+               STRING_AGG(DISTINCT nt.niche_name, ', ')       AS sub_niches
+        FROM niche_taxonomy nt
+        LEFT JOIN primary_niche_groups png
+               ON png.group_id = nt.primary_niche_group_id
+        JOIN channels c ON c.primary_niche_id = nt.niche_id
+        JOIN category_tags t
+          ON t.entity_id = c.channel_id AND t.entity_type = 'channel'
+        WHERE t.run_id = %s
+          AND c.subscriber_count >= {floor}
+    """
+    params: tuple = (run_id,)
+    if own_only:
+        sql += " AND c.first_discovered_run_id = %s"
+        params = params + (run_id,)
+    if category:
+        sql += " AND nt.parent_category = %s"
+        params = params + (category,)
+    sql += " GROUP BY 1 ORDER BY channel_count DESC"
+    rows = _fetch(sql, params)
+    total = sum(r.get("channel_count") or 0 for r in rows) or 1
+    for r in rows:
+        r["share_of_run_pct"] = round(100.0 * (r.get("channel_count") or 0) / total, 1)
+        # Readable in a cell rather than a wall: the Niches sheet carries
+        # the full list, one per row.
+        names = (r.get("sub_niches") or "").split(", ")
+        r["example_sub_niches"] = ", ".join(names[:8])
+        r.pop("sub_niches", None)
+    return rows
 
 
 def _fetch_run_factors(
@@ -1925,8 +1982,9 @@ def build_excel_workbook_v3(
     niches: list[dict[str, Any]],
     success_factors: list[dict[str, Any]],
     failure_factors: list[dict[str, Any]],
+    families: list[dict[str, Any]] | None = None,
 ):
-    """The client deliverable: one workbook, seven sheets, nothing narrative.
+    """The client deliverable: one workbook, eight sheets, nothing narrative.
 
     Overview (run stats + category/niche rollup), Channels (full v3/v4
     enrichment set), Videos and Shorts (long-form and Shorts kept apart, per
@@ -1944,6 +2002,7 @@ def build_excel_workbook_v3(
     channels = _drop_all_empty_columns(_prune_columns(channels, dropped))
     videos = _prune_columns(videos, dropped)
     niches = _drop_all_empty_columns(_prune_columns(niches, dropped))
+    families = _drop_all_empty_columns(_prune_columns(list(families or []), dropped))
     success_factors = _drop_all_empty_columns(_prune_columns(success_factors, dropped))
     failure_factors = _drop_all_empty_columns(_prune_columns(failure_factors, dropped))
 
@@ -1997,6 +2056,10 @@ def build_excel_workbook_v3(
     _write_excel_sheet(wb.create_sheet("Channels"), channels)
     _write_excel_sheet(wb.create_sheet("Videos"), long_form)
     _write_excel_sheet(wb.create_sheet("Shorts"), shorts)
+    # Before Niches, because it is the level a reader starts from: 135
+    # sub-niches with 115 singletons among them is a census, not a map.
+    if families:
+        _write_excel_sheet(wb.create_sheet("Niche Families"), families)
     _write_excel_sheet(wb.create_sheet("Niches"), niches)
     _write_excel_sheet(wb.create_sheet("Success Factors"), success_factors)
     _write_excel_sheet(wb.create_sheet("Failure Factors"), failure_factors)
@@ -2251,6 +2314,8 @@ def sheet_rows(
     return {
         "Channels": channels,
         "Videos": videos,
+        "Niche Families": fetch_run_niche_families(
+            run_id, s.category, s.min_subscribers, s.own_only),
         "Niches": fetch_run_niche_breakdown(
             run_id, s.category, s.min_subscribers, s.own_only),
         "Success Factors": fetch_run_success_factors(
@@ -2365,7 +2430,13 @@ def export_excel(
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    wb = build_excel_workbook_v3(manifest, channels, videos, niches, success_factors, failure_factors)
+    families = fetch_run_niche_families(
+        run_id, category, min_subscribers, own_only
+    )
+    wb = build_excel_workbook_v3(
+        manifest, channels, videos, niches, success_factors, failure_factors,
+        families,
+    )
     wb.save(out_path)
     logger.info(
         "run_exported_excel", run_id=run_id, path=str(out_path),

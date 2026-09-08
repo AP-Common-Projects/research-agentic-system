@@ -225,10 +225,10 @@ SHEET_WAIVERS: dict[str, dict[str, str]] = {
         "notes": "free-text, written only where there is something to note",
         "flagged_reason": "set only on a channel that was flagged",
         "primary_niche": (
-            "the seeded niche-group label. Nothing in the pipeline assigns "
-            "primary_niche_group_id, so it is set only for niches that came "
-            "with the seed data and is empty for any newly discovered "
-            "vertical -- a real limitation, but not one a run can close"
+            "the niche-family label. assign_niche_families now writes it "
+            "for every vertical, so it should be full -- the waiver stays "
+            "only for a channel whose niche was never classified at all, "
+            "which has no family to belong to"
         ),
         "vertical_start_date_basis": "only where a start date was resolved",
         "vertical_start_date_confidence": "only where a start date was resolved",

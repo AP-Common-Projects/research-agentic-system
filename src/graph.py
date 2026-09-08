@@ -38,6 +38,7 @@ from src.nodes.resolve_first_video_date import resolve_first_video_date
 from src.nodes.extract_success_failure_factors import extract_success_failure_factors
 from src.nodes.populate_shared_fields import populate_shared_fields
 from src.nodes.assign_cohorts import assign_cohorts
+from src.nodes.assign_niche_families import assign_niche_families
 from src.nodes.populate_taxonomy_dimensions import populate_taxonomy_dimensions
 from src.nodes.populate_crime_metadata import populate_crime_metadata
 from src.nodes.expand_niche_adjacency import expand_niche_adjacency
@@ -344,6 +345,8 @@ def build_graph() -> StateGraph:
     graph.add_node("populate_shared_fields", _logged(populate_shared_fields, "populate_shared_fields"))
     graph.add_node("populate_taxonomy_dimensions", _logged(populate_taxonomy_dimensions, "populate_taxonomy_dimensions"))
     graph.add_node("populate_crime_metadata", _logged(populate_crime_metadata, "populate_crime_metadata"))
+    graph.add_node("assign_niche_families",
+                   _logged(assign_niche_families, "assign_niche_families"))
     graph.add_node("assign_cohorts", _logged(assign_cohorts, "assign_cohorts"))
     graph.add_node("finalize_dataset", _logged(finalize_dataset, "finalize_dataset"))
 
@@ -389,7 +392,11 @@ def build_graph() -> StateGraph:
     graph.add_edge("describe_video_titles", "populate_taxonomy_dimensions")
     graph.add_edge("populate_taxonomy_dimensions", "populate_crime_metadata")
     graph.add_edge("populate_crime_metadata", "populate_shared_fields")
-    graph.add_edge("populate_shared_fields", "assign_cohorts")
+    # After the sub-niches exist and before the cohorts that read their
+    # category: the family tier is built from what the run actually
+    # populated, so it has to run once the populating is done.
+    graph.add_edge("populate_shared_fields", "assign_niche_families")
+    graph.add_edge("assign_niche_families", "assign_cohorts")
     graph.add_edge("assign_cohorts", "finalize_dataset")
     graph.add_edge("finalize_dataset", END)
 
